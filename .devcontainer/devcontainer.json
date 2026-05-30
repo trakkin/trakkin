@@ -1,0 +1,47 @@
+{
+  "$schema": "https://raw.githubusercontent.com/devcontainers/spec/main/schemas/devContainer.schema.json",
+  "name": "trakkin",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu26.04",
+  "features": {
+    "ghcr.io/devcontainers-extra/features/apt-packages:1": {
+      "packages": "ripgrep,sqlite3"
+    },
+    "ghcr.io/devcontainers-extra/features/protoc:1": {
+      "version": "latest"
+    },
+    "ghcr.io/devcontainers/features/node:2": {
+      "version": "26",
+      "pnpmVersion": "latest"
+    },
+    "ghcr.io/devcontainers/features/rust:1": {
+      "version": "stable",
+      "profile": "minimal",
+      "components": "rust-analyzer,rust-src,rustfmt,clippy"
+    }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "biomejs.biome",
+        "bradlc.vscode-tailwindcss",
+        "DrBlury.protobuf-vsc",
+        "SmallMain.vscode-unify-chat-provider",
+        "svelte.svelte-vscode",
+        "tamasfe.even-better-toml",
+        "yy0931.vscode-sqlite3-editor",
+        "yzhang.markdown-all-in-one"
+      ]
+    }
+  },
+  "forwardPorts": [8725, 5173],
+  "portsAttributes": {
+    "8725": {
+      "label": "Backend"
+    },
+    "5173": {
+      "label": "Frontend"
+    }
+  },
+  "init": true,
+  "remoteUser": "vscode"
+}

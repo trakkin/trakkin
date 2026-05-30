@@ -1,0 +1,12 @@
+{
+  "recommendations": [
+    "biomejs.biome",
+    "bradlc.vscode-tailwindcss",
+    "DrBlury.protobuf-vsc",
+    "SmallMain.vscode-unify-chat-provider",
+    "svelte.svelte-vscode",
+    "tamasfe.even-better-toml",
+    "yy0931.vscode-sqlite3-editor",
+    "yzhang.markdown-all-in-one"
+  ]
+}
