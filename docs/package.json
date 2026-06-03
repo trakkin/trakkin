@@ -1,0 +1,34 @@
+{
+  "name": "docs",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "build": "next build",
+    "clean": "rm -rf .next .source out tsconfig.tsbuildinfo",
+    "dev": "next dev",
+    "fix": "biome check --write --unsafe --formatter-enabled=false .",
+    "format": "biome format --write .",
+    "lint": "biome check --formatter-enabled=false . && next typegen && tsc --noEmit",
+    "setup": "next typegen",
+    "start": "next start"
+  },
+  "dependencies": {
+    "fumadocs-core": "16.14.3",
+    "fumadocs-mdx": "15.2.3",
+    "fumadocs-ui": "npm:@fumadocs/base-ui@16.14.3",
+    "next": "16.3.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/hast": "^3.0.5",
+    "@types/mdx": "^2.0.14",
+    "@types/node": "^26.1.2",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "postcss": "^8.5.25",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^6.0.3"
+  }
+}
