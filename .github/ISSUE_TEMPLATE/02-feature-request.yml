@@ -1,0 +1,68 @@
+name: Feature request
+description: Propose a concrete improvement to Trakkin
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the user problem before prescribing an implementation. Large provider contract or architectural changes should be discussed before implementation begins.
+  - type: dropdown
+    id: affected-area
+    attributes:
+      label: Affected area
+      multiple: true
+      options:
+        - Backen
+        - Frontend
+        - Documentation
+        - Provider
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What workflow or user need is not adequately supported today?
+      placeholder: As a Trakkin user, I want to ... because ...
+    validations:
+      required: true
+  - type: textarea
+    id: desired-outcome
+    attributes:
+      label: Desired outcome
+      description: Describe the observable result without assuming a particular implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: proposed-solution
+    attributes:
+      label: Proposed solution
+      description: Explain a possible design, interaction, or API if you have one.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Describe current workarounds or other approaches and their tradeoffs.
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility and migration impact
+      description: Note any HTTP API, provider contract, data migration, or deployment impact.
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      options:
+        - label: I am willing to help implement this proposal.
+  - type: checkboxes
+    id: validations
+    attributes:
+      label: Validation
+      options:
+        - label: I searched existing open and closed issues for similar proposals.
+          required: true
