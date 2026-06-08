@@ -14,8 +14,13 @@
   "[jsonc]": {
     "editor.defaultFormatter": "biomejs.biome"
   },
+  "[markdown]": {
+    "editor.wordWrap": "wordWrapColumn",
+    "editor.wordWrapColumn": 120,
+    "editor.rulers": [120]
+  },
   "[proto]": {
-    "editor.defaultFormatter": "DrBlury.protobuf-vsc"
+    "editor.defaultFormatter": "bufbuild.vscode-buf"
   },
   "[rust]": {
     "editor.defaultFormatter": "rust-lang.rust-analyzer",
@@ -30,11 +35,16 @@
   "[typescript]": {
     "editor.defaultFormatter": "biomejs.biome"
   },
-  "files.associations": {
-    "*.css": "tailwindcss"
+  "editor.codeActionsOnSave": {
+    "source.action.useSortedPackageJson.biome": "explicit",
+    "source.fixAll.biome": "explicit"
   },
   "editor.formatOnSave": true,
   "editor.insertSpaces": true,
   "editor.tabSize": 2,
-  "rust-analyzer.check.command": "clippy"
+  "files.associations": {
+    "*.css": "tailwindcss"
+  },
+  "rust-analyzer.check.command": "clippy",
+  "svelte.enable-ts-plugin": true
 }

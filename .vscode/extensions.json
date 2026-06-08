@@ -2,11 +2,13 @@
   "recommendations": [
     "biomejs.biome",
     "bradlc.vscode-tailwindcss",
-    "DrBlury.protobuf-vsc",
-    "SmallMain.vscode-unify-chat-provider",
+    "bufbuild.vscode-buf",
+    "github.vscode-github-actions",
+    "hverlin.mise-vscode",
+    "redhat.vscode-yaml",
+    "rust-lang.rust-analyzer",
     "svelte.svelte-vscode",
     "tamasfe.even-better-toml",
-    "yy0931.vscode-sqlite3-editor",
     "yzhang.markdown-all-in-one"
   ]
 }

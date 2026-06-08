@@ -1,0 +1,247 @@
+[settings]
+lockfile = true
+minimum_release_age = "3d"
+
+[tools]
+"cargo:cargo-dylint" = "6.0.3"
+"cargo:dylint-link" = "6.0.3"
+"github:quarylabs/sqruff" = "0.40.0"
+act = "0.2.89"
+actionlint = "1.7.12"
+biome = "2.5.8"
+buf = "1.72.0"
+cargo-binstall = "1.21.1"
+node = "26.7.0"
+pnpm = "11.21.0"
+rg = "15.2.0"
+rust = { version = "1.97.1", components = "rust-analyzer,rust-src,rustfmt,clippy" }
+usage = "5.1.0"
+watchexec = "2.7.0"
+
+[tasks.build]
+description = "Build the self-contained release executable"
+run = [
+  { task = "clean:release" },
+  { task = "build:frontend" },
+  { task = "build:backend" },
+  { task = "stage:release" },
+]
+
+[tasks."build:backend"]
+run = "cargo build --locked --release --workspace --features trakkin/bundled"
+
+[tasks."build:frontend"]
+dir = "frontend"
+run = "pnpm build"
+
+[tasks."build:docs"]
+dir = "docs"
+run = "pnpm build"
+
+[tasks."stage:release"]
+run = "install -D -m 755 target/release/trakkin dist/trakkin"
+
+[tasks."build:docker"]
+run = '''
+#!/usr/bin/env bash
+mise run docker -- "$@"
+'''
+
+[tasks.clean]
+description = "Clean all build artifacts"
+run = [
+  { tasks = [
+    "clean:backend",
+    "clean:frontend",
+    "clean:docs",
+    "clean:release",
+  ] },
+]
+
+[tasks."clean:backend"]
+run = "cargo clean"
+
+[tasks."clean:frontend"]
+dir = "frontend"
+run = "pnpm clean"
+
+[tasks."clean:docs"]
+dir = "docs"
+run = "pnpm clean"
+
+[tasks."clean:release"]
+run = "rm -rf dist"
+
+[tasks.dev]
+description = "Run backend and frontend development servers"
+run = [{ tasks = ["dev:backend", "dev:frontend", "dev:openapi"] }]
+
+[tasks."dev:backend"]
+description = "Restart the backend when Rust inputs change"
+run = '''
+watchexec --restart --stop-signal SIGTERM \
+  --watch Cargo.toml \
+  --watch Cargo.lock \
+  --watch build.rs \
+  --watch migrations \
+  --watch proto \
+  --watch src \
+  --watch crates \
+  --exts rs,toml,lock,sql,proto \
+  -- mise run dev:backend:serve
+'''
+
+[tasks."dev:backend:serve"]
+run = [
+  "cargo build --locked -p trakkin-fixture-adapter",
+  "cargo run --locked -p trakkin --features embedded-database --bin trakkin",
+]
+
+[tasks."dev:frontend"]
+dir = "frontend"
+run = "pnpm dev"
+
+[tasks."dev:openapi"]
+description = "Regenerate OpenAPI and frontend types when the HTTP contract changes"
+run = '''
+watchexec --restart \
+  --watch Cargo.toml \
+  --watch Cargo.lock \
+  --watch src/http \
+  --exts rs,toml,lock \
+  -- pnpm --dir frontend generate:api
+'''
+
+[tasks."dev:docs"]
+dir = "docs"
+run = "pnpm dev"
+
+[tasks.fix]
+description = "Automatically fix lint and formatting issues"
+run = [
+  { task = "fix:backend" },
+  { task = "fix:frontend" },
+  { task = "fix:proto" },
+  { task = "fix:sql" },
+]
+
+[tasks."fix:backend"]
+run = "cargo clippy --fix --workspace --all-targets --all-features --allow-dirty"
+
+[tasks."fix:frontend"]
+dir = "frontend"
+run = "pnpm fix"
+
+[tasks."fix:proto"]
+run = "buf format -w"
+
+[tasks."fix:sql"]
+run = [
+  "cargo dylint --all --fix -- --workspace --all-targets --allow-dirty --ignore-rust-version",
+  "sqruff fix --dialect postgres migrations",
+]
+
+[tasks."fix:docs"]
+dir = "docs"
+run = "pnpm fix"
+
+[tasks.format]
+description = "Format the project"
+run = [
+  { task = "format:backend" },
+  { task = "format:frontend" },
+  { task = "format:proto" },
+  { task = "format:sql" },
+]
+
+[tasks."format:backend"]
+run = "cargo fmt --all"
+
+[tasks."format:frontend"]
+dir = "frontend"
+run = "pnpm format"
+
+[tasks."format:proto"]
+run = "buf format -w"
+
+[tasks."format:sql"]
+run = [
+  "cargo dylint --all --fix -- --workspace --all-targets --allow-dirty --ignore-rust-version",
+  "sqruff fix --dialect postgres migrations",
+]
+
+[tasks."format:docs"]
+dir = "docs"
+run = "pnpm format"
+
+[tasks.setup]
+description = "Set up product dependencies"
+run = [{ tasks = ["setup:backend", "setup:frontend"] }, { task = "prepare" }]
+
+[tasks."setup:backend"]
+run = "cargo fetch --locked"
+
+[tasks."setup:frontend"]
+dir = "frontend"
+run = "pnpm install"
+
+[tasks."setup:docs"]
+dir = "docs"
+run = "pnpm install"
+
+[tasks.lint]
+description = "Lint the project"
+run = [
+  { tasks = [
+    "lint:actions",
+    "lint:backend",
+    "lint:frontend",
+    "lint:proto",
+    "lint:sql",
+  ] },
+]
+[tasks."lint:actions"]
+run = "actionlint"
+
+[tasks."lint:backend"]
+run = "cargo clippy --workspace --all-targets --all-features -- -D warnings"
+
+[tasks."lint:frontend"]
+dir = "frontend"
+run = "pnpm lint"
+
+[tasks."lint:proto"]
+run = ["buf lint", "buf format --diff --exit-code"]
+
+[tasks."lint:sql"]
+run = [
+  "cargo dylint --all -- --workspace --all-targets --ignore-rust-version",
+  "sqruff lint --dialect postgres migrations",
+]
+
+[tasks."lint:docs"]
+dir = "docs"
+run = "pnpm lint"
+
+[tasks.prepare]
+description = "Prepare frontend browser dependencies"
+run = [{ task = "prepare:frontend" }]
+
+[tasks."prepare:frontend"]
+dir = "frontend"
+run = ["pnpm exec playwright install-deps chromium", "pnpm setup"]
+
+[tasks."prepare:docs"]
+dir = "docs"
+run = "pnpm setup"
+
+[tasks.test]
+description = "Run all tests"
+run = [{ task = "test:backend" }, { task = "test:frontend" }]
+
+[tasks."test:backend"]
+run = "cargo test --workspace --all-features"
+
+[tasks."test:frontend"]
+dir = "frontend"
+run = "pnpm test"

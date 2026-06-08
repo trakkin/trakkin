@@ -3,45 +3,50 @@
   "name": "trakkin",
   "image": "mcr.microsoft.com/devcontainers/base:ubuntu26.04",
   "features": {
-    "ghcr.io/devcontainers-extra/features/apt-packages:1": {
-      "packages": "ripgrep,sqlite3"
+    "ghcr.io/devcontainers/features/docker-in-docker:4": {
+      "moby": false
     },
-    "ghcr.io/devcontainers-extra/features/protoc:1": {
-      "version": "latest"
-    },
-    "ghcr.io/devcontainers/features/node:2": {
-      "version": "26",
-      "pnpmVersion": "latest"
-    },
-    "ghcr.io/devcontainers/features/rust:1": {
-      "version": "stable",
-      "profile": "minimal",
-      "components": "rust-analyzer,rust-src,rustfmt,clippy"
-    }
+    "ghcr.io/devcontainers-extra/features/mise:1": {}
   },
   "customizations": {
     "vscode": {
       "extensions": [
         "biomejs.biome",
         "bradlc.vscode-tailwindcss",
-        "DrBlury.protobuf-vsc",
-        "SmallMain.vscode-unify-chat-provider",
+        "bufbuild.vscode-buf",
+        "github.vscode-github-actions",
+        "hverlin.mise-vscode",
+        "redhat.vscode-yaml",
+        "rust-lang.rust-analyzer",
         "svelte.svelte-vscode",
         "tamasfe.even-better-toml",
-        "yy0931.vscode-sqlite3-editor",
         "yzhang.markdown-all-in-one"
       ]
     }
   },
-  "forwardPorts": [8725, 5173],
+  "forwardPorts": [3000, 5173, 8725],
   "portsAttributes": {
-    "8725": {
-      "label": "Backend"
+    "3000": {
+      "label": "Docs"
     },
     "5173": {
       "label": "Frontend"
+    },
+    "8725": {
+      "label": "Backend"
     }
   },
+  "containerEnv": {
+    "DO_NOT_TRACK": "1",
+    "NEXT_TELEMETRY_DISABLED": "1",
+    "MISE_TRUSTED_CONFIG_PATHS": "${containerWorkspaceFolder}"
+  },
+  "remoteEnv": {
+    "PATH": "${containerEnv:PATH}:${containerWorkspaceFolder}/node_modules/.bin"
+  },
+  "mounts": [],
   "init": true,
-  "remoteUser": "vscode"
+  "remoteUser": "vscode",
+  "onCreateCommand": "mise setup",
+  "postCreateCommand": "mise prepare"
 }
