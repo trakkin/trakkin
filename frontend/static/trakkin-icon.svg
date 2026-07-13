@@ -1,0 +1,30 @@
+<svg
+  fill="none"
+  height="282"
+  viewBox="0 0 214 282"
+  width="214"
+  xmlns="http://www.w3.org/2000/svg"
+>
+  <title>Trakkin</title>
+  <path
+    d="M18.36 18.36V263.16M129.88 29.24L18.36 140.76L129.88 252.28"
+    stroke="#F6F5F0"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    stroke-width="36.72"
+  />
+  <path
+    d="M83.64 18.36V263.16M195.16 29.24L83.64 140.76L195.16 252.28"
+    stroke="#B9F45B"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    stroke-width="36.72"
+  />
+  <path
+    d="M51 173.4L125.8 248.2"
+    stroke="#F6F5F0"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    stroke-width="36.72"
+  />
+</svg>

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.5.8/schema.json",
+  "extends": "//",
+  "files": {
+    "includes": ["**", "!src/lib/api/generated/schema.ts", "!test-results", "!playwright-report", "!*/*-snapshots"]
+  },
+  "css": {
+    "parser": {
+      "tailwindDirectives": true
+    }
+  },
+  "html": {
+    "experimentalFullSupportEnabled": true,
+    "formatter": {
+      "attributePosition": "multiline",
+      "enabled": true
+    }
+  },
+  "linter": {
+    "domains": {
+      "svelte": "all",
+      "tailwind": "all"
+    }
+  }
+}
