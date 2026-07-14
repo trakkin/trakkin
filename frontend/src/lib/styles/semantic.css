@@ -1,0 +1,28 @@
+:root {
+  --surface-canvas: var(--color-ink-950);
+  --surface-sidebar: var(--color-ink-925);
+  --surface-panel: var(--color-ink-900);
+  --surface-raised: var(--color-ink-850);
+  --surface-selected: var(--color-ink-800);
+  --text-primary: var(--color-paper-50);
+  --text-secondary: var(--color-paper-200);
+  --text-muted: #8a958f;
+  --text-disabled: var(--color-slate-500);
+  --border-subtle: color-mix(in oklab, var(--color-paper-50) 9%, transparent);
+  --border-strong: color-mix(in oklab, var(--color-paper-50) 16%, transparent);
+  --accent: var(--color-signal-400);
+  --accent-contrast: #080d0a;
+  --danger: var(--color-coral-400);
+  --warning: var(--color-amber-400);
+  --info: var(--color-cyan-400);
+  --success: var(--color-mint-400);
+  --focus-ring: var(--accent);
+  --control-height-sm: 2rem;
+  --control-height-md: 2.25rem;
+  --control-height-lg: 2.5rem;
+  --motion-fast: 100ms;
+  --motion-standard: 140ms;
+  --motion-emphasis: 180ms;
+  --motion-entrance: 240ms;
+  color-scheme: dark;
+}
