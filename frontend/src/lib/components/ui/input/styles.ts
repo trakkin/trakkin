@@ -1,0 +1,16 @@
+export type ControlSize = "sm" | "md" | "lg";
+
+export const controlBase =
+  "w-full rounded-md border border-border-subtle bg-white/3 text-label font-[450] text-text-secondary caret-accent outline-none transition-[background-color,border-color,box-shadow] duration-(--motion-standard) ease-standard placeholder:text-text-disabled hover:border-border-strong hover:bg-white/4 focus-visible:border-accent/60 focus-visible:bg-white/4 focus-visible:ring-2 focus-visible:ring-accent/10 disabled:cursor-not-allowed disabled:bg-white/2 disabled:text-text-disabled disabled:opacity-55 aria-invalid:border-danger/60 aria-invalid:focus-visible:border-danger/70 aria-invalid:focus-visible:ring-danger/10";
+
+export const controlSizes: Record<ControlSize, string> = {
+  lg: "h-9 px-3",
+  md: "h-8 px-2.5",
+  sm: "h-7 px-2",
+};
+
+export const textareaSizes: Record<ControlSize, string> = {
+  lg: "min-h-28 px-3 py-2.5",
+  md: "min-h-24 px-2.5 py-2",
+  sm: "min-h-20 px-2 py-1.5",
+};
