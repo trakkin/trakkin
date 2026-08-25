@@ -1,0 +1,105 @@
+{
+  "schema": "fixtures.sync/v1",
+  "suite": "policy",
+  "vectors": [
+    {
+      "id": "POLICY-IMMUTABLE-LOCAL-001",
+      "input": {
+        "schema": "trakkin.sync-policy/v1",
+        "policyIdOwner": "server",
+        "baseContentHash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "body": {
+          "contributors": ["source-local-a", "source-local-b"],
+          "receivers": ["source-local-c"],
+          "rules": [{"field":"trakkin.state:progress","reducer":"coverage_contiguous_prefix"}]
+        }
+      },
+      "expected": {
+        "canonicalization": "JCS",
+        "hash": "SHA-256",
+        "successorImmutable": true,
+        "mappingDocumentChanged": false
+      },
+      "covers": ["policy.immutable", "outcome.policy-independent"]
+    },
+    {
+      "id": "POLICY-PARTICIPANT-ROLES-001",
+      "input": {
+        "contributors": ["source-local-a", "source-local-b"],
+        "receivers": ["source-local-b", "source-local-c"],
+        "explicitDualRole": ["source-local-b"]
+      },
+      "expected": {
+        "sourceLocalBContributes": true,
+        "sourceLocalBReceives": true,
+        "implicitDualRole": false
+      },
+      "covers": ["policy.roles"]
+    },
+    {
+      "id": "POLICY-RESOLUTION-MODES-001",
+      "input": {
+        "valid": ["direct", "transitive"],
+        "mappingScope": "workspace-active"
+      },
+      "expected": {
+        "directAccepted": true,
+        "transitiveAccepted": true,
+        "mappingRevisionEmbeddedInPolicy": false
+      },
+      "covers": ["resolution.direct", "resolution.transitive"]
+    },
+    {
+      "id": "POLICY-FIELD-RULES-001",
+      "input": {
+        "fieldRule": {
+          "semanticField":"trakkin.state:progress",
+          "presence":{"deleted":"ignore","absent":"clear","unknown":"block","stale":"block"},
+          "conflict":"require_reducer",
+          "reducer":"coverage_contiguous_prefix",
+          "translation":{"quantizer":"nearest","allowLossy":false},
+          "writeConstraints":{"requireStrongPrecondition":true,"allowCreateMembership":false,"allowClear":true}
+        }
+      },
+      "expected": {
+        "presenceExplicit":true,
+        "conflictExplicit":true,
+        "translationExplicit":true,
+        "writeConstraintsExplicit":true
+      },
+      "covers": ["policy.presence-rules","policy.conflict-rule","policy.translation-constraints","policy.write-constraints"]
+    },
+    {
+      "id": "POLICY-PROVIDER-ITEM-ID-INVALID-001",
+      "input": {
+        "body": {
+          "contributors": ["source-local-a"],
+          "receivers": ["source-local-b"],
+          "providerItemId": "provider-native-item"
+        }
+      },
+      "expected": {
+        "valid": false,
+        "field": "providerItemId",
+        "reason": "provider item identity is runtime evidence"
+      },
+      "covers": ["policy.no-provider-item-identity"]
+    },
+    {
+      "id": "POLICY-CATALOG-ITEM-ID-INVALID-001",
+      "input": {
+        "body": {
+          "contributors": ["source-local-a"],
+          "receivers": ["source-local-b"],
+          "catalogItemId": "catalog-item-local-id"
+        }
+      },
+      "expected": {
+        "valid": false,
+        "field": "catalogItemId",
+        "reason": "catalog item identity is runtime evidence"
+      },
+      "covers": ["policy.no-catalog-item-identity"]
+    }
+  ]
+}

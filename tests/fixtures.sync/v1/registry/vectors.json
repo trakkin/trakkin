@@ -1,0 +1,158 @@
+{
+  "schema": "fixtures.sync/v1",
+  "suite": "registry",
+  "vectors": [
+    {
+      "id": "STATE-REGISTRY-CORE-001",
+      "input": {
+        "registry": "trakkin.state/v1",
+        "fields": [
+          {"id":"trakkin.state:completed","shape":"boolean","units":["flag"],"reducers":["equal","any","all"],"quantizers":["exact"]},
+          {"id":"trakkin.state:watched","shape":"boolean","units":["flag"],"reducers":["equal","any","all"],"quantizers":["exact"]},
+          {"id":"trakkin.state:progress","shape":"rational","units":["episode","chapter","page","time"],"reducers":["equal","minimum","maximum","coverage_union","coverage_intersection","coverage_contiguous_prefix"],"quantizers":["exact","nearest","floor","ceiling"]},
+          {"id":"trakkin.state:rating","shape":"rational","units":["ratio"],"reducers":["equal","minimum","maximum","mean"],"quantizers":["exact","nearest","floor","ceiling"]},
+          {"id":"trakkin.state:rewatch-count","shape":"integer","units":["count"],"reducers":["equal","minimum","maximum","sum"],"quantizers":["exact"]},
+          {"id":"trakkin.state:status","shape":"term","units":[],"reducers":["equal"],"quantizers":["exact"]}
+        ]
+      },
+      "expected": {
+        "syncable": true,
+        "numericRepresentation": "exact-rational",
+        "binaryFloatingPoint": false,
+        "databaseColumnsPerField": false
+      },
+      "covers": [
+        "state.field.completed",
+        "state.field.watched",
+        "state.field.progress",
+        "state.field.rating",
+        "state.field.rewatch-count",
+        "state.field.status",
+        "state.numeric.exact"
+      ]
+    },
+    {
+      "id": "STATE-REGISTRY-GATING-001",
+      "input": {
+        "cases": [
+          {"id":"progress-prefix","field":"trakkin.state:progress","reducer":"coverage_contiguous_prefix","quantizer":"nearest"},
+          {"id":"rating-mean","field":"trakkin.state:rating","reducer":"mean","quantizer":"exact"},
+          {"id":"status-sum-invalid","field":"trakkin.state:status","reducer":"sum","quantizer":"exact"},
+          {"id":"watched-nearest-invalid","field":"trakkin.state:watched","reducer":"any","quantizer":"nearest"}
+        ]
+      },
+      "expected": {
+        "cases": [
+          {"id":"progress-prefix","valid":true},
+          {"id":"rating-mean","valid":true},
+          {"id":"status-sum-invalid","valid":false,"finding":"reducer_not_allowed_for_field"},
+          {"id":"watched-nearest-invalid","valid":false,"finding":"quantizer_not_allowed_for_field"}
+        ]
+      },
+      "covers": ["state.registry-gated-reducer","state.registry-gated-quantizer"]
+    },
+    {
+      "id": "STATE-PRESENCE-BRANCHES-001",
+      "input": {
+        "branches": [
+          {"presence":"present","evidence":"value"},
+          {"presence":"deleted","evidence":"tombstone"},
+          {"presence":"absent","evidence":"complete-coverage"},
+          {"presence":"unknown","evidence":"missing-without-coverage"},
+          {"presence":"stale","evidence":"expired-or-changed-pin"}
+        ]
+      },
+      "expected": {
+        "deletedMeansZero": false,
+        "deletedMeansFalse": false,
+        "unknownBlocksAction": true,
+        "staleBlocksAction": true
+      },
+      "covers": [
+        "presence.present",
+        "presence.deleted",
+        "presence.absent",
+        "presence.unknown",
+        "presence.stale",
+        "presence.deleted-not-zero",
+        "presence.unknown-blocks",
+        "presence.stale-blocks"
+      ]
+    },
+    {
+      "id": "STATE-REDUCERS-001",
+      "input": {
+        "reducers": [
+          {"id":"equal","shapes":["boolean","integer","rational","term"]},
+          {"id":"minimum","shapes":["integer","rational"]},
+          {"id":"maximum","shapes":["integer","rational"]},
+          {"id":"sum","shapes":["integer","rational"]},
+          {"id":"mean","shapes":["integer","rational"]},
+          {"id":"any","shapes":["boolean"]},
+          {"id":"all","shapes":["boolean"]},
+          {"id":"coverage_union","shapes":["coverage"]},
+          {"id":"coverage_intersection","shapes":["coverage"]},
+          {"id":"coverage_contiguous_prefix","shapes":["coverage"]}
+        ]
+      },
+      "expected": {
+        "registryGated": true,
+        "canonicalEvidenceOrder": true,
+        "scriptsAllowed": false,
+        "implicitLatestWins": false
+      },
+      "covers": [
+        "reducer.equal",
+        "reducer.minimum",
+        "reducer.maximum",
+        "reducer.sum",
+        "reducer.mean",
+        "reducer.any",
+        "reducer.all",
+        "reducer.coverage-union",
+        "reducer.coverage-intersection",
+        "reducer.coverage-contiguous-prefix"
+      ]
+    },
+    {
+      "id": "STATE-TRANSLATION-001",
+      "input": {
+        "candidate": "7/12",
+        "receivers": [
+          {"id":"episode-count","range":[0,12],"step":1,"quantizer":"exact"},
+          {"id":"percent-nearest","range":[0,100],"step":1,"quantizer":"nearest"},
+          {"id":"percent-reject-loss","range":[0,100],"step":1,"quantizer":"nearest","allowLossy":false},
+          {"id":"narrow-range","range":[0,5],"step":1,"quantizer":"exact"}
+        ]
+      },
+      "expected": {
+        "actions": [
+          {"id":"episode-count","value":7,"finding":null},
+          {"id":"percent-nearest","value":58,"finding":"lossy_translation","allowed":true},
+          {"id":"percent-reject-loss","value":null,"finding":"lossy_translation","allowed":false},
+          {"id":"narrow-range","value":null,"finding":"unsupported_range","allowed":false}
+        ]
+      },
+      "covers": [
+        "translation.exact",
+        "translation.rounded",
+        "translation.lossy-allowed",
+        "translation.lossy-rejected",
+        "translation.range-unsupported"
+      ]
+    },
+    {
+      "id": "STATE-EXTENSION-UNSUPPORTED-001",
+      "input": {
+        "field": "vendor.example:mood",
+        "installedRegistryEntries": []
+      },
+      "expected": {
+        "inspectionAllowed": true,
+        "syncable": false,
+        "finding": "unsupported_field"
+      },
+      "covers": ["state.unsupported-extension"]
+    }
+  ]
+}
