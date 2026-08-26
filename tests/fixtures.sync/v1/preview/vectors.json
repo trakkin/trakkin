@@ -1,0 +1,109 @@
+{
+  "schema": "fixtures.sync/v1",
+  "suite": "preview",
+  "vectors": [
+    {
+      "id": "SYNC-STALE-PREVIEW-001",
+      "input": {
+        "fingerprint": {
+          "policyRevision":"policy-r1",
+          "stateRegistryDigest":"state-registry-r1",
+          "resolverVersion":"resolver-r1",
+          "activeMappingHashes":["sha256:mapping-r1"],
+          "mappingActivationGeneration":1,
+          "mappingProofDigest":"sha256:proof-r1",
+          "attachmentDigest":"attachments-r1",
+          "sourceCapabilityRevision":"source-cap-r1",
+          "connectionCapabilityRevision":"connection-cap-r1",
+          "statePublication":"state-r1",
+          "contributorEvidenceRevisions":["state-evidence-r1"],
+          "catalogPublication":"catalog-r1",
+          "coordinatePublication":"coordinate-r1",
+          "lookupProcess":"process-r1",
+          "lookupRevision":"lookup-r1",
+          "lookupObservedAt":"2030-01-02T03:04:05Z",
+          "lookupExpiry":"2030-01-02T03:05:05Z",
+          "targetedMembership":"absent",
+          "targetedStateRevision":"target-state-r1",
+          "targetedPrecondition":"precondition-r1",
+          "targetedExpiry":"2030-01-02T03:05:05Z",
+          "previewTime":"2030-01-02T03:04:05Z",
+          "previewExpiry":"2030-01-02T03:09:05Z"
+        },
+        "mutations": [
+          "policyRevision",
+          "stateRegistryDigest",
+          "resolverVersion",
+          "activeMappingHashes",
+          "mappingActivationGeneration",
+          "mappingProofDigest",
+          "attachmentDigest",
+          "sourceCapabilityRevision",
+          "connectionCapabilityRevision",
+          "statePublication",
+          "contributorEvidenceRevisions",
+          "catalogPublication",
+          "coordinatePublication",
+          "lookupProcess",
+          "lookupRevision",
+          "lookupObservedAt",
+          "lookupExpiry",
+          "targetedMembership",
+          "targetedStateRevision",
+          "targetedPrecondition",
+          "targetedExpiry",
+          "previewTime",
+          "previewExpiry"
+        ]
+      },
+      "expected": {"previewStatus":"stale","tasksAdmitted":0,"writes":0,"silentRefresh":false,"overrideAllowed":false},
+      "covers": ["outcome.stale-safe","admission.stale-zero-writes","preview.expiry"]
+    },
+    {
+      "id": "SYNC-PREVIEW-DIRECT-ADMISSION-001",
+      "input": {
+        "previewHash":"sha256:preview-r1",
+        "actions":[
+          {"ordinal":0,"hash":"sha256:action-a","orderKey":["source-a","subject-a","trakkin.state:progress","episode:1..6"]},
+          {"ordinal":1,"hash":"sha256:action-b","orderKey":["source-b","subject-b","trakkin.state:progress","episode:7..12"]}
+        ]
+      },
+      "expected": {"admittedActions":["sha256:action-a","sha256:action-b"],"writesBeforeAdmission":0,"canonicalActionOrder":true,"stableActionHashes":true},
+      "covers": ["preview.policy-selected-actions","preview.action-order","preview.action-hash"]
+    },
+    {
+      "id": "SYNC-PREVIEW-EXPLANATION-001",
+      "input": {"action":"sha256:action-a"},
+      "expected": {
+        "fields":["contributors","mappingProof","aggregation","translation","before","candidate","intended","finding","membershipEffect","writeConstraint"],
+        "providerWrites":0
+      },
+      "covers": ["outcome.preview-explainable"]
+    },
+    {
+      "id": "SYNC-PREVIEW-ACTION-BRANCHES-001",
+      "input": {
+        "cases": ["no_op","clear","conflict","lossy_translation","unsupported","unresolved","create_membership","update_membership"]
+      },
+      "expected": {
+        "cases": [
+          {"name":"no_op","writable":false,"finding":null},
+          {"name":"clear","writable":true,"intent":"clear"},
+          {"name":"conflict","writable":false,"finding":"conflicting_contributors"},
+          {"name":"lossy_translation","writable":false,"finding":"lossy_translation"},
+          {"name":"unsupported","writable":false,"finding":"unsupported"},
+          {"name":"unresolved","writable":false,"finding":"unresolved"},
+          {"name":"create_membership","writable":true,"membershipEffect":"create"},
+          {"name":"update_membership","writable":true,"membershipEffect":"update"}
+        ]
+      },
+      "covers": ["preview.no-op","preview.clear","preview.conflict","preview.lossy","preview.unsupported","preview.unresolved","preview.membership-create","preview.membership-update"]
+    },
+    {
+      "id": "SYNC-PREVIEW-NONAUTHORITATIVE-001",
+      "input": {"storedResolutionEvidence":true,"laterResolutionRequested":true},
+      "expected": {"storedEvidenceReusedAsResolution":false,"pinsRecheckedForExecution":true,"resolvedEdgesPersisted":0},
+      "covers": ["resolution.no-canonical-identity"]
+    }
+  ]
+}

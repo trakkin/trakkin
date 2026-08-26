@@ -1,0 +1,115 @@
+{
+  "schema": "fixtures.sync/v1",
+  "suite": "aggregation",
+  "vectors": [
+    {
+      "id": "SYNC-NM-SPLIT-MERGE-001",
+      "input": {
+        "policyRevision": "sha256:policy-nm",
+        "field": "trakkin.state:progress",
+        "reducer": "coverage_contiguous_prefix",
+        "contributors": [
+          {"observationId":"observation-a","evidenceId":"state-evidence-a-r1","source":"source-local-contributor-a","subject":"provider-subject-a","root":"example.media:original[episode:1..12]","presence":"present","coverage":["episode:1..4"],"publication":"state-a-r1"},
+          {"observationId":"observation-b","evidenceId":"state-evidence-b-r1","source":"source-local-contributor-b","subject":"provider-subject-b","root":"example.media:aggregate[episode:1..12]","presence":"present","coverage":["episode:1..7"],"publication":"state-b-r1"}
+        ],
+        "mapping": [
+          {"proofId":"mapping-proof-a","endpoints":["example.media:original[episode:1..6]","example.media:part-a[episode:1..6]","example.media:aggregate[episode:1..6]"]},
+          {"proofId":"mapping-proof-b","endpoints":["example.media:original[episode:7..12]","example.media:part-b[episode:1..6]","example.media:aggregate[episode:7..12]"]}
+        ],
+        "receivers": [
+          {"source":"source-local-receiver","unit":"episode","range":[0,12],"step":1,"quantizer":"exact"},
+          {"source":"source-local-coarse","unit":"episode","range":[0,12],"step":2,"quantizer":"nearest","allowLossy":true}
+        ]
+      },
+      "expected": {
+        "candidates": [
+          {"partitionId":"partition-a","partition":"episode:1..6","value":"1/1","contributorEvidenceIds":["state-evidence-a-r1","state-evidence-b-r1"],"mappingProofIds":["mapping-proof-a"],"policyRevision":"sha256:policy-nm"},
+          {"partitionId":"partition-b","partition":"episode:7..12","value":"1/6","contributorEvidenceIds":["state-evidence-b-r1"],"mappingProofIds":["mapping-proof-b"],"policyRevision":"sha256:policy-nm"}
+        ],
+        "partitionCount": 2,
+        "receiverActions": [
+          {"actionHash":"sha256:action-a-receiver","partitionId":"partition-a","source":"source-local-receiver","value":6,"lossy":false,"policyRevision":"sha256:policy-nm","mappingProofIds":["mapping-proof-a"]},
+          {"actionHash":"sha256:action-a-coarse","partitionId":"partition-a","source":"source-local-coarse","value":6,"lossy":false,"policyRevision":"sha256:policy-nm","mappingProofIds":["mapping-proof-a"]},
+          {"actionHash":"sha256:action-b-receiver","partitionId":"partition-b","source":"source-local-receiver","value":1,"lossy":false,"policyRevision":"sha256:policy-nm","mappingProofIds":["mapping-proof-b"]},
+          {"actionHash":"sha256:action-b-coarse","partitionId":"partition-b","source":"source-local-coarse","value":2,"lossy":true,"policyRevision":"sha256:policy-nm","mappingProofIds":["mapping-proof-b"]}
+        ],
+        "pairwiseCopies": false,
+        "canonicalMediaRows": 0,
+        "matchingInputs": ["portable_reference","coordinate_evidence"],
+        "fallbacks": []
+      },
+      "covers": [
+        "outcome.mapping-driven",
+        "outcome.n-to-m",
+        "resolution.no-canonical-identity",
+        "reducer.coverage-contiguous-prefix",
+        "translation.exact",
+        "translation.rounded",
+        "translation.lossy-allowed",
+        "aggregation.partition-candidate",
+        "aggregation.receiver-fanout",
+        "resolution.no-inference-fallback"
+      ]
+    },
+    {
+      "id": "SYNC-EVIDENCE-ORDER-001",
+      "input": {
+        "observations": [
+          {"evidenceId":"evidence-b","source":"source-local-b","subject":"subject-b","field":"trakkin.state:rating","value":"4/5","proof":"proof-b"},
+          {"evidenceId":"evidence-a","source":"source-local-a","subject":"subject-a","field":"trakkin.state:rating","value":"3/5","proof":"proof-a"},
+          {"evidenceId":"evidence-a","source":"source-local-a","subject":"subject-a","field":"trakkin.state:rating","value":"3/5","proof":"proof-a"}
+        ]
+      },
+      "expected": {
+        "consumedEvidenceIds":["evidence-a","evidence-b"],
+        "duplicatesConsumed":0,
+        "ordering":["source","subject","field","proof"]
+      },
+      "covers": ["aggregation.evidence-deduplicated","aggregation.canonical-order"]
+    },
+    {
+      "id": "SYNC-CONFLICT-REQUIRE-EQUAL-001",
+      "input": {
+        "field": "trakkin.state:status",
+        "reducer": "equal",
+        "contributors": [
+          {"source":"source-local-a","presence":"present","value":"status.example:watching"},
+          {"source":"source-local-b","presence":"present","value":"status.example:completed"}
+        ]
+      },
+      "expected": {
+        "candidate": null,
+        "finding": "conflicting_contributors",
+        "receiverActions": 0
+      },
+      "covers": ["reducer.equal"]
+    },
+    {
+      "id": "SYNC-PRESENCE-POLICY-001",
+      "input": {
+        "cases": [
+          {"presence":"deleted","policy":"ignore"},
+          {"presence":"absent","policy":"require"},
+          {"presence":"absent","policy":"clear"},
+          {"presence":"unknown","policy":"ignore"},
+          {"presence":"stale","policy":"ignore"}
+        ]
+      },
+      "expected": {
+        "cases": [
+          {"presence":"deleted","result":"ignored"},
+          {"presence":"absent","result":"missing_required"},
+          {"presence":"absent","result":"clear_candidate","requiresReceiverClear":true},
+          {"presence":"unknown","result":"blocked"},
+          {"presence":"stale","result":"blocked"}
+        ]
+      },
+      "covers": [
+        "presence.deleted",
+        "presence.absent",
+        "presence.unknown-blocks",
+        "presence.stale-blocks"
+      ]
+    }
+  ]
+}
