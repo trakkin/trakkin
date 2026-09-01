@@ -382,7 +382,13 @@ ORDER BY built_in DESC, display_name, id
         let row = sqlx::query_as::<_, RepositoryRow>(
             "INSERT INTO provider_repositories (
     id, display_name, metadata_base_url, targets_base_url, trusted_root,
-    built_in, enabled, catalog_sequence, catalog, refreshed_at, created_at, updated_at
+    built_in,
+    enabled,
+    catalog_sequence,
+    catalog,
+    refreshed_at,
+    created_at,
+    updated_at
 ) VALUES ($1, $2, $3, $4, $5, FALSE, TRUE, $6, $7, $8, $8, $8)
 RETURNING
     id, display_name, metadata_base_url, targets_base_url, trusted_root,

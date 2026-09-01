@@ -3,8 +3,11 @@ import {
   ArrowLeft,
   ArrowRight,
   ChevronRight,
+  CircleCheck,
+  Copy,
   Database,
-  Layers3,
+  FolderOpen,
+  Layers,
   RefreshCw,
   RotateCcw,
   Search,
@@ -12,7 +15,7 @@ import {
 } from "@lucide/svelte";
 import { onDestroy } from "svelte";
 import { goto } from "$app/navigation";
-import { AlertDialog, Button, Chip, IconButton, MediaArtwork, Panel, Select, Spinner, Tabs, TextInput } from "$lib";
+import { AlertDialog, Button, IconButton, MediaArtwork, Panel, Select, Spinner, Tabs, TextInput } from "$lib";
 import {
   CATALOG_PAGE_LIMIT,
   type CatalogAsset,
@@ -49,11 +52,13 @@ let operationBusy = $state(false);
 let errorMessage = $state("");
 let focusedRelationId = $state("");
 let resetOpen = $state(false);
+let copiedReferenceId = $state("");
 let reloadSequence = $state(0);
 let requestSequence = 0;
 let operationSequence = 0;
 let operationWorkspaceId = "";
 let operationController: AbortController | null = null;
+let copyTimer: ReturnType<typeof setTimeout> | undefined;
 
 let selectedSource = $derived(data.sources.find((candidate) => candidate.source.id === sourceFilter) ?? null);
 let currentParent = $derived(browsePath.at(-1)?.key);
@@ -89,7 +94,10 @@ $effect(() => {
   focusedRelationId = "";
 });
 
-onDestroy(invalidateOperation);
+onDestroy(() => {
+  invalidateOperation();
+  if (copyTimer) clearTimeout(copyTimer);
+});
 
 $effect(() => {
   const normalized = query.trim().split(/\s+/).join(" ").toLowerCase();
@@ -306,11 +314,18 @@ function entryKind(entry: CatalogEntry): string {
 }
 
 function preferredArtwork(entry: CatalogEntry | null): CatalogAsset | undefined {
+  return artworkByPriority(entry, ["poster", "cover", "primary", "thumbnail", "thumb", "background", "backdrop"]);
+}
+
+function preferredBannerArtwork(entry: CatalogEntry | null): CatalogAsset | undefined {
+  return artworkByPriority(entry, ["banner", "background", "backdrop", "landscape", "hero", "primary", "poster"]);
+}
+
+function artworkByPriority(entry: CatalogEntry | null, priority: string[]): CatalogAsset | undefined {
   if (!entry?.item) return;
-  const priority = ["poster", "primary", "thumbnail", "thumb", "background", "backdrop"];
   return [...entry.item.binaryAssets].sort((left, right) => {
-    const leftIndex = priority.indexOf(left.kind.name);
-    const rightIndex = priority.indexOf(right.kind.name);
+    const leftIndex = priority.indexOf(left.kind.name.toLowerCase());
+    const rightIndex = priority.indexOf(right.kind.name.toLowerCase());
     return (leftIndex < 0 ? priority.length : leftIndex) - (rightIndex < 0 ? priority.length : rightIndex);
   })[0];
 }
@@ -322,56 +337,155 @@ function termKey(term: { namespace: string; name: string }): string {
 function rawEntry(entry: CatalogEntry): string {
   return JSON.stringify(entry, null, 2);
 }
+
+function attributeRows(attributes: Record<string, unknown>): { key: string; label: string; value: string }[] {
+  return Object.entries(attributes)
+    .map(([key, value]) => ({
+      key,
+      label: key.replaceAll(/[-_]/g, " "),
+      value: typeof value === "string" ? value : (JSON.stringify(value) ?? "Unknown"),
+    }))
+    .sort((left, right) => left.label.localeCompare(right.label));
+}
+
+async function copyPortableReference(referenceId: string, value: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(value);
+    copiedReferenceId = referenceId;
+    if (copyTimer) clearTimeout(copyTimer);
+    copyTimer = setTimeout(() => {
+      if (copiedReferenceId === referenceId) copiedReferenceId = "";
+      copyTimer = undefined;
+    }, 1_500);
+  } catch (error) {
+    errorMessage = error instanceof Error ? error.message : "Reference could not be copied";
+  }
+}
 </script>
 
 {#snippet catalogDetails(entry: CatalogEntry)}
+  {@const artwork = preferredBannerArtwork(entry)}
+  {@const itemAttributes = attributeRows(entry.item?.attributes ?? {})}
+  {@const relationAttributes = attributeRows(entry.relation.attributes)}
   <Panel
     aria-label={`Catalog details for ${entryLabel(entry)}`}
-    class="overflow-hidden lg:sticky lg:top-0"
+    class="min-h-full overflow-hidden rounded-none border-0 shadow-none"
     element="section"
   >
-    <div class="relative aspect-video bg-surface-raised">
+    <div class="relative overflow-hidden border-b border-border-subtle bg-surface-raised">
       <MediaArtwork
-        alt=""
-        class="absolute inset-0 size-full rounded-none border-0"
+        alt={`Banner for ${entryLabel(entry)}`}
+        class="w-full rounded-none border-0 shadow-none"
         shape="landscape"
-        src={preferredArtwork(entry)?.href}
-      /><IconButton
-        class="absolute top-2 right-2 z-10 border-border-strong bg-surface-overlay/90"
-        label="Close catalog details"
-        onclick={() => (focusedRelationId = "")}
-        size="sm"
-        ><X
-          aria-hidden="true"
-          size={14}
-        /></IconButton
-      >
-    </div>
-    <div class="grid gap-4 p-4">
-      <div>
-        <div class="flex flex-wrap gap-2">
-          <Chip tone="info">{entryKind(entry)}</Chip>
-          {#if entry.hasChildren}
-            <Chip tone="accent">Container</Chip>
-          {/if}
-        </div>
-        <h2 class="mt-2 text-title font-semibold text-text-primary">{entryLabel(entry)}</h2>
-        <p class="mt-1 break-all font-mono text-meta text-text-disabled">
-          {formatProviderKey(entry.item?.key ?? entry.relation.key)}
-        </p>
+        src={artwork?.href}
+      />
+      <div class="pointer-events-none absolute inset-x-0 bottom-0 z-10 p-4 pr-12">
+        <h2
+          class="text-title font-semibold text-white drop-shadow-[0_2px_8px_rgb(0_0_0/80%)]"
+          title={formatProviderKey(entry.item?.key ?? entry.relation.key)}
+        >
+          {entryLabel(entry)}
+        </h2>
       </div>
+      <div class="absolute top-2.5 right-2.5 z-10">
+        <IconButton
+          class="border-border-strong bg-black/55 backdrop-blur-sm"
+          label="Close catalog details"
+          onclick={() => (focusedRelationId = "")}
+          size="sm"
+          ><X
+            aria-hidden="true"
+            size={14}
+          /></IconButton
+        >
+      </div>
+    </div>
+    <div class="grid gap-5 p-4">
+      {#if entry.hasChildren}
+        <div class="flex flex-wrap gap-2">
+          <Button
+            onclick={() => drillInto(entry)}
+            size="sm"
+            variant="primary"
+          >
+            <FolderOpen
+              aria-hidden="true"
+              size={14}
+            />
+            Browse collection
+          </Button>
+        </div>
+      {/if}
+
+      <section>
+        <h3 class="text-meta font-semibold uppercase text-text-disabled">Published details</h3>
+        <dl class="mt-2 overflow-hidden rounded-md border border-border-subtle bg-black/10">
+          <div class="grid min-h-10 grid-cols-[minmax(6.5rem,2fr)_minmax(0,3fr)] items-center gap-4 px-3 py-2">
+            <dt class="text-label leading-5 text-text-muted">Media type</dt>
+            <dd class="text-label leading-5 capitalize text-text-secondary">{entryKind(entry)}</dd>
+          </div>
+        </dl>
+      </section>
+
       {#if entry.item?.portableReferences.length}
         <section>
           <h3 class="text-meta font-semibold uppercase text-text-disabled">Portable references</h3>
           <div class="mt-2 grid gap-1.5">
-            {#each entry.item.portableReferences as reference}
-              <p
-                class="break-all rounded-md border border-border-subtle bg-black/10 px-2.5 py-2 font-mono text-meta text-text-muted"
+            {#each entry.item.portableReferences as reference, index}
+              {@const referenceValue = formatPortableReference(reference)}
+              {@const referenceId = `${relationId(entry)}:${index}`}
+
+              <div
+                class="grid min-h-10 grid-cols-[minmax(6.5rem,2fr)_minmax(0,3fr)] items-center gap-4 rounded-md border border-border-subtle bg-black/10 px-3 py-2"
               >
-                {formatPortableReference(reference)}
-              </p>
+                <div class="truncate text-label leading-5 text-text-muted">Reference {index + 1}</div>
+
+                <div class="flex min-w-0 items-center gap-2">
+                  <div
+                    class="min-w-0 flex-1 truncate font-mono text-label leading-5 text-text-secondary"
+                    title={referenceValue}
+                  >
+                    {referenceValue}
+                  </div>
+
+                  <IconButton
+                    class="shrink-0 border-border-subtle bg-surface-raised/90"
+                    label={`Copy portable reference ${index + 1}`}
+                    onclick={() => void copyPortableReference(referenceId, referenceValue)}
+                    size="sm"
+                    title="Copy portable reference"
+                  >
+                    {#if copiedReferenceId === referenceId}
+                      <CircleCheck
+                        aria-hidden="true"
+                        size={13}
+                      />
+                    {:else}
+                      <Copy
+                        aria-hidden="true"
+                        size={13}
+                      />
+                    {/if}
+                  </IconButton>
+                </div>
+              </div>
             {/each}
           </div>
+        </section>
+      {/if}
+      {#if itemAttributes.length || relationAttributes.length}
+        <section>
+          <h3 class="text-meta font-semibold uppercase text-text-disabled">Attributes</h3>
+          <dl class="mt-2 grid gap-1.5">
+            {#each [...itemAttributes, ...relationAttributes] as attribute}
+              <div
+                class="grid min-h-10 grid-cols-[minmax(6.5rem,2fr)_minmax(0,3fr)] items-center gap-4 rounded-md border border-border-subtle bg-black/10 px-3 py-2"
+              >
+                <dt class="truncate text-label leading-5 capitalize text-text-muted">{attribute.label}</dt>
+                <dd class="wrap-break-word text-label leading-5 text-text-secondary">{attribute.value}</dd>
+              </div>
+            {/each}
+          </dl>
         </section>
       {/if}
       <details>
@@ -406,33 +520,33 @@ function rawEntry(entry: CatalogEntry): string {
           </Tabs.Root>
         </div>
         {#if selectedSource}
-          <Button
-            aria-label={`Scan ${selectedSource.source.displayName}`}
-            class="size-7 p-0 sm:w-auto sm:px-2.5"
-            disabled={operationBusy || selectedSource.source.availability !== "available"}
-            onclick={refreshCatalog}
-            size="sm"
-            title={`Scan ${selectedSource.source.displayName}`}
-            variant="ghost"
-            ><RefreshCw
-              aria-hidden="true"
-              class={operationBusy ? "animate-spin" : ""}
-              size={13}
-            /><span class="hidden sm:inline">Scan</span></Button
-          >
-          <Button
-            aria-label={`Reset ${selectedSource.source.displayName}`}
-            class="size-7 p-0 sm:w-auto sm:px-2.5"
-            disabled={operationBusy}
-            onclick={() => (resetOpen = true)}
-            size="sm"
-            title={`Reset and refetch ${selectedSource.source.displayName}`}
-            variant="danger"
-            ><RotateCcw
-              aria-hidden="true"
-              size={13}
-            /><span class="hidden sm:inline">Reset</span></Button
-          >
+          <div class="flex shrink-0 gap-1.5">
+            <Button
+              aria-label={`Scan ${selectedSource.source.displayName}`}
+              class="w-8 px-0! sm:w-auto sm:px-3!"
+              disabled={operationBusy || selectedSource.source.availability !== "available"}
+              onclick={refreshCatalog}
+              title={`Scan ${selectedSource.source.displayName}`}
+              variant="ghost"
+              ><RefreshCw
+                aria-hidden="true"
+                class={operationBusy ? "animate-spin" : ""}
+                size={14}
+              /><span class="hidden sm:inline">Scan</span></Button
+            >
+            <Button
+              aria-label={`Reset ${selectedSource.source.displayName}`}
+              class="w-8 px-0! sm:w-auto sm:px-3!"
+              disabled={operationBusy}
+              onclick={() => (resetOpen = true)}
+              title={`Reset and refetch ${selectedSource.source.displayName}`}
+              variant="danger"
+              ><RotateCcw
+                aria-hidden="true"
+                size={14}
+              /><span class="hidden sm:inline">Reset</span></Button
+            >
+          </div>
         {/if}
       </div>
     {/if}
@@ -517,7 +631,7 @@ function rawEntry(entry: CatalogEntry): string {
         class="grid min-h-44 w-full max-w-xl place-items-center p-6 text-center"
         tone="dashed"
         ><div>
-          <Layers3
+          <Layers
             aria-hidden="true"
             class="mx-auto text-text-disabled"
             size={25}
@@ -528,44 +642,76 @@ function rawEntry(entry: CatalogEntry): string {
       >
     </div>
   {:else}
-    <div class="min-h-0 flex-1 overflow-auto">
-      <div class="mx-auto grid w-full max-w-6xl gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_22rem] lg:p-6">
-        <section class="min-w-0">
-          {#if browsePath.length > 0}
+    <div class="min-h-0 flex-1 overflow-hidden">
+      <div
+        class="grid h-full min-h-0 w-full grid-rows-[minmax(0,1fr)_minmax(0,1fr)] lg:grid-cols-[minmax(0,1fr)_26rem] lg:grid-rows-1 xl:grid-cols-[minmax(0,1fr)_30rem]"
+      >
+        <section class="min-h-0 min-w-0 overflow-y-auto p-4 sm:p-5 lg:p-6">
+          <div
+            class="mb-4 flex h-9 min-w-0 items-center rounded-md border border-border-subtle bg-surface-raised px-1.5 shadow-[0_6px_18px_rgb(0_0_0/12%)]"
+          >
             <nav
               aria-label="Catalog hierarchy"
-              class="mb-3 flex min-w-0 items-center gap-1 overflow-x-auto text-meta text-text-muted"
+              class="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto"
             >
-              <IconButton
-                label="Back one catalog level"
-                onclick={browseBack}
-                size="sm"
-                ><ArrowLeft
+              {#if browsePath.length > 0}
+                <IconButton
+                  class="mr-0.5 shrink-0"
+                  label="Back one catalog level"
+                  onclick={browseBack}
+                  size="sm"
+                  ><ArrowLeft
+                    aria-hidden="true"
+                    size={13}
+                  /></IconButton
+                ><span
                   aria-hidden="true"
-                  size={13}
-                /></IconButton
-              ><button
-                class="shrink-0 rounded px-1.5 py-1 hover:text-text-primary"
+                  class="mr-0.5 h-4 w-px shrink-0 bg-border-subtle"
+                ></span>
+              {/if}
+              <button
+                aria-current={browsePath.length === 0 ? "page" : undefined}
+                class={[
+                  "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-label font-[510] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/15",
+                  browsePath.length === 0
+                    ? "bg-white/5 text-text-secondary"
+                    : "text-text-muted hover:bg-white/3 hover:text-text-secondary",
+                ]}
                 onclick={() => { browsePath = []; focusedRelationId = ""; }}
+                title="Library home"
                 type="button"
               >
-                Root
+                <Layers
+                  aria-hidden="true"
+                  size={13}
+                />
+                {browsePath.length === 0 ? "Library home" : "Root"}
               </button>
               {#each browsePath as part, index (relationId({ relation: { key: part.key } } as CatalogEntry))}
                 <ChevronRight
                   aria-hidden="true"
-                  class="shrink-0"
+                  class="shrink-0 text-text-disabled"
                   size={12}
                 /><button
-                  class="max-w-44 truncate rounded px-1.5 py-1 hover:text-text-primary"
+                  aria-current={index === browsePath.length - 1 ? "page" : undefined}
+                  class={[
+                    "h-7 max-w-44 shrink-0 truncate rounded-md px-2 text-label font-[510] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/15",
+                    index === browsePath.length - 1
+                      ? "bg-white/5 text-text-secondary"
+                      : "text-text-muted hover:bg-white/3 hover:text-text-secondary",
+                  ]}
                   onclick={() => setBrowseDepth(index)}
+                  title={part.label}
                   type="button"
                 >
                   {part.label}
                 </button>
               {/each}
             </nav>
-          {/if}
+            <p class="ml-2 shrink-0 border-l border-border-subtle px-2 text-meta tabular-nums text-text-muted">
+              {visibleEntries.length}{nextCursor ? "+" : ""} {visibleEntries.length === 1 ? "item" : "items"}
+            </p>
+          </div>
 
           {#if loading}
             <div
@@ -579,7 +725,7 @@ function rawEntry(entry: CatalogEntry): string {
               class="grid min-h-48 place-items-center p-6 text-center"
               tone="dashed"
               ><div>
-                <Layers3
+                <Layers
                   aria-hidden="true"
                   class="mx-auto text-text-disabled"
                   size={24}
@@ -591,56 +737,57 @@ function rawEntry(entry: CatalogEntry): string {
               </div></Panel
             >
           {:else}
-            <div class="overflow-hidden rounded-md border border-border-subtle bg-surface-panel">
-              <ul class="divide-y divide-border-subtle">
-                {#each visibleEntries as entry (relationId(entry))}
-                  {@const artwork = preferredArtwork(entry)}
-                  <li
-                    class="group flex min-h-20 items-center gap-3 px-3 py-2.5 transition-colors hover:bg-white/3 sm:px-4"
-                  >
+            <ul
+              class="grid grid-cols-[repeat(auto-fill,minmax(8.5rem,1fr))] gap-4 sm:grid-cols-[repeat(auto-fill,minmax(9.5rem,1fr))]"
+            >
+              {#each visibleEntries as entry (relationId(entry))}
+                {@const artwork = preferredArtwork(entry)}
+                {@const entryId = relationId(entry)}
+                <li class="group min-w-0">
+                  <div class="group/poster relative">
                     <button
                       aria-label={`Inspect ${entryLabel(entry)}`}
-                      class="flex min-w-0 flex-1 items-center gap-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-accent/25"
-                      onclick={() => (focusedRelationId = relationId(entry))}
+                      aria-pressed={focusedRelationId === entryId}
+                      class="block w-full rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-surface-canvas"
+                      onclick={() => (focusedRelationId = entryId)}
+                      title={formatProviderKey(entry.item?.key ?? entry.relation.key)}
                       type="button"
                     >
                       <MediaArtwork
                         alt=""
-                        class="w-11 shrink-0"
-                        shape="square"
+                        class={[
+                          "w-full transition duration-200 group-hover:-translate-y-0.5 group-hover:border-border-strong group-hover:shadow-[0_14px_32px_rgb(0_0_0/38%)] motion-reduce:transform-none",
+                          focusedRelationId === entryId && "border-accent/70 ring-1 ring-accent/35",
+                        ]}
+                        shape="poster"
                         src={artwork?.href}
-                      />
-                      <span class="min-w-0 flex-1"
-                        ><span class="block truncate text-label font-[540] text-text-primary">{entryLabel(entry)}</span
-                        ><span class="mt-1 flex flex-wrap items-center gap-2 text-meta text-text-muted"
-                          ><span class="capitalize">{entryKind(entry)}</span><span aria-hidden="true">/</span
-                          ><span class="font-mono"
-                            >{formatProviderKey(entry.item?.key ?? entry.relation.key)}</span
-                          ></span
-                        ></span
                       >
+                        <span class="absolute inset-x-0 bottom-0 truncate p-2.5 text-label font-[650] text-white">
+                          {entryLabel(entry)}
+                        </span>
+                      </MediaArtwork>
                     </button>
                     {#if entry.hasChildren}
-                      <IconButton
-                        label={`Browse ${entryLabel(entry)}`}
-                        onclick={() => drillInto(entry)}
-                        size="sm"
-                        title="Browse children"
-                        ><ChevronRight
-                          aria-hidden="true"
-                          size={15}
-                        /></IconButton
+                      <div
+                        class="absolute top-2 right-2 z-10 opacity-100 transition sm:opacity-0 sm:group-hover/poster:opacity-100 sm:focus-within:opacity-100"
                       >
+                        <IconButton
+                          class="border-border-strong bg-black/75 text-white shadow-[0_6px_18px_rgb(0_0_0/40%)] backdrop-blur-sm group-hover/poster:border-accent/45 group-hover/poster:bg-accent group-hover/poster:text-accent-contrast hover:bg-accent hover:text-accent-contrast"
+                          label={`Browse ${entryLabel(entry)}`}
+                          onclick={() => drillInto(entry)}
+                          size="md"
+                          title={`Browse ${entryLabel(entry)}`}
+                          ><FolderOpen
+                            aria-hidden="true"
+                            size={15}
+                          /></IconButton
+                        >
+                      </div>
                     {/if}
-                  </li>
-                  {#if focusedRelationId === relationId(entry)}
-                    <li class="border-t border-border-subtle p-3 lg:hidden">
-                      {@render catalogDetails(entry)}
-                    </li>
-                  {/if}
-                {/each}
-              </ul>
-            </div>
+                  </div>
+                </li>
+              {/each}
+            </ul>
             {#if nextCursor}
               <div class="mt-4 flex justify-center">
                 <Button
@@ -658,15 +805,20 @@ function rawEntry(entry: CatalogEntry): string {
           {/if}
         </section>
 
-        <aside class="hidden min-w-0 lg:block">
+        <aside class="min-h-0 min-w-0 overflow-y-auto border-t border-border-subtle lg:border-t-0 lg:border-l">
           {#if focusedEntry}
             {@render catalogDetails(focusedEntry)}
           {:else}
-            <Panel
-              class="hidden min-h-40 place-items-center p-5 text-center text-label text-text-muted lg:grid"
-              tone="dashed"
-              >Select an entry to inspect its published data.</Panel
-            >
+            <div class="grid h-full min-h-40 place-items-center p-5 text-center text-label text-text-muted">
+              <div>
+                <Layers
+                  aria-hidden="true"
+                  class="mx-auto text-text-disabled"
+                  size={24}
+                />
+                <p class="mt-3">Select a poster to view its published details.</p>
+              </div>
+            </div>
           {/if}
         </aside>
       </div>

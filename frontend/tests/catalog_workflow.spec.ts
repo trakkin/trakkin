@@ -17,7 +17,7 @@ import {
 } from "./support/api.ts";
 import { catalogEntry, catalogPage, childCatalog, rootCatalog } from "./support/catalog.ts";
 
-test("preserves healthy sources and keeps mobile inspection adjacent", async ({ page }) => {
+test("preserves healthy sources and keeps mobile inspection in a persistent lower pane", async ({ page }) => {
   const unavailableConnectionId = "22222222-2222-2222-2222-444444444444";
   const unavailableConnection = {
     ...connection,
@@ -61,7 +61,9 @@ test("preserves healthy sources and keeps mobile inspection adjacent", async ({ 
   if ((page.viewportSize()?.width ?? 0) < 1024) {
     const detailsBox = await details.boundingBox();
     const secondEntryBox = await page.getByRole("button", { name: "Inspect Second entry" }).boundingBox();
-    expect(detailsBox?.y).toBeLessThan(secondEntryBox?.y ?? 0);
+    expect(detailsBox?.y).toBeGreaterThan(secondEntryBox?.y ?? Number.POSITIVE_INFINITY);
+    expect(detailsBox?.y).toBeLessThan(page.viewportSize()?.height ?? 0);
+    expect(await page.evaluate(() => document.documentElement.scrollHeight <= window.innerHeight)).toBe(true);
   }
   await expectNoHorizontalOverflow(page);
 });
