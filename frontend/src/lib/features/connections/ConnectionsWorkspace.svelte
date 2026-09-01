@@ -39,6 +39,12 @@ import {
   startConnectionAuthentication,
 } from "$lib/api/connections";
 import { pollCatalog, waitForTask } from "$lib/api/operations";
+import {
+  listProviderInstallations,
+  listProviderReleases,
+  type ProviderInstallation,
+  type ProviderRelease,
+} from "$lib/api/providers";
 import { attachSource, detachSource, listWorkspaces, type Workspace, type WorkspaceSource } from "$lib/api/workspaces";
 
 const fixtureScenarios = [
@@ -64,6 +70,8 @@ const instanceItems = [
 
 let connections = $state<Connection[]>([]);
 let workspaces = $state<Workspace[]>([]);
+let providerItems = $state<{ value: string; label: string }[]>([]);
+let selectedProviderId = $state("");
 let selectedWorkspaceId = $state("");
 let showComposer = $state(false);
 let connectionName = $state("");
@@ -120,10 +128,19 @@ async function loadDirectory(signal?: AbortSignal) {
   loading = true;
   errorMessage = "";
   try {
-    const [nextConnections, nextWorkspaces] = await Promise.all([listConnections(signal), listWorkspaces(signal)]);
+    const [nextConnections, nextWorkspaces, providerReleases, providerInstallations] = await Promise.all([
+      listConnections(signal),
+      listWorkspaces(signal),
+      listProviderReleases(signal),
+      listProviderInstallations(signal),
+    ]);
     if (sequence !== directorySequence) return;
     connections = nextConnections;
     workspaces = nextWorkspaces.filter((workspace) => workspace.status === "active");
+    providerItems = activeProviderItems(providerReleases, providerInstallations);
+    if (!providerItems.some((provider) => provider.value === selectedProviderId)) {
+      selectedProviderId = providerItems[0]?.value ?? "";
+    }
     selectedWorkspaceId = page.url.searchParams.get("workspace") ?? workspaces[0]?.id ?? "";
     changeComposerOpen(connections.length === 0);
     directoryLoaded = true;
@@ -136,27 +153,54 @@ async function loadDirectory(signal?: AbortSignal) {
 }
 
 function retryDirectory(): void {
-  void loadDirectory();
+  void loadDirectory(lifecycleController.signal);
+}
+
+function activeProviderItems(releases: ProviderRelease[], installations: ProviderInstallation[]) {
+  const items = releases
+    .filter((release) => release.activeTarget !== null)
+    .map((release) => ({
+      value: release.providerId,
+      label: `${release.name} ${release.version} (${release.providerId})`,
+    }));
+  const providerIds = new Set(items.map((item) => item.value));
+  for (const installation of installations) {
+    if (!installation.active || providerIds.has(installation.providerId)) continue;
+    providerIds.add(installation.providerId);
+    items.push({
+      value: installation.providerId,
+      label: `${installation.providerId} ${installation.version} (${installation.target})`,
+    });
+  }
+  return items;
 }
 
 async function addConnection() {
   const session = composerSession;
   const displayName = connectionName.trim();
-  if (!displayName) return;
+  if (!displayName || !selectedProviderId) return;
+  const fixtureSelected = selectedProviderId === "dev.trakkin.fixture";
   await runPending(
     createPendingKey(session),
     async () => {
-      const connection = await createConnection({
-        adapterKey: "fixture",
-        displayName,
-        settings: [
-          textSetting("scenario", fixtureScenario),
-          textSetting("revision", fixtureRevision),
-          textSetting("fault", "none"),
-          textSetting("instance", fixtureInstance),
-        ],
-        secrets: [{ key: "fixture_token", value: Array.from(new TextEncoder().encode(fixtureToken)) }],
-      });
+      const connection = await createConnection(
+        {
+          providerId: selectedProviderId,
+          displayName,
+          settings: fixtureSelected
+            ? [
+                textSetting("scenario", fixtureScenario),
+                textSetting("revision", fixtureRevision),
+                textSetting("fault", "none"),
+                textSetting("instance", fixtureInstance),
+              ]
+            : [],
+          secrets: fixtureSelected
+            ? [{ key: "fixture_token", value: Array.from(new TextEncoder().encode(fixtureToken)) }]
+            : [],
+        },
+        lifecycleController.signal,
+      );
       directorySequence += 1;
       connections = [...connections, connection];
       if (!ownsComposerSession(session)) return;
@@ -237,7 +281,7 @@ async function saveRename(connection: Connection) {
   await runPending(
     renamePendingKey(connection.id, session),
     async () => {
-      const renamed = await renameConnection(connection.id, displayName);
+      const renamed = await renameConnection(connection.id, displayName, lifecycleController.signal);
       directorySequence += 1;
       connections = connections.map((candidate) => (candidate.id === renamed.id ? renamed : candidate));
       if (ownsRenameSession(session, connectionId)) cancelRename();
@@ -263,7 +307,7 @@ async function requestDelete(connection: Connection) {
   await runPending(
     deleteImpactPendingKey(connection.id, session),
     async () => {
-      const impact = await getConnectionDeletionImpact(connection.id);
+      const impact = await getConnectionDeletionImpact(connection.id, lifecycleController.signal);
       if (ownsDeleteSession(session, connection.id)) deletionImpact = impact;
     },
     false,
@@ -278,7 +322,7 @@ async function confirmDelete() {
   await runPending(
     deletePendingKey(connection.id, session),
     async () => {
-      await deleteConnection(connection.id);
+      await deleteConnection(connection.id, lifecycleController.signal);
       directorySequence += 1;
       clearPolling(connection.id);
       connections = connections.filter((candidate) => candidate.id !== connection.id);
@@ -718,13 +762,14 @@ function messageFor(error: unknown, fallback: string): string {
             onsubmit={(event) => { event.preventDefault(); void addConnection(); }}
           >
             <div class="grid gap-1.5 text-label text-text-secondary">
-              <span>Fixture scenario</span>
+              <span>Provider</span>
               <Select
-                ariaLabel="Fixture scenario"
-                items={scenarioItems}
-                onValueChange={(value) => (fixtureScenario = value)}
+                ariaLabel="Provider"
+                disabled={providerItems.length === 0}
+                items={providerItems}
+                onValueChange={(value) => (selectedProviderId = value)}
                 triggerClass="w-full"
-                value={fixtureScenario}
+                value={selectedProviderId}
               />
             </div>
             <label
@@ -734,47 +779,67 @@ function messageFor(error: unknown, fallback: string): string {
               Connection name<TextInput
                 aria-label="Connection name"
                 id="connection-name"
-                placeholder="Personal fixture"
+                placeholder="Personal connection"
                 required
                 bind:value={connectionName}
               /></label
             >
-            <div class="grid gap-1.5 text-label text-text-secondary">
-              <span>Revision</span>
-              <Select
-                ariaLabel="Fixture revision"
-                items={revisionItems}
-                onValueChange={(value) => (fixtureRevision = value)}
-                triggerClass="w-full"
-                value={fixtureRevision}
-              />
-            </div>
-            <div class="grid gap-1.5 text-label text-text-secondary">
-              <span>Instance</span>
-              <Select
-                ariaLabel="Fixture instance"
-                items={instanceItems}
-                onValueChange={(value) => (fixtureInstance = value)}
-                triggerClass="w-full"
-                value={fixtureInstance}
-              />
-            </div>
-            <label
-              class="grid gap-1.5 text-label text-text-secondary lg:col-span-2"
-              for="fixture-token"
-            >
-              Fixture token<TextInput
-                aria-label="Fixture token"
-                autocomplete="off"
-                id="fixture-token"
-                required
-                type="password"
-                bind:value={fixtureToken}
-              /></label
-            >
+            {#if providerItems.length === 0}
+              <p
+                class="text-label text-warning lg:col-span-2"
+                role="status"
+              >
+                Install and activate a provider before creating a connection.
+              </p>
+            {/if}
+            {#if selectedProviderId === "dev.trakkin.fixture"}
+              <div class="grid gap-1.5 text-label text-text-secondary">
+                <span>Fixture scenario</span>
+                <Select
+                  ariaLabel="Fixture scenario"
+                  items={scenarioItems}
+                  onValueChange={(value) => (fixtureScenario = value)}
+                  triggerClass="w-full"
+                  value={fixtureScenario}
+                />
+              </div>
+              <div class="grid gap-1.5 text-label text-text-secondary">
+                <span>Revision</span>
+                <Select
+                  ariaLabel="Fixture revision"
+                  items={revisionItems}
+                  onValueChange={(value) => (fixtureRevision = value)}
+                  triggerClass="w-full"
+                  value={fixtureRevision}
+                />
+              </div>
+              <div class="grid gap-1.5 text-label text-text-secondary">
+                <span>Instance</span>
+                <Select
+                  ariaLabel="Fixture instance"
+                  items={instanceItems}
+                  onValueChange={(value) => (fixtureInstance = value)}
+                  triggerClass="w-full"
+                  value={fixtureInstance}
+                />
+              </div>
+              <label
+                class="grid gap-1.5 text-label text-text-secondary lg:col-span-2"
+                for="fixture-token"
+              >
+                Fixture token<TextInput
+                  aria-label="Fixture token"
+                  autocomplete="off"
+                  id="fixture-token"
+                  required
+                  type="password"
+                  bind:value={fixtureToken}
+                /></label
+              >
+            {/if}
             <div class="flex justify-end lg:col-span-2">
               <Button
-                disabled={!connectionName.trim() || !fixtureToken || pending[createPendingKey()]}
+                disabled={!selectedProviderId || !connectionName.trim() || (selectedProviderId === "dev.trakkin.fixture" && !fixtureToken) || pending[createPendingKey()]}
                 type="submit"
                 variant="primary"
               >
@@ -786,7 +851,7 @@ function messageFor(error: unknown, fallback: string): string {
                     size={15}
                   />
                 {/if}
-                Create fixture connection
+                Create connection
               </Button>
             </div>
           </form>
@@ -905,7 +970,7 @@ function messageFor(error: unknown, fallback: string): string {
                     {/if}
                   </span>
                   <span class="mt-0.5 block truncate text-meta text-text-muted"
-                    >{connection.adapterKey}{accountName(connection.id) ? ` / ${accountName(connection.id)}` : ""}</span
+                    >{connection.providerId}{accountName(connection.id) ? ` / ${accountName(connection.id)}` : ""}</span
                   >
                 </span>
                 <Chip

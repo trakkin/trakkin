@@ -9,6 +9,7 @@ import {
   fallback,
   json,
   mockApi,
+  providerTarget,
   source,
   sourceId,
   task,
@@ -16,10 +17,11 @@ import {
   workspaceId,
 } from "./support/api.ts";
 
-test("creates and edits fixture connections without stale command state", async ({ page }) => {
+test("creates and edits active provider connections without stale command state", async ({ page }) => {
   const archiveConnectionId = "22222222-2222-2222-2222-333333333333";
   const archiveConnection = { ...connection, id: archiveConnectionId, displayName: "Archive fixture" };
   let createdDisplayName = "";
+  let createdProviderId = "";
   let renamedDisplayName = "";
   let connectionDirectoryRequests = 0;
   let renameRequested = false;
@@ -41,6 +43,21 @@ test("creates and edits fixture connections without stale command state", async 
     const url = new URL(route.request().url());
     const method = route.request().method();
     if (url.pathname === "/api/v1/workspaces" && method === "GET") return json(route, [workspace]);
+    if (url.pathname === "/api/v1/providers" && method === "GET") {
+      return json(route, [
+        {
+          repositoryId: "org.example.providers",
+          providerId: "org.example.provider",
+          name: "Example provider",
+          summary: "Example active provider",
+          version: "2.0.0",
+          channels: ["stable"],
+          targets: [providerTarget],
+          installedTargets: [providerTarget],
+          activeTarget: providerTarget,
+        },
+      ]);
+    }
     if (url.pathname === "/api/v1/connections" && method === "GET") {
       connectionDirectoryRequests += 1;
       if (connectionDirectoryRequests === 1) {
@@ -49,14 +66,19 @@ test("creates and edits fixture connections without stale command state", async 
       return json(route, []);
     }
     if (url.pathname === "/api/v1/connections" && method === "POST") {
-      const body = route.request().postDataJSON() as { displayName: string };
+      const body = route.request().postDataJSON() as { displayName: string; providerId: string };
       if (body.displayName === archiveConnection.displayName) {
         archiveCreateRequested = true;
         await archiveCreateGate;
         return json(route, archiveConnection, 201);
       }
       createdDisplayName = body.displayName;
-      return json(route, { ...connection, displayName: body.displayName, status: "pending" }, 201);
+      createdProviderId = body.providerId;
+      return json(
+        route,
+        { ...connection, providerId: body.providerId, displayName: body.displayName, status: "pending" },
+        201,
+      );
     }
     if (url.pathname === `/api/v1/connections/${connectionId}` && method === "PATCH") {
       renamedDisplayName = (route.request().postDataJSON() as { displayName: string }).displayName;
@@ -92,22 +114,25 @@ test("creates and edits fixture connections without stale command state", async 
   await expect(page.getByLabel("Connection name")).toHaveCount(0);
   await directoryError.getByRole("button", { name: "Retry" }).click();
   await expect.poll(() => connectionDirectoryRequests).toBe(2);
+  await expect(page.getByLabel("Provider")).toHaveText("Example provider 2.0.0 (org.example.provider)");
+  await expect(page.getByLabel("Fixture token")).toHaveCount(0);
   await page.getByLabel("Connection name").fill("Fixture account");
-  await page.getByRole("button", { name: "Create fixture connection" }).click();
+  await page.getByRole("button", { name: "Create connection" }).click();
 
   await expect(page.getByRole("button", { name: "Collapse Fixture account" }).first()).toBeVisible();
   expect(createdDisplayName).toBe("Fixture account");
+  expect(createdProviderId).toBe("org.example.provider");
   await expectNoHorizontalOverflow(page);
 
   await page.getByRole("button", { name: "New connection" }).click();
   await page.getByLabel("Connection name").fill(archiveConnection.displayName);
-  await page.getByRole("button", { name: "Create fixture connection" }).click();
+  await page.getByRole("button", { name: "Create connection" }).click();
   await expect.poll(() => archiveCreateRequested).toBe(true);
   await page.getByRole("button", { name: "Close" }).click();
   await page.getByRole("button", { name: "New connection" }).click();
   const currentComposerDraft = page.getByLabel("Connection name");
   await currentComposerDraft.fill("Current connection draft");
-  await expect(page.getByRole("button", { name: "Create fixture connection" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Create connection" })).toBeEnabled();
   const archiveCreateResponse = page.waitForResponse(
     (response) => new URL(response.url()).pathname === "/api/v1/connections" && response.request().method() === "POST",
   );
@@ -118,7 +143,7 @@ test("creates and edits fixture connections without stale command state", async 
   );
   await expect(page.getByRole("button", { name: "Expand Archive fixture" }).first()).toBeVisible();
   await expect(currentComposerDraft).toHaveValue("Current connection draft");
-  await expect(page.getByRole("button", { name: "Create fixture connection" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Create connection" })).toBeEnabled();
   await page.getByRole("button", { name: "Close" }).click();
 
   await page.getByRole("button", { name: "Rename Fixture account" }).click();
@@ -168,6 +193,56 @@ test("creates and edits fixture connections without stale command state", async 
   await expect(archiveDeletionDialog).toContainText("Archive fixture and its stored authentication data");
   await expect(page.getByRole("button", { name: "Delete permanently" })).toBeEnabled();
   await page.getByRole("button", { name: "Cancel" }).click();
+  await expectNoHorizontalOverflow(page);
+});
+
+test("requires an active provider before creating a connection", async ({ page }) => {
+  await mockApi(page, async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname === "/api/v1/workspaces") return json(route, [workspace]);
+    if (url.pathname === "/api/v1/connections") return json(route, []);
+    if (url.pathname === "/api/v1/providers") return json(route, []);
+    if (url.pathname === "/api/v1/provider-installations") return json(route, []);
+    return fallback(route);
+  });
+
+  await page.goto("/connections");
+
+  await expect(page.getByRole("status")).toHaveText("Install and activate a provider before creating a connection.");
+  await expect(page.getByRole("button", { name: "Create connection" })).toBeDisabled();
+  await expectNoHorizontalOverflow(page);
+});
+
+test("keeps retained active providers selectable after catalog removal", async ({ page }) => {
+  const retainedProviderId = "org.example.retained";
+  await mockApi(page, async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname === "/api/v1/workspaces") return json(route, [workspace]);
+    if (url.pathname === "/api/v1/connections") return json(route, []);
+    if (url.pathname === "/api/v1/providers") return json(route, []);
+    if (url.pathname === "/api/v1/provider-installations") {
+      return json(route, [
+        {
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          repositoryId: "org.example.providers",
+          providerId: retainedProviderId,
+          version: "2.0.0",
+          target: providerTarget,
+          packageSha256: "a".repeat(64),
+          active: true,
+          generation: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          installedAt: "2030-01-02T03:04:05Z",
+        },
+      ]);
+    }
+    return fallback(route);
+  });
+
+  await page.goto("/connections");
+
+  await expect(page.getByLabel("Provider")).toHaveText(`${retainedProviderId} 2.0.0 (${providerTarget})`);
+  await page.getByLabel("Connection name").fill("Retained provider");
+  await expect(page.getByRole("button", { name: "Create connection" })).toBeEnabled();
   await expectNoHorizontalOverflow(page);
 });
 

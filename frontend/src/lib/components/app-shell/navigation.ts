@@ -1,4 +1,4 @@
-import { Activity, Blocks, Cable, Library, Timer, Waypoints } from "@lucide/svelte";
+import { Activity, Blocks, Cable, Library, PackageOpen, Timer, Waypoints } from "@lucide/svelte";
 import type { Component } from "svelte";
 import { dev } from "$app/environment";
 
@@ -32,6 +32,7 @@ export function navigationFor(workspaceId?: string): AppNavigationGroup[] {
           icon: Cable,
           label: "Connections",
         },
+        { href: "/providers", icon: PackageOpen, label: "Providers" },
       ],
     },
     ...(dev

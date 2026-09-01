@@ -23,23 +23,27 @@ export function listConnections(signal?: AbortSignal): Promise<ListConnectionsRe
   return request("/api/v1/connections", { signal });
 }
 
-export function createConnection(input: CreateConnectionInput): Promise<Connection> {
-  return request("/api/v1/connections", { method: "POST", body: input });
+export function createConnection(input: CreateConnectionInput, signal?: AbortSignal): Promise<Connection> {
+  return request("/api/v1/connections", { method: "POST", body: input, signal });
 }
 
-export function renameConnection(connectionId: string, displayName: string): Promise<Connection> {
+export function renameConnection(connectionId: string, displayName: string, signal?: AbortSignal): Promise<Connection> {
   const body: RenameConnectionRequest = { displayName };
-  return request(`/api/v1/connections/${connectionId}`, { method: "PATCH", body });
+  return request(`/api/v1/connections/${connectionId}`, { method: "PATCH", body, signal });
 }
 
-export function getConnectionDeletionImpact(connectionId: string): Promise<ConnectionDeletionImpact> {
-  return request(`/api/v1/connections/${connectionId}/deletion-impact`);
+export function getConnectionDeletionImpact(
+  connectionId: string,
+  signal?: AbortSignal,
+): Promise<ConnectionDeletionImpact> {
+  return request(`/api/v1/connections/${connectionId}/deletion-impact`, { signal });
 }
 
-export function deleteConnection(connectionId: string): Promise<ConnectionDeletionImpact> {
+export function deleteConnection(connectionId: string, signal?: AbortSignal): Promise<ConnectionDeletionImpact> {
   return request(`/api/v1/connections/${connectionId}/deletion`, {
     method: "POST",
     body: { confirmed: true },
+    signal,
   });
 }
 
