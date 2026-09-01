@@ -93,7 +93,8 @@ impl PostgresProviderRegistry {
 
         let rows = sqlx::query_as::<_, ReconciliationRow>(
             "SELECT id, provider_id, version, target, status, manifest
-FROM provider_installations",
+FROM provider_installations
+",
         )
         .fetch_all(&self.pool)
         .await
@@ -133,7 +134,8 @@ FROM provider_installations",
             let mut transaction = self.pool.begin().await.map_err(internal_error)?;
             sqlx::query(
                 "DELETE FROM active_provider_installations
-WHERE installation_id = ANY($1)",
+WHERE installation_id = ANY($1)
+",
             )
             .bind(&invalid_installations)
             .execute(&mut *transaction)
@@ -142,7 +144,8 @@ WHERE installation_id = ANY($1)",
             sqlx::query(
                 "UPDATE provider_installations
 SET status = 'failed', installed_at = NULL, updated_at = $2
-WHERE id = ANY($1)",
+WHERE id = ANY($1)
+",
             )
             .bind(&invalid_installations)
             .bind(reconciled_at)
@@ -155,7 +158,8 @@ WHERE id = ANY($1)",
         let referenced_blobs = sqlx::query_scalar::<_, String>(
             "SELECT package_sha256
 FROM provider_installations
-WHERE status = 'installed'",
+WHERE status = 'installed'
+",
         )
         .fetch_all(&self.pool)
         .await
@@ -201,12 +205,13 @@ WHERE status = 'installed'",
     official, enabled, created_at, updated_at
 ) VALUES ($1, 'Trakkin official', $2, $3, $4, TRUE, TRUE, $5, $5)
 ON CONFLICT (id) DO UPDATE SET
-    display_name = excluded.display_name,
-    metadata_base_url = excluded.metadata_base_url,
-    targets_base_url = excluded.targets_base_url,
-    trusted_root = excluded.trusted_root,
-    official = TRUE,
-    updated_at = excluded.updated_at",
+display_name = excluded.display_name,
+metadata_base_url = excluded.metadata_base_url,
+targets_base_url = excluded.targets_base_url,
+trusted_root = excluded.trusted_root,
+official = TRUE,
+updated_at = excluded.updated_at
+",
         )
         .bind(OFFICIAL_REPOSITORY_ID)
         .bind(OFFICIAL_REPOSITORY_METADATA_URL)
@@ -429,7 +434,8 @@ RETURNING
             "SELECT enabled, catalog_sequence, catalog
 FROM provider_repositories
 WHERE id = $1
-FOR UPDATE",
+FOR UPDATE
+",
         )
         .bind(repository_id)
         .fetch_optional(&mut *transaction)
@@ -712,7 +718,8 @@ ORDER BY installation.installed_at DESC, installation.id
             "INSERT INTO provider_installations (
     id, repository_id, provider_id, version, target, package_sha256,
     manifest, status, installed_at, created_at, updated_at
-) VALUES ($1, $2, $3, $4, $5, $6, '{}'::JSONB, 'installing', NULL, $7, $7)",
+) VALUES ($1, $2, $3, $4, $5, $6, '{}'::JSONB, 'installing', NULL, $7, $7)
+",
         )
         .bind(command.installation_id)
         .bind(&command.repository_id)
@@ -794,7 +801,8 @@ SET manifest = $2, status = 'installed', installed_at = $3, updated_at = $3
 WHERE id = $1 AND status = 'installing'
 RETURNING
     id, repository_id, provider_id, version, target, package_sha256,
-    installed_at, NULL::UUID AS generation, FALSE AS active",
+    installed_at, NULL::UUID AS generation, FALSE AS active
+",
         )
         .bind(command.installation_id)
         .bind(manifest_json)
@@ -829,7 +837,8 @@ RETURNING
         sqlx::query(
             "UPDATE provider_installations
 SET status = 'failed', installed_at = NULL, updated_at = $2
-WHERE id = $1 AND status = 'installing'",
+WHERE id = $1 AND status = 'installing'
+",
         )
         .bind(installation_id)
         .bind(failed_at)
@@ -849,7 +858,8 @@ WHERE id = $1 AND status = 'installing'",
             "SELECT id
 FROM provider_installations
 WHERE id = $1 AND provider_id = $2 AND status = 'installed'
-FOR UPDATE",
+FOR UPDATE
+",
         )
         .bind(command.installation_id)
         .bind(&command.provider_id)
@@ -867,9 +877,9 @@ FOR UPDATE",
     provider_id, installation_id, generation, activated_at
 ) VALUES ($1, $2, $3, $4)
 ON CONFLICT (provider_id) DO UPDATE SET
-    installation_id = excluded.installation_id,
-    generation = excluded.generation,
-    activated_at = excluded.activated_at
+installation_id = excluded.installation_id,
+generation = excluded.generation,
+activated_at = excluded.activated_at
 ",
         )
         .bind(&command.provider_id)
@@ -950,13 +960,14 @@ WHERE id = $1 AND provider_id = $2 AND status = 'installed'
             "SELECT
     installation.package_sha256,
     EXISTS(
-    SELECT 1
-    FROM active_provider_installations
-    WHERE installation_id = $1
-) AS active
+        SELECT 1
+        FROM active_provider_installations
+        WHERE installation_id = $1
+    ) AS active
 FROM provider_installations AS installation
 WHERE installation.id = $1
-FOR UPDATE",
+FOR UPDATE
+",
         )
         .bind(command.installation_id)
         .fetch_optional(&mut *transaction)
@@ -974,7 +985,8 @@ FOR UPDATE",
                 "active provider installation cannot be removed",
             ));
         }
-        sqlx::query("DELETE FROM provider_installations WHERE id = $1")
+        sqlx::query("DELETE FROM provider_installations WHERE id = $1
+")
             .bind(command.installation_id)
             .execute(&mut *transaction)
             .await
@@ -984,7 +996,8 @@ FOR UPDATE",
     SELECT 1
     FROM provider_installations
     WHERE package_sha256 = $1
-)",
+)
+",
         )
         .bind(&package_sha256)
         .fetch_one(&mut *transaction)

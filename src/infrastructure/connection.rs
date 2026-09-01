@@ -540,7 +540,7 @@ WHERE id = $2 AND status IN ('waiting', 'input_required')
     async fn list_summaries(&self) -> Result<Vec<ConnectionSummary>, ConnectionPersistenceError> {
         sqlx::query_as::<_, ConnectionSummaryRow>(
             "SELECT
-            id, provider_id, display_name, status, capability_revision,
+    id, provider_id, display_name, status, capability_revision,
     created_at, updated_at
 FROM connections
 WHERE deleted_at IS NULL
@@ -560,7 +560,7 @@ ORDER BY created_at, id
     ) -> Result<Option<ConnectionSummary>, ConnectionPersistenceError> {
         sqlx::query_as::<_, ConnectionSummaryRow>(
             "SELECT
-            id, provider_id, display_name, status, capability_revision,
+    id, provider_id, display_name, status, capability_revision,
     created_at, updated_at
 FROM connections
 WHERE id = $1 AND deleted_at IS NULL

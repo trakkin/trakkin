@@ -16,27 +16,19 @@
     },
     "roles": {
       "root": {
-        "keyids": [
-          "a32e0ba39026ff94644345a433a669244a4c169f2f50c29c9a58bee30abf3289"
-        ],
+        "keyids": ["a32e0ba39026ff94644345a433a669244a4c169f2f50c29c9a58bee30abf3289"],
         "threshold": 1
       },
       "targets": {
-        "keyids": [
-          "a32e0ba39026ff94644345a433a669244a4c169f2f50c29c9a58bee30abf3289"
-        ],
+        "keyids": ["a32e0ba39026ff94644345a433a669244a4c169f2f50c29c9a58bee30abf3289"],
         "threshold": 1
       },
       "snapshot": {
-        "keyids": [
-          "a32e0ba39026ff94644345a433a669244a4c169f2f50c29c9a58bee30abf3289"
-        ],
+        "keyids": ["a32e0ba39026ff94644345a433a669244a4c169f2f50c29c9a58bee30abf3289"],
         "threshold": 1
       },
       "timestamp": {
-        "keyids": [
-          "a32e0ba39026ff94644345a433a669244a4c169f2f50c29c9a58bee30abf3289"
-        ],
+        "keyids": ["a32e0ba39026ff94644345a433a669244a4c169f2f50c29c9a58bee30abf3289"],
         "threshold": 1
       }
     }
