@@ -121,7 +121,7 @@ impl Host {
             provider_runtime_directory,
         );
         provider_registry
-            .bootstrap_official_repository(OffsetDateTime::now_utc())
+            .bootstrap_community_repository(OffsetDateTime::now_utc())
             .await
             .map_err(|error| HostError::ProviderRegistry(error.message))?;
         provider_registry

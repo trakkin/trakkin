@@ -11,7 +11,7 @@
         "body": {
           "contributors": ["source-local-a", "source-local-b"],
           "receivers": ["source-local-c"],
-          "rules": [{"field":"trakkin.state:progress","reducer":"coverage_contiguous_prefix"}]
+          "rules": [{ "field": "trakkin.state:progress", "reducer": "coverage_contiguous_prefix" }]
         }
       },
       "expected": {
@@ -53,21 +53,26 @@
       "id": "POLICY-FIELD-RULES-001",
       "input": {
         "fieldRule": {
-          "semanticField":"trakkin.state:progress",
-          "presence":{"deleted":"ignore","absent":"clear","unknown":"block","stale":"block"},
-          "conflict":"require_reducer",
-          "reducer":"coverage_contiguous_prefix",
-          "translation":{"quantizer":"nearest","allowLossy":false},
-          "writeConstraints":{"requireStrongPrecondition":true,"allowCreateMembership":false,"allowClear":true}
+          "semanticField": "trakkin.state:progress",
+          "presence": { "deleted": "ignore", "absent": "clear", "unknown": "block", "stale": "block" },
+          "conflict": "require_reducer",
+          "reducer": "coverage_contiguous_prefix",
+          "translation": { "quantizer": "nearest", "allowLossy": false },
+          "writeConstraints": { "requireStrongPrecondition": true, "allowCreateMembership": false, "allowClear": true }
         }
       },
       "expected": {
-        "presenceExplicit":true,
-        "conflictExplicit":true,
-        "translationExplicit":true,
-        "writeConstraintsExplicit":true
+        "presenceExplicit": true,
+        "conflictExplicit": true,
+        "translationExplicit": true,
+        "writeConstraintsExplicit": true
       },
-      "covers": ["policy.presence-rules","policy.conflict-rule","policy.translation-constraints","policy.write-constraints"]
+      "covers": [
+        "policy.presence-rules",
+        "policy.conflict-rule",
+        "policy.translation-constraints",
+        "policy.write-constraints"
+      ]
     },
     {
       "id": "POLICY-PROVIDER-ITEM-ID-INVALID-001",

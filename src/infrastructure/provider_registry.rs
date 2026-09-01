@@ -11,13 +11,13 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::{FromRow, PgPool};
 use time::OffsetDateTime;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tough::{RepositoryLoader, TargetName};
 use trakkin_provider_release::{
     MAXIMUM_PROVIDER_MANIFEST_BYTES, MAXIMUM_PROVIDER_PACKAGE_BYTES,
     MAXIMUM_PROVIDER_PACKAGE_ENTRIES, MAXIMUM_PROVIDER_PACKAGE_FILES,
     MAXIMUM_PROVIDER_UNPACKED_BYTES, PackageFile, ProtocolVersion as PackageProtocolVersion,
-    ProviderPackageManifest, ProviderRepositoryIndex, REPOSITORY_SCHEMA_V1,
+    ProviderPackageManifest, ProviderRepositoryBootstrap, ProviderRepositoryIndex,
 };
 use url::Url;
 use uuid::Uuid;
@@ -32,12 +32,13 @@ use crate::application::providers::{
 use crate::infrastructure::adapter_process::AdapterProcessLauncher;
 
 const CATALOG_TARGET: &str = "catalog.json";
+const MAXIMUM_BOOTSTRAP_BYTES: usize = 64 * 1024;
 const MAXIMUM_TRUSTED_ROOT_BYTES: usize = 1024 * 1024;
 const MAXIMUM_CATALOG_BYTES: usize = 4 * 1024 * 1024;
-const OFFICIAL_REPOSITORY_ID: &str = "dev.trakkin.official";
-const OFFICIAL_REPOSITORY_METADATA_URL: &str = "https://providers.trakkin.dev/metadata/";
-const OFFICIAL_REPOSITORY_TARGETS_URL: &str = "https://providers.trakkin.dev/targets/";
-const OFFICIAL_REPOSITORY_ROOT: &[u8] = include_bytes!("official_repository_root.json");
+const COMMUNITY_REPOSITORY_ID: &str = "dev.trakkin.community";
+const COMMUNITY_REPOSITORY_METADATA_URL: &str = "https://providers.trakkin.dev/metadata/";
+const COMMUNITY_REPOSITORY_TARGETS_URL: &str = "https://providers.trakkin.dev/targets/";
+const COMMUNITY_REPOSITORY_ROOT: &[u8] = include_bytes!("community_repository_root.json");
 static BLOB_STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone)]
@@ -195,28 +196,28 @@ WHERE status = 'installed'
         Ok(())
     }
 
-    pub async fn bootstrap_official_repository(
+    pub async fn bootstrap_community_repository(
         &self,
         bootstrapped_at: OffsetDateTime,
     ) -> Result<(), ApplicationError> {
         sqlx::query(
             "INSERT INTO provider_repositories (
     id, display_name, metadata_base_url, targets_base_url, trusted_root,
-    official, enabled, created_at, updated_at
-) VALUES ($1, 'Trakkin official', $2, $3, $4, TRUE, TRUE, $5, $5)
+    built_in, enabled, created_at, updated_at
+) VALUES ($1, 'Trakkin Community', $2, $3, $4, TRUE, TRUE, $5, $5)
 ON CONFLICT (id) DO UPDATE SET
 display_name = excluded.display_name,
 metadata_base_url = excluded.metadata_base_url,
 targets_base_url = excluded.targets_base_url,
 trusted_root = excluded.trusted_root,
-official = TRUE,
+built_in = TRUE,
 updated_at = excluded.updated_at
 ",
         )
-        .bind(OFFICIAL_REPOSITORY_ID)
-        .bind(OFFICIAL_REPOSITORY_METADATA_URL)
-        .bind(OFFICIAL_REPOSITORY_TARGETS_URL)
-        .bind(OFFICIAL_REPOSITORY_ROOT)
+        .bind(COMMUNITY_REPOSITORY_ID)
+        .bind(COMMUNITY_REPOSITORY_METADATA_URL)
+        .bind(COMMUNITY_REPOSITORY_TARGETS_URL)
+        .bind(COMMUNITY_REPOSITORY_ROOT)
         .bind(bootstrapped_at)
         .execute(&self.pool)
         .await
@@ -320,9 +321,9 @@ WHERE
         sqlx::query_as::<_, RepositoryRow>(
             "SELECT
     id, display_name, metadata_base_url, targets_base_url, trusted_root,
-    official, enabled, catalog_sequence, catalog, refreshed_at
+    built_in, enabled, catalog_sequence, catalog, refreshed_at
 FROM provider_repositories
-ORDER BY official DESC, display_name, id
+ORDER BY built_in DESC, display_name, id
 ",
         )
         .fetch_all(&self.pool)
@@ -337,22 +338,64 @@ ORDER BY official DESC, display_name, id
         &self,
         command: RegisterProviderRepository,
     ) -> Result<ProviderRepositorySnapshot, ApplicationError> {
-        validate_repository_registration(&command)?;
+        let _lifecycle_lock = self
+            .acquire_lifecycle_lock()
+            .await
+            .map_err(internal_error)?;
+        let invite = parse_repository_invite(&command.url)?;
+        let bootstrap_bytes = fetch_bounded_url(
+            &invite.descriptor_url,
+            MAXIMUM_BOOTSTRAP_BYTES,
+            "provider repository bootstrap exceeds the size limit",
+        )
+        .await?;
+        let bootstrap = serde_json::from_slice::<ProviderRepositoryBootstrap>(&bootstrap_bytes)
+            .map_err(invalid_repository)?;
+        let resolved = resolve_repository_bootstrap(&invite.descriptor_url, &bootstrap)?;
+        let trusted_root = fetch_bounded_url(
+            &resolved.root_url,
+            MAXIMUM_TRUSTED_ROOT_BYTES,
+            "provider repository trusted root exceeds the size limit",
+        )
+        .await?;
+        validate_trusted_root(&trusted_root, &invite.root_sha256)?;
+        let staging = self.persistent_root.join("staging").join(format!(
+            "repository-bootstrap-{}",
+            BLOB_STAGING_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let catalog_result = load_repository_catalog(
+            &trusted_root,
+            resolved.metadata_url.clone(),
+            resolved.targets_url.clone(),
+            staging.clone(),
+        )
+        .await;
+        let _ = tokio::fs::remove_dir_all(staging).await;
+        let catalog = catalog_result?;
+        let sequence = i64::try_from(catalog.sequence).map_err(|_| {
+            ApplicationError::new(
+                ApplicationErrorCode::InvalidProviderData,
+                "provider repository catalog sequence is too large",
+            )
+        })?;
+        let catalog_json = serde_json::to_value(&catalog).map_err(internal_error)?;
         let row = sqlx::query_as::<_, RepositoryRow>(
             "INSERT INTO provider_repositories (
     id, display_name, metadata_base_url, targets_base_url, trusted_root,
-    official, enabled, created_at, updated_at
-) VALUES ($1, $2, $3, $4, $5, FALSE, TRUE, $6, $6)
+    built_in, enabled, catalog_sequence, catalog, refreshed_at, created_at, updated_at
+) VALUES ($1, $2, $3, $4, $5, FALSE, TRUE, $6, $7, $8, $8, $8)
 RETURNING
     id, display_name, metadata_base_url, targets_base_url, trusted_root,
-    official, enabled, catalog_sequence, catalog, refreshed_at
+    built_in, enabled, catalog_sequence, catalog, refreshed_at
 ",
         )
-        .bind(command.id)
-        .bind(command.display_name.trim())
-        .bind(command.metadata_base_url)
-        .bind(command.targets_base_url)
-        .bind(command.trusted_root)
+        .bind(&catalog.repository_id)
+        .bind(&catalog.display_name)
+        .bind(resolved.metadata_url.as_str())
+        .bind(resolved.targets_url.as_str())
+        .bind(trusted_root)
+        .bind(sequence)
+        .bind(catalog_json)
         .bind(command.registered_at)
         .fetch_one(&self.pool)
         .await
@@ -385,26 +428,7 @@ RETURNING
             ));
         }
         let repository = self.load_tuf_repository(&row).await?;
-        let target_name = TargetName::new(CATALOG_TARGET).map_err(invalid_repository)?;
-        let stream = repository
-            .read_target(&target_name)
-            .await
-            .map_err(invalid_repository)?
-            .ok_or_else(|| {
-                ApplicationError::new(
-                    ApplicationErrorCode::InvalidProviderData,
-                    "provider repository does not publish catalog.json",
-                )
-            })?;
-        let bytes = collect_bounded_target(
-            stream,
-            MAXIMUM_CATALOG_BYTES,
-            "provider repository catalog exceeds the size limit",
-        )
-        .await?;
-        let catalog = serde_json::from_slice::<ProviderRepositoryIndex>(&bytes)
-            .map_err(invalid_repository)?;
-        catalog.validate().map_err(invalid_repository)?;
+        let catalog = read_repository_catalog(&repository).await?;
         if catalog.repository_id != row.id {
             return Err(ApplicationError::new(
                 ApplicationErrorCode::InvalidProviderData,
@@ -418,13 +442,20 @@ RETURNING
             )
         })?;
         let catalog_json = serde_json::to_value(&catalog).map_err(internal_error)?;
-        self.persist_catalog(&row.id, sequence, catalog_json, command.refreshed_at)
-            .await
+        self.persist_catalog(
+            &row.id,
+            &catalog.display_name,
+            sequence,
+            catalog_json,
+            command.refreshed_at,
+        )
+        .await
     }
 
     async fn persist_catalog(
         &self,
         repository_id: &str,
+        display_name: &str,
         sequence: i64,
         catalog: Value,
         refreshed_at: OffsetDateTime,
@@ -462,17 +493,19 @@ FOR UPDATE
         let updated = sqlx::query_as::<_, RepositoryRow>(
             "UPDATE provider_repositories
 SET
-    catalog_sequence = $2,
-    catalog = $3,
-    refreshed_at = $4,
-    updated_at = $4
+    display_name = $2,
+    catalog_sequence = $3,
+    catalog = $4,
+    refreshed_at = $5,
+    updated_at = $5
 WHERE id = $1
 RETURNING
     id, display_name, metadata_base_url, targets_base_url, trusted_root,
-    official, enabled, catalog_sequence, catalog, refreshed_at
+    built_in, enabled, catalog_sequence, catalog, refreshed_at
 ",
         )
         .bind(repository_id)
+        .bind(display_name)
         .bind(sequence)
         .bind(catalog)
         .bind(refreshed_at)
@@ -487,10 +520,10 @@ RETURNING
         let repositories = sqlx::query_as::<_, RepositoryRow>(
             "SELECT
     id, display_name, metadata_base_url, targets_base_url, trusted_root,
-    official, enabled, catalog_sequence, catalog, refreshed_at
+    built_in, enabled, catalog_sequence, catalog, refreshed_at
 FROM provider_repositories
 WHERE enabled AND catalog IS NOT NULL
-ORDER BY official DESC, display_name, id
+ORDER BY built_in DESC, display_name, id
 ",
         )
         .fetch_all(&self.pool)
@@ -1098,7 +1131,7 @@ FOR UPDATE
         sqlx::query_as::<_, RepositoryRow>(
             "SELECT
     id, display_name, metadata_base_url, targets_base_url, trusted_root,
-    official, enabled, catalog_sequence, catalog, refreshed_at
+    built_in, enabled, catalog_sequence, catalog, refreshed_at
 FROM provider_repositories
 WHERE id = $1
 ",
@@ -1282,7 +1315,7 @@ struct RepositoryRow {
     metadata_base_url: String,
     targets_base_url: String,
     trusted_root: Vec<u8>,
-    official: bool,
+    built_in: bool,
     enabled: bool,
     catalog_sequence: Option<i64>,
     catalog: Option<Value>,
@@ -1303,7 +1336,7 @@ impl RepositoryRow {
             display_name: self.display_name,
             metadata_base_url: self.metadata_base_url,
             targets_base_url: self.targets_base_url,
-            official: self.official,
+            built_in: self.built_in,
             enabled: self.enabled,
             catalog_sequence: self
                 .catalog_sequence
@@ -1377,78 +1410,147 @@ impl InstallationRow {
     }
 }
 
-fn validate_repository_registration(
-    command: &RegisterProviderRepository,
-) -> Result<(), ApplicationError> {
-    let identity = ProviderRepositoryIndex {
-        schema: REPOSITORY_SCHEMA_V1.to_owned(),
-        repository_id: command.id.clone(),
-        sequence: 0,
-        providers: Vec::new(),
-    };
-    identity.validate().map_err(|error| {
-        ApplicationError::field(
-            ApplicationErrorCode::InvalidField,
-            "provider repository is invalid",
-            "id",
-            "invalid_identifier",
-            error.to_string(),
+struct RepositoryInvite {
+    descriptor_url: Url,
+    root_sha256: String,
+}
+
+struct ResolvedRepositoryBootstrap {
+    root_url: Url,
+    metadata_url: Url,
+    targets_url: Url,
+}
+
+fn parse_repository_invite(value: &str) -> Result<RepositoryInvite, ApplicationError> {
+    let mut descriptor_url = parse_repository_url(value.trim())?;
+    let fragment = descriptor_url.fragment().ok_or_else(|| {
+        repository_url_problem(
+            "missing_root_fingerprint",
+            "repository invite URL must include #sha256=<trusted-root-digest>",
         )
     })?;
-    if command.display_name.trim().is_empty() {
-        return Err(ApplicationError::field(
-            ApplicationErrorCode::InvalidField,
-            "provider repository is invalid",
-            "displayName",
-            "required",
-            "display name must not be empty",
+    let root_sha256 = fragment
+        .strip_prefix("sha256=")
+        .ok_or_else(|| {
+            repository_url_problem(
+                "invalid_root_fingerprint",
+                "repository invite URL fragment must use sha256=<trusted-root-digest>",
+            )
+        })?
+        .to_owned();
+    if root_sha256.len() != 64
+        || !root_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    {
+        return Err(repository_url_problem(
+            "invalid_root_fingerprint",
+            "repository root fingerprint must be 64 lowercase hexadecimal characters",
         ));
     }
-    parse_repository_url(&command.metadata_base_url)?;
-    parse_repository_url(&command.targets_base_url)?;
-    if command.trusted_root.is_empty() || command.trusted_root.len() > MAXIMUM_TRUSTED_ROOT_BYTES {
+    descriptor_url.set_fragment(None);
+    Ok(RepositoryInvite {
+        descriptor_url,
+        root_sha256,
+    })
+}
+
+fn resolve_repository_bootstrap(
+    descriptor_url: &Url,
+    bootstrap: &ProviderRepositoryBootstrap,
+) -> Result<ResolvedRepositoryBootstrap, ApplicationError> {
+    bootstrap.validate().map_err(invalid_repository)?;
+    Ok(ResolvedRepositoryBootstrap {
+        root_url: resolve_repository_reference(descriptor_url, &bootstrap.root, false)?,
+        metadata_url: resolve_repository_reference(descriptor_url, &bootstrap.metadata, true)?,
+        targets_url: resolve_repository_reference(descriptor_url, &bootstrap.targets, true)?,
+    })
+}
+
+fn resolve_repository_reference(
+    descriptor_url: &Url,
+    reference: &str,
+    directory: bool,
+) -> Result<Url, ApplicationError> {
+    let safe_characters = reference
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'.' | b'_' | b'-'));
+    if reference.is_empty()
+        || !safe_characters
+        || reference.starts_with('/')
+        || reference.split('/').any(|segment| segment == "..")
+        || (directory && !reference.ends_with('/'))
+    {
+        return Err(invalid_repository(
+            "bootstrap paths must be safe relative paths and base paths must end in '/'",
+        ));
+    }
+    let resolved = descriptor_url.join(reference).map_err(invalid_repository)?;
+    let same_origin = resolved.scheme() == descriptor_url.scheme()
+        && resolved.host_str() == descriptor_url.host_str()
+        && resolved.port_or_known_default() == descriptor_url.port_or_known_default();
+    if !same_origin {
+        return Err(invalid_repository(
+            "bootstrap paths must resolve on the invite URL origin",
+        ));
+    }
+    Ok(resolved)
+}
+
+fn validate_trusted_root(
+    trusted_root: &[u8],
+    expected_sha256: &str,
+) -> Result<(), ApplicationError> {
+    if trusted_root.is_empty() || trusted_root.len() > MAXIMUM_TRUSTED_ROOT_BYTES {
         return Err(ApplicationError::field(
             ApplicationErrorCode::InvalidField,
             "provider repository is invalid",
-            "trustedRoot",
+            "url",
             "invalid_tuf_root",
             "trusted root must contain bounded TUF root metadata",
         ));
     }
-    let trusted_root =
-        serde_json::from_slice::<tough::schema::Signed<tough::schema::Root>>(&command.trusted_root)
+    let trusted_root_sha256 = hex::encode(Sha256::digest(trusted_root));
+    let signed_root =
+        serde_json::from_slice::<tough::schema::Signed<tough::schema::Root>>(trusted_root)
             .map_err(|_| {
                 ApplicationError::field(
                     ApplicationErrorCode::InvalidField,
                     "provider repository is invalid",
-                    "trustedRoot",
+                    "url",
                     "invalid_tuf_root",
                     "trusted root must contain valid TUF root metadata",
                 )
             })?;
-    trusted_root
-        .signed
-        .verify_role(&trusted_root)
-        .map_err(|_| {
-            ApplicationError::field(
-                ApplicationErrorCode::InvalidField,
-                "provider repository is invalid",
-                "trustedRoot",
-                "invalid_tuf_root",
-                "trusted root must carry a valid root-role signature",
-            )
-        })?;
-    let trusted_root_sha256 = hex::encode(Sha256::digest(&command.trusted_root));
-    if command.trusted_root_sha256 != trusted_root_sha256 {
+    signed_root.signed.verify_role(&signed_root).map_err(|_| {
+        ApplicationError::field(
+            ApplicationErrorCode::InvalidField,
+            "provider repository is invalid",
+            "url",
+            "invalid_tuf_root",
+            "trusted root must carry a valid root-role signature",
+        )
+    })?;
+    if expected_sha256 != trusted_root_sha256 {
         return Err(ApplicationError::field(
             ApplicationErrorCode::InvalidField,
             "provider repository is invalid",
-            "trustedRootSha256",
+            "url",
             "fingerprint_mismatch",
-            "trusted root fingerprint does not match the submitted root metadata",
+            "repository invite fingerprint does not match the trusted root metadata",
         ));
     }
     Ok(())
+}
+
+fn repository_url_problem(code: &'static str, message: &'static str) -> ApplicationError {
+    ApplicationError::field(
+        ApplicationErrorCode::InvalidField,
+        "provider repository URL is invalid",
+        "url",
+        code,
+        message,
+    )
 }
 
 fn parse_repository_url(value: &str) -> Result<Url, ApplicationError> {
@@ -1478,6 +1580,87 @@ fn invalid_repository(error: impl std::fmt::Display) -> ApplicationError {
         ApplicationErrorCode::InvalidProviderData,
         format!("provider repository verification failed: {error}"),
     )
+}
+
+async fn fetch_bounded_url(
+    url: &Url,
+    maximum_bytes: usize,
+    limit_message: &'static str,
+) -> Result<Vec<u8>, ApplicationError> {
+    match url.scheme() {
+        "file" => {
+            let path = url
+                .to_file_path()
+                .map_err(|_| invalid_repository("invalid file URL"))?;
+            let file = tokio::fs::File::open(path)
+                .await
+                .map_err(invalid_repository)?;
+            let mut reader = file.take(maximum_bytes as u64 + 1);
+            let mut bytes = Vec::new();
+            reader
+                .read_to_end(&mut bytes)
+                .await
+                .map_err(invalid_repository)?;
+            if bytes.len() > maximum_bytes {
+                return Err(ApplicationError::new(
+                    ApplicationErrorCode::InvalidProviderData,
+                    limit_message,
+                ));
+            }
+            Ok(bytes)
+        }
+        "https" => {
+            let response = reqwest::get(url.clone())
+                .await
+                .and_then(reqwest::Response::error_for_status)
+                .map_err(invalid_repository)?;
+            collect_bounded_target(response.bytes_stream(), maximum_bytes, limit_message).await
+        }
+        _ => Err(invalid_repository("unsupported repository URL scheme")),
+    }
+}
+
+async fn load_repository_catalog(
+    trusted_root: &[u8],
+    metadata_url: Url,
+    targets_url: Url,
+    datastore: PathBuf,
+) -> Result<ProviderRepositoryIndex, ApplicationError> {
+    tokio::fs::create_dir_all(&datastore)
+        .await
+        .map_err(internal_error)?;
+    let repository = RepositoryLoader::new(&trusted_root, metadata_url, targets_url)
+        .datastore(datastore)
+        .load()
+        .await
+        .map_err(invalid_repository)?;
+    read_repository_catalog(&repository).await
+}
+
+async fn read_repository_catalog(
+    repository: &tough::Repository,
+) -> Result<ProviderRepositoryIndex, ApplicationError> {
+    let target_name = TargetName::new(CATALOG_TARGET).map_err(invalid_repository)?;
+    let stream = repository
+        .read_target(&target_name)
+        .await
+        .map_err(invalid_repository)?
+        .ok_or_else(|| {
+            ApplicationError::new(
+                ApplicationErrorCode::InvalidProviderData,
+                "provider repository does not publish catalog.json",
+            )
+        })?;
+    let bytes = collect_bounded_target(
+        stream,
+        MAXIMUM_CATALOG_BYTES,
+        "provider repository catalog exceeds the size limit",
+    )
+    .await?;
+    let catalog =
+        serde_json::from_slice::<ProviderRepositoryIndex>(&bytes).map_err(invalid_repository)?;
+    catalog.validate().map_err(invalid_repository)?;
+    Ok(catalog)
 }
 
 fn validate_catalog_update(
@@ -2007,46 +2190,75 @@ mod tests {
     }
 
     #[test]
-    fn repository_registration_requires_matching_trust_root_fingerprint() {
-        let trusted_root = OFFICIAL_REPOSITORY_ROOT.to_vec();
-        let mut command = RegisterProviderRepository {
-            id: "dev.trakkin.test".to_owned(),
-            display_name: "Test".to_owned(),
-            metadata_base_url: "https://providers.example/metadata/".to_owned(),
-            targets_base_url: "https://providers.example/targets/".to_owned(),
-            trusted_root,
-            trusted_root_sha256: "0".repeat(64),
-            registered_at: OffsetDateTime::UNIX_EPOCH,
-        };
-
-        let error = validate_repository_registration(&command)
+    fn repository_invite_requires_matching_trust_root_fingerprint() {
+        let trusted_root = COMMUNITY_REPOSITORY_ROOT.to_vec();
+        let error = validate_trusted_root(&trusted_root, &"0".repeat(64))
             .expect_err("mismatched fingerprint is rejected");
         assert_eq!(error.code, ApplicationErrorCode::InvalidField);
-        assert_eq!(error.field_problems[0].path, "trustedRootSha256");
+        assert_eq!(error.field_problems[0].path, "url");
 
-        command.trusted_root_sha256 = hex::encode(Sha256::digest(&command.trusted_root));
-        validate_repository_registration(&command).expect("matching fingerprint is accepted");
+        let digest = hex::encode(Sha256::digest(&trusted_root));
+        validate_trusted_root(&trusted_root, &digest).expect("matching fingerprint is accepted");
     }
 
     #[test]
     fn repository_registration_rejects_invalid_tuf_root() {
         let trusted_root = b"{}".to_vec();
-        let command = RegisterProviderRepository {
-            id: "dev.trakkin.test".to_owned(),
-            display_name: "Test".to_owned(),
-            metadata_base_url: "https://providers.example/metadata/".to_owned(),
-            targets_base_url: "https://providers.example/targets/".to_owned(),
-            trusted_root_sha256: hex::encode(Sha256::digest(&trusted_root)),
-            trusted_root,
-            registered_at: OffsetDateTime::UNIX_EPOCH,
-        };
-
-        let error = validate_repository_registration(&command)
-            .expect_err("invalid TUF root is rejected during registration");
+        let error =
+            validate_trusted_root(&trusted_root, &hex::encode(Sha256::digest(&trusted_root)))
+                .expect_err("invalid TUF root is rejected during registration");
 
         assert_eq!(error.code, ApplicationErrorCode::InvalidField);
-        assert_eq!(error.field_problems[0].path, "trustedRoot");
+        assert_eq!(error.field_problems[0].path, "url");
         assert_eq!(error.field_problems[0].code, "invalid_tuf_root");
+    }
+
+    #[test]
+    fn repository_invite_resolves_safe_relative_paths() {
+        let invite = parse_repository_invite(
+            "https://providers.example/repository.json#sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        )
+        .expect("repository invite parses");
+        let bootstrap = ProviderRepositoryBootstrap {
+            schema: trakkin_provider_release::REPOSITORY_BOOTSTRAP_SCHEMA_V1.to_owned(),
+            root: "metadata/1.root.json".to_owned(),
+            metadata: "metadata/".to_owned(),
+            targets: "targets/".to_owned(),
+        };
+
+        let resolved = resolve_repository_bootstrap(&invite.descriptor_url, &bootstrap)
+            .expect("bootstrap paths resolve");
+
+        assert_eq!(
+            invite.descriptor_url.as_str(),
+            "https://providers.example/repository.json"
+        );
+        assert_eq!(
+            resolved.root_url.as_str(),
+            "https://providers.example/metadata/1.root.json"
+        );
+        assert_eq!(
+            resolved.metadata_url.as_str(),
+            "https://providers.example/metadata/"
+        );
+        assert_eq!(
+            resolved.targets_url.as_str(),
+            "https://providers.example/targets/"
+        );
+    }
+
+    #[test]
+    fn repository_bootstrap_rejects_path_traversal() {
+        let descriptor_url =
+            Url::parse("https://providers.example/repository.json").expect("descriptor URL");
+        let bootstrap = ProviderRepositoryBootstrap {
+            schema: trakkin_provider_release::REPOSITORY_BOOTSTRAP_SCHEMA_V1.to_owned(),
+            root: "../1.root.json".to_owned(),
+            metadata: "metadata/".to_owned(),
+            targets: "targets/".to_owned(),
+        };
+
+        assert!(resolve_repository_bootstrap(&descriptor_url, &bootstrap).is_err());
     }
 
     #[test]

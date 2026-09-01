@@ -4,7 +4,7 @@ CREATE TABLE provider_repositories (
     metadata_base_url TEXT NOT NULL CHECK (metadata_base_url <> ''),
     targets_base_url TEXT NOT NULL CHECK (targets_base_url <> ''),
     trusted_root BYTEA NOT NULL CHECK (octet_length(trusted_root) > 0),
-    official BOOLEAN NOT NULL DEFAULT FALSE,
+    built_in BOOLEAN NOT NULL DEFAULT FALSE,
     enabled BOOLEAN NOT NULL DEFAULT TRUE,
     catalog_sequence BIGINT CHECK (catalog_sequence >= 0),
     catalog JSONB,
@@ -15,8 +15,8 @@ CREATE TABLE provider_repositories (
     CHECK ((catalog IS NULL) = (refreshed_at IS NULL))
 );
 
-CREATE UNIQUE INDEX provider_repositories_one_official_idx
-ON provider_repositories (official) WHERE official;
+CREATE UNIQUE INDEX provider_repositories_one_built_in_idx
+ON provider_repositories (built_in) WHERE built_in;
 
 CREATE TABLE provider_installations (
     id UUID PRIMARY KEY,

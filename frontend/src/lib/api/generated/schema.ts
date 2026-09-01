@@ -1390,13 +1390,13 @@ export interface components {
             version: string;
         };
         ProviderRepositoryResponse: {
+            builtIn: boolean;
             /** Format: int64 */
             catalogSequence?: number | null;
             displayName: string;
             enabled: boolean;
             id: string;
             metadataBaseUrl: string;
-            official: boolean;
             refreshedAt?: string | null;
             targetsBaseUrl: string;
         };
@@ -1422,12 +1422,7 @@ export interface components {
             settings: components["schemas"]["AdapterSettingRequest"][];
         };
         RegisterProviderRepositoryRequest: {
-            displayName: string;
-            id: string;
-            metadataBaseUrl: string;
-            targetsBaseUrl: string;
-            trustedRoot: number[];
-            trustedRootSha256: string;
+            url: string;
         };
         RenameConnectionRequest: {
             displayName: string;

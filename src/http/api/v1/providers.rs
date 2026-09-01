@@ -24,7 +24,7 @@ use crate::{
 
 use super::support::{HttpState, generate_uuid};
 
-const MAXIMUM_REGISTER_REPOSITORY_REQUEST_BYTES: usize = 5 * 1024 * 1024;
+const MAXIMUM_REGISTER_REPOSITORY_REQUEST_BYTES: usize = 16 * 1024;
 
 pub(super) fn router() -> Router<HttpState> {
     Router::new()
@@ -78,12 +78,7 @@ pub(super) async fn register_repository(
     let repository = state
         .application
         .register_provider_repository(RegisterProviderRepository {
-            id: payload.id,
-            display_name: payload.display_name,
-            metadata_base_url: payload.metadata_base_url,
-            targets_base_url: payload.targets_base_url,
-            trusted_root: payload.trusted_root,
-            trusted_root_sha256: payload.trusted_root_sha256,
+            url: payload.url,
             registered_at: OffsetDateTime::now_utc(),
         })
         .await?;

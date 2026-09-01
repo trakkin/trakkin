@@ -397,6 +397,7 @@ WHERE id = 'dev.trakkin.test'",
     .bind(json!({
         "schema": "trakkin.provider-repository/v1",
         "repositoryId": "dev.trakkin.test",
+        "displayName": "Test providers",
         "sequence": 1,
         "providers": [{
             "id": VALID_PROVIDER_ID,

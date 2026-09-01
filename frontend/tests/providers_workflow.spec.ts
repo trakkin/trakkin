@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { expect, test } from "@playwright/test";
 import type { ProviderInstallation, ProviderRepository } from "../src/lib/api/providers.ts";
 import {
@@ -12,19 +11,19 @@ import {
 } from "./support/api.ts";
 
 const providerId = "dev.trakkin.fixture";
-const officialRepository: ProviderRepository = {
-  id: "dev.trakkin.official",
-  displayName: "Trakkin official",
+const communityRepository: ProviderRepository = {
+  id: "dev.trakkin.community",
+  displayName: "Trakkin Community",
   metadataBaseUrl: "https://providers.trakkin.dev/metadata/",
   targetsBaseUrl: "https://providers.trakkin.dev/targets/",
-  official: true,
+  builtIn: true,
   enabled: true,
   catalogSequence: 1,
   refreshedAt: timestamp,
 };
 const oldInstallation: ProviderInstallation = {
   id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-  repositoryId: officialRepository.id,
+  repositoryId: communityRepository.id,
   providerId,
   version: "0.9.0",
   target: providerTarget,
@@ -35,11 +34,10 @@ const oldInstallation: ProviderInstallation = {
 };
 
 test("imports repositories and manages provider versions", async ({ page }) => {
-  let repositories: ProviderRepository[] = [officialRepository];
+  let repositories: ProviderRepository[] = [communityRepository];
   let installations: ProviderInstallation[] = [oldInstallation];
   let refreshRequests = 0;
-  let registeredRootLength = 0;
-  let registeredRootSha256 = "";
+  let registeredUrl = "";
   let activeInstallationId = "";
   let deleteRequests = 0;
   await mockApi(page, async (route) => {
@@ -50,37 +48,29 @@ test("imports repositories and manages provider versions", async ({ page }) => {
       return json(route, repositories);
     }
     if (url.pathname === "/api/v1/provider-repositories" && method === "POST") {
-      const body = route.request().postDataJSON() as {
-        id: string;
-        displayName: string;
-        metadataBaseUrl: string;
-        targetsBaseUrl: string;
-        trustedRoot: number[];
-        trustedRootSha256: string;
-      };
-      registeredRootLength = body.trustedRoot.length;
-      registeredRootSha256 = body.trustedRootSha256;
+      const body = route.request().postDataJSON() as { url: string };
+      registeredUrl = body.url;
       const repository = {
-        id: body.id,
-        displayName: body.displayName,
-        metadataBaseUrl: body.metadataBaseUrl,
-        targetsBaseUrl: body.targetsBaseUrl,
-        official: false,
+        id: "org.example.providers",
+        displayName: "Example providers",
+        metadataBaseUrl: "https://example.org/metadata/",
+        targetsBaseUrl: "https://example.org/targets/",
+        builtIn: false,
         enabled: true,
-        catalogSequence: null,
-        refreshedAt: null,
+        catalogSequence: 1,
+        refreshedAt: timestamp,
       };
       repositories = [...repositories, repository];
       return json(route, repository, 201);
     }
-    if (url.pathname === `/api/v1/provider-repositories/${officialRepository.id}/refresh` && method === "POST") {
+    if (url.pathname === `/api/v1/provider-repositories/${communityRepository.id}/refresh` && method === "POST") {
       refreshRequests += 1;
-      return json(route, officialRepository);
+      return json(route, communityRepository);
     }
     if (url.pathname === "/api/v1/providers" && method === "GET") {
       return json(route, [
         {
-          repositoryId: officialRepository.id,
+          repositoryId: communityRepository.id,
           providerId,
           name: "Fixture",
           summary: "Deterministic provider",
@@ -140,30 +130,20 @@ test("imports repositories and manages provider versions", async ({ page }) => {
 
   await page.goto("/providers");
   await expect(page.getByRole("heading", { name: "Providers" })).toBeVisible();
-  await expect(page.getByText("Trakkin official", { exact: true })).toBeVisible();
+  await expect(page.getByText("Trakkin Community", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Refresh" }).first().click();
   await expect.poll(() => refreshRequests).toBe(1);
 
   await page.getByRole("button", { name: "Add repository" }).click();
-  await page.getByLabel("Repository ID").fill("org.example.providers");
-  await page.getByLabel("Display name").fill("Example providers");
-  await page.getByLabel("Metadata URL").fill("https://example.org/metadata/");
-  await page.getByLabel("Targets URL").fill("https://example.org/targets/");
-  const trustedRoot = Buffer.from('{"signed":{}}');
-  const trustedRootSha256 = createHash("sha256").update(trustedRoot).digest("hex");
-  await page.getByLabel("Trusted root metadata").setInputFiles({
-    name: "root.json",
-    mimeType: "application/json",
-    buffer: trustedRoot,
-  });
-  await page.getByLabel("Trusted root SHA-256").fill(trustedRootSha256);
-  await expect(page.getByText(trustedRootSha256, { exact: true })).toBeVisible();
+  const inviteUrl = `https://example.org/repository.json#sha256=${"a".repeat(64)}`;
+  await page.getByLabel("Repository invite URL").fill(inviteUrl);
   await expectNoHorizontalOverflow(page);
   await page.getByRole("button", { name: "Trust repository" }).click();
+  await expect(page.getByText("Trusted Example providers", { exact: true })).toBeVisible();
+  await expect(page.getByText("a".repeat(64), { exact: true })).toBeVisible();
   await expect(page.getByText("Example providers", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Add repository" })).toBeFocused();
-  expect(registeredRootLength).toBeGreaterThan(0);
-  expect(registeredRootSha256).toBe(trustedRootSha256);
+  expect(registeredUrl).toBe(inviteUrl);
 
   await page.getByRole("button", { name: `Install ${providerId} 1.0.0 for ${providerTarget}` }).click();
   expect(activeInstallationId).toBe("");
@@ -183,45 +163,13 @@ test("imports repositories and manages provider versions", async ({ page }) => {
   await expectNoHorizontalOverflow(page);
 });
 
-test("rejects oversized trusted root files before hashing", async ({ page }) => {
-  let registerRequests = 0;
-  await mockApi(page, async (route) => {
-    const url = new URL(route.request().url());
-    const method = route.request().method();
-    if (url.pathname === "/api/v1/workspaces") return json(route, [workspace]);
-    if (url.pathname === "/api/v1/provider-repositories" && method === "GET") {
-      return json(route, [officialRepository]);
-    }
-    if (url.pathname === "/api/v1/provider-repositories" && method === "POST") {
-      registerRequests += 1;
-      return json(route, officialRepository, 201);
-    }
-    if (url.pathname === "/api/v1/providers" || url.pathname === "/api/v1/provider-installations") {
-      return json(route, []);
-    }
-    return fallback(route);
-  });
-
-  await page.goto("/providers");
-  await page.getByRole("button", { name: "Add repository" }).click();
-  await page.getByLabel("Trusted root metadata").setInputFiles({
-    name: "oversized-root.json",
-    mimeType: "application/json",
-    buffer: Buffer.alloc(1024 * 1024 + 1),
-  });
-
-  await expect(page.getByRole("alert")).toContainText("Trusted root metadata must not exceed 1 MiB");
-  await expect(page.getByRole("button", { name: "Trust repository" })).toBeDisabled();
-  expect(registerRequests).toBe(0);
-});
-
 test("surfaces repository trust field problems", async ({ page }) => {
   await mockApi(page, async (route) => {
     const url = new URL(route.request().url());
     const method = route.request().method();
     if (url.pathname === "/api/v1/workspaces") return json(route, [workspace]);
     if (url.pathname === "/api/v1/provider-repositories" && method === "GET") {
-      return json(route, [officialRepository]);
+      return json(route, [communityRepository]);
     }
     if (url.pathname === "/api/v1/provider-repositories" && method === "POST") {
       return json(
@@ -231,9 +179,9 @@ test("surfaces repository trust field problems", async ({ page }) => {
           message: "provider repository is invalid",
           fieldProblems: [
             {
-              path: "trustedRoot",
-              code: "invalid_tuf_root",
-              message: "trusted root must contain signed TUF root metadata",
+              path: "url",
+              code: "fingerprint_mismatch",
+              message: "repository invite fingerprint does not match the trusted root metadata",
             },
           ],
         },
@@ -248,20 +196,13 @@ test("surfaces repository trust field problems", async ({ page }) => {
 
   await page.goto("/providers");
   await page.getByRole("button", { name: "Add repository" }).click();
-  await page.getByLabel("Repository ID").fill("org.invalid.providers");
-  await page.getByLabel("Display name").fill("Invalid providers");
-  await page.getByLabel("Metadata URL").fill("https://invalid.example/metadata/");
-  await page.getByLabel("Targets URL").fill("https://invalid.example/targets/");
-  await page.getByLabel("Trusted root metadata").setInputFiles({
-    name: "root.json",
-    mimeType: "application/json",
-    buffer: Buffer.from("{}"),
-  });
-  await page.getByLabel("Trusted root SHA-256").fill(createHash("sha256").update(Buffer.from("{}")).digest("hex"));
+  await page
+    .getByLabel("Repository invite URL")
+    .fill(`https://invalid.example/repository.json#sha256=${"0".repeat(64)}`);
   await page.getByRole("button", { name: "Trust repository" }).click();
 
   await expect(page.getByRole("alert")).toContainText(
-    "provider repository is invalid: trusted root must contain signed TUF root metadata",
+    "provider repository is invalid: repository invite fingerprint does not match the trusted root metadata",
   );
 });
 
@@ -278,7 +219,7 @@ test("serializes lifecycle actions for one provider", async ({ page }) => {
     const url = new URL(route.request().url());
     const method = route.request().method();
     if (url.pathname === "/api/v1/workspaces") return json(route, [workspace]);
-    if (url.pathname === "/api/v1/provider-repositories") return json(route, [officialRepository]);
+    if (url.pathname === "/api/v1/provider-repositories") return json(route, [communityRepository]);
     if (url.pathname === "/api/v1/providers" && method === "GET") return json(route, []);
     if (url.pathname === "/api/v1/provider-installations" && method === "GET") {
       return json(route, installations);
@@ -315,7 +256,7 @@ test("keeps removal failures visible in the confirmation dialog", async ({ page 
     const url = new URL(route.request().url());
     const method = route.request().method();
     if (url.pathname === "/api/v1/workspaces") return json(route, [workspace]);
-    if (url.pathname === "/api/v1/provider-repositories") return json(route, [officialRepository]);
+    if (url.pathname === "/api/v1/provider-repositories") return json(route, [communityRepository]);
     if (url.pathname === "/api/v1/providers" && method === "GET") return json(route, []);
     if (url.pathname === "/api/v1/provider-installations" && method === "GET") {
       return json(route, [oldInstallation]);

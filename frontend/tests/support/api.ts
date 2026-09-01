@@ -10,7 +10,7 @@ export const timestamp = "2030-01-02T03:04:05Z";
 export const providerTarget = "x86_64-unknown-linux-gnu";
 
 export const activeFixtureProviderRelease = {
-  repositoryId: "dev.trakkin.official",
+  repositoryId: "dev.trakkin.community",
   providerId: "dev.trakkin.fixture",
   name: "Fixture",
   summary: "Deterministic provider",
@@ -23,7 +23,7 @@ export const activeFixtureProviderRelease = {
 
 export const activeFixtureProviderInstallation = {
   id: "88888888-8888-4888-8888-888888888888",
-  repositoryId: "dev.trakkin.official",
+  repositoryId: "dev.trakkin.community",
   providerId: "dev.trakkin.fixture",
   version: "1.0.0",
   target: providerTarget,

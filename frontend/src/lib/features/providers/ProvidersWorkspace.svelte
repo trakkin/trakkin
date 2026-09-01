@@ -17,8 +17,6 @@ import {
   removeProviderInstallation,
 } from "$lib/api/providers";
 
-const maximumTrustedRootBytes = 1024 * 1024;
-
 let repositories = $state<ProviderRepository[]>([]);
 let releases = $state<ProviderRelease[]>([]);
 let installations = $state<ProviderInstallation[]>([]);
@@ -27,20 +25,12 @@ let pending = $state<Record<string, boolean>>({});
 let loading = $state(true);
 let errorMessage = $state("");
 let showRepositoryForm = $state(false);
-let repositoryId = $state("");
-let displayName = $state("");
-let metadataBaseUrl = $state("");
-let targetsBaseUrl = $state("");
-let trustedRootFile = $state<File>();
-let trustedRootBytes = $state<number[]>([]);
-let trustedRootSha256 = $state("");
-let computedTrustedRootSha256 = $state("");
-let hashingTrustedRoot = $state(false);
+let repositoryUrl = $state("");
+let repositoryConfirmation = $state<{ repository: ProviderRepository; rootSha256: string }>();
 let removeOpen = $state(false);
 let pendingRemoval = $state<ProviderInstallation>();
 let removalErrorMessage = $state("");
 let loadSequence = 0;
-let rootReadSequence = 0;
 const lifecycleController = new AbortController();
 
 onMount(() => {
@@ -49,7 +39,6 @@ onMount(() => {
 
 onDestroy(() => {
   loadSequence += 1;
-  rootReadSequence += 1;
   lifecycleController.abort();
 });
 
@@ -88,34 +77,18 @@ async function loadProviders(signal?: AbortSignal) {
 }
 
 async function addRepository() {
-  if (!trustedRootFile || trustedRootBytes.length === 0) {
-    errorMessage = "Select the repository root metadata file";
-    return;
-  }
-  if (!trustedRootFingerprintMatches()) {
-    errorMessage = "Trusted root SHA-256 does not match the selected metadata file";
+  const url = repositoryUrl.trim();
+  if (!url) {
+    errorMessage = "Enter a repository invite URL";
     return;
   }
   await runMutation("repository:add", async (signal) => {
-    await registerProviderRepository(
-      {
-        id: repositoryId.trim(),
-        displayName: displayName.trim(),
-        metadataBaseUrl: metadataBaseUrl.trim(),
-        targetsBaseUrl: targetsBaseUrl.trim(),
-        trustedRoot: trustedRootBytes,
-        trustedRootSha256: normalizedTrustedRootSha256(),
-      },
-      signal,
-    );
-    repositoryId = "";
-    displayName = "";
-    metadataBaseUrl = "";
-    targetsBaseUrl = "";
-    trustedRootFile = undefined;
-    trustedRootBytes = [];
-    trustedRootSha256 = "";
-    computedTrustedRootSha256 = "";
+    const repository = await registerProviderRepository({ url }, signal);
+    repositoryConfirmation = {
+      repository,
+      rootSha256: new URL(url).hash.slice("#sha256=".length),
+    };
+    repositoryUrl = "";
     showRepositoryForm = false;
     await tick();
     document.querySelector<HTMLButtonElement>("#add-provider-repository")?.focus();
@@ -230,46 +203,6 @@ function selectedTargetInstalled(release: ProviderRelease): boolean {
   return release.installedTargets.includes(selectedTarget(release));
 }
 
-async function rootFileChanged(event: Event) {
-  const sequence = ++rootReadSequence;
-  const file = (event.currentTarget as HTMLInputElement).files?.[0];
-  trustedRootFile = undefined;
-  trustedRootBytes = [];
-  computedTrustedRootSha256 = "";
-  hashingTrustedRoot = false;
-  errorMessage = "";
-  if (!file) return;
-  if (file.size === 0) {
-    errorMessage = "Trusted root metadata file is empty";
-    return;
-  }
-  if (file.size > maximumTrustedRootBytes) {
-    errorMessage = "Trusted root metadata must not exceed 1 MiB";
-    return;
-  }
-  trustedRootFile = file;
-  hashingTrustedRoot = true;
-  try {
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
-    if (sequence !== rootReadSequence || lifecycleController.signal.aborted) return;
-    trustedRootBytes = Array.from(bytes);
-    computedTrustedRootSha256 = Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
-  } catch (error) {
-    if (sequence === rootReadSequence) errorMessage = messageFor(error, "Trusted root metadata could not be read");
-  } finally {
-    if (sequence === rootReadSequence) hashingTrustedRoot = false;
-  }
-}
-
-function normalizedTrustedRootSha256(): string {
-  return trustedRootSha256.trim().toLowerCase();
-}
-
-function trustedRootFingerprintMatches(): boolean {
-  return computedTrustedRootSha256 !== "" && normalizedTrustedRootSha256() === computedTrustedRootSha256;
-}
-
 function messageFor(error: unknown, fallback: string): string {
   if (error instanceof ApiRequestError && error.fieldProblems[0]) {
     return `${error.message}: ${error.fieldProblems[0].message}`;
@@ -322,6 +255,41 @@ function messageFor(error: unknown, fallback: string): string {
         </Panel>
       {/if}
 
+      {#if repositoryConfirmation}
+        <Panel
+          class="flex items-start gap-3 px-4 py-3"
+          role="status"
+          tone="accent"
+        >
+          <Check
+            aria-hidden="true"
+            class="mt-0.5 shrink-0 text-accent"
+            size={16}
+          />
+          <div class="min-w-0 flex-1">
+            <p class="text-label font-[560] text-text-primary">
+              Trusted {repositoryConfirmation.repository.displayName}
+            </p>
+            <p class="truncate font-mono text-meta text-text-muted">{repositoryConfirmation.repository.id}</p>
+            <p class="mt-1 text-meta text-text-muted">
+              Root SHA-256
+              <span class="ml-1 break-all font-mono text-text-primary">{repositoryConfirmation.rootSha256}</span>
+            </p>
+          </div>
+          <Button
+            aria-label="Dismiss repository confirmation"
+            onclick={() => (repositoryConfirmation = undefined)}
+            size="sm"
+            variant="ghost"
+          >
+            <X
+              aria-hidden="true"
+              size={14}
+            />
+          </Button>
+        </Panel>
+      {/if}
+
       {#if showRepositoryForm}
         <Panel
           class="p-4 sm:p-5"
@@ -336,103 +304,27 @@ function messageFor(error: unknown, fallback: string): string {
             <h2 class="text-heading font-[620] text-text-primary">Trust repository</h2>
           </div>
           <form
-            class="grid gap-3 sm:grid-cols-2"
+            class="grid gap-3"
             onsubmit={(event) => { event.preventDefault(); void addRepository(); }}
           >
             <label
               class="grid gap-1.5 text-label text-text-muted"
-              for="provider-repository-id"
+              for="provider-repository-url"
             >
-              Repository ID
+              Repository invite URL
               <TextInput
-                id="provider-repository-id"
-                placeholder="org.example.providers"
-                required
-                bind:value={repositoryId}
-              />
-            </label>
-            <label
-              class="grid gap-1.5 text-label text-text-muted"
-              for="provider-repository-name"
-            >
-              Display name
-              <TextInput
-                id="provider-repository-name"
-                placeholder="Example providers"
-                required
-                bind:value={displayName}
-              />
-            </label>
-            <label
-              class="grid gap-1.5 text-label text-text-muted"
-              for="provider-repository-metadata-url"
-            >
-              Metadata URL
-              <TextInput
-                id="provider-repository-metadata-url"
-                placeholder="https://example.org/metadata/"
-                required
-                type="url"
-                bind:value={metadataBaseUrl}
-              />
-            </label>
-            <label
-              class="grid gap-1.5 text-label text-text-muted"
-              for="provider-repository-targets-url"
-            >
-              Targets URL
-              <TextInput
-                id="provider-repository-targets-url"
-                placeholder="https://example.org/targets/"
-                required
-                type="url"
-                bind:value={targetsBaseUrl}
-              />
-            </label>
-            <label
-              class="grid gap-1.5 text-label text-text-muted sm:col-span-2"
-              for="provider-repository-root"
-            >
-              Trusted root metadata
-              <TextInput
-                accept="application/json,.json"
-                id="provider-repository-root"
-                onchange={rootFileChanged}
-                required
-                type="file"
-              />
-            </label>
-            <label
-              class="grid gap-1.5 text-label text-text-muted sm:col-span-2"
-              for="provider-repository-root-sha256"
-            >
-              Trusted root SHA-256
-              <TextInput
-                autocomplete="off"
-                id="provider-repository-root-sha256"
-                pattern={"[0-9A-Fa-f]{64}"}
-                placeholder="64-character fingerprint"
+                autocomplete="url"
+                id="provider-repository-url"
+                placeholder="https://providers.example/repository.json#sha256=..."
                 required
                 spellcheck={false}
-                bind:value={trustedRootSha256}
+                type="url"
+                bind:value={repositoryUrl}
               />
             </label>
-            {#if hashingTrustedRoot}
-              <div
-                class="flex items-center gap-2 text-meta text-text-muted sm:col-span-2"
-                role="status"
-              >
-                <Spinner size={13} />Reading trusted root metadata...
-              </div>
-            {:else if computedTrustedRootSha256}
-              <p class="min-w-0 text-meta text-text-muted sm:col-span-2">
-                Selected root SHA-256
-                <output class="ml-1 break-all font-mono text-text-secondary">{computedTrustedRootSha256}</output>
-              </p>
-            {/if}
-            <div class="flex justify-end sm:col-span-2">
+            <div class="flex justify-end">
               <Button
-                disabled={pending["repository:add"] || hashingTrustedRoot || !trustedRootFingerprintMatches()}
+                disabled={pending["repository:add"] || !repositoryUrl.trim()}
                 type="submit"
                 variant="primary"
               >
@@ -489,11 +381,11 @@ function messageFor(error: unknown, fallback: string): string {
               <div class="min-w-0 flex-1">
                 <div class="flex flex-wrap items-center gap-2">
                   <p class="truncate text-label font-[560] text-text-primary">{repository.displayName}</p>
-                  {#if repository.official}
+                  {#if repository.builtIn}
                     <Chip
                       dot
                       tone="accent"
-                      >Official</Chip
+                      >Built in</Chip
                     >
                   {/if}
                   {#if !repository.enabled}

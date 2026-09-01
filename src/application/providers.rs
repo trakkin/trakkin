@@ -30,7 +30,7 @@ pub struct ProviderRepositorySnapshot {
     pub display_name: String,
     pub metadata_base_url: String,
     pub targets_base_url: String,
-    pub official: bool,
+    pub built_in: bool,
     pub enabled: bool,
     pub catalog_sequence: Option<u64>,
     pub refreshed_at: Option<OffsetDateTime>,
@@ -64,12 +64,7 @@ pub struct ProviderInstallationSnapshot {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RegisterProviderRepository {
-    pub id: String,
-    pub display_name: String,
-    pub metadata_base_url: String,
-    pub targets_base_url: String,
-    pub trusted_root: Vec<u8>,
-    pub trusted_root_sha256: String,
+    pub url: String,
     pub registered_at: OffsetDateTime,
 }
 

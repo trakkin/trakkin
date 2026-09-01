@@ -42,17 +42,17 @@ async fn external_host_bootstraps_provider_registry_and_stops_cleanly() {
 
     let repositories = request(address, "GET", "/api/v1/provider-repositories", None).await;
     assert_eq!(repositories.0, 200);
-    let official = repositories
+    let community = repositories
         .1
         .as_array()
         .and_then(|repositories| {
             repositories
                 .iter()
-                .find(|repository| repository["id"] == "dev.trakkin.official")
+                .find(|repository| repository["id"] == "dev.trakkin.community")
         })
-        .expect("official provider repository is bootstrapped");
-    assert_eq!(official["official"], true);
-    assert_eq!(official["enabled"], true);
+        .expect("community provider repository is bootstrapped");
+    assert_eq!(community["builtIn"], true);
+    assert_eq!(community["enabled"], true);
 
     let installations = request(address, "GET", "/api/v1/provider-installations", None).await;
     assert_eq!(installations, (200, json!([])));

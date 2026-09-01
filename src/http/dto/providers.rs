@@ -14,12 +14,7 @@ use super::timestamp;
 #[derive(Clone, Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct RegisterProviderRepositoryRequest {
-    pub id: String,
-    pub display_name: String,
-    pub metadata_base_url: String,
-    pub targets_base_url: String,
-    pub trusted_root: Vec<u8>,
-    pub trusted_root_sha256: String,
+    pub url: String,
 }
 
 #[derive(Clone, Debug, Deserialize, ToSchema)]
@@ -44,7 +39,7 @@ pub struct ProviderRepositoryResponse {
     pub display_name: String,
     pub metadata_base_url: String,
     pub targets_base_url: String,
-    pub official: bool,
+    pub built_in: bool,
     pub enabled: bool,
     pub catalog_sequence: Option<u64>,
     pub refreshed_at: Option<String>,
@@ -57,7 +52,7 @@ impl ProviderRepositoryResponse {
             display_name: snapshot.display_name,
             metadata_base_url: snapshot.metadata_base_url,
             targets_base_url: snapshot.targets_base_url,
-            official: snapshot.official,
+            built_in: snapshot.built_in,
             enabled: snapshot.enabled,
             catalog_sequence: snapshot.catalog_sequence,
             refreshed_at: snapshot.refreshed_at.map(timestamp).transpose()?,

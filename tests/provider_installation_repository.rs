@@ -1,6 +1,6 @@
 #![cfg(all(feature = "embedded-database", unix))]
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use sha2::Digest;
 use tempfile::tempdir;
@@ -12,7 +12,7 @@ use trakkin::{
         },
         providers::{
             ActivateProviderInstallation, InstallProvider, ProviderLaunchResolver,
-            ProviderRegistryApi, RefreshProviderRepository, RegisterProviderRepository,
+            ProviderRegistryApi, RegisterProviderRepository,
         },
     },
     database::DatabaseRuntime,
@@ -24,7 +24,7 @@ use url::Url;
 use uuid::Uuid;
 
 const PROVIDER_ID: &str = "dev.trakkin.fixture";
-const REPOSITORY_ID: &str = "dev.trakkin.official";
+const REPOSITORY_ID: &str = "dev.trakkin.community";
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "set TRAKKIN_TEST_PROVIDER_REPOSITORY to a signed provider repository"]
@@ -50,25 +50,19 @@ async fn signed_repository_installs_activates_and_launches_provider() {
     let trusted_root = tokio::fs::read(repository.join("metadata/1.root.json"))
         .await
         .expect("trusted root");
+    let mut invite_url =
+        Url::from_file_path(repository.join("repository.json")).expect("repository invite URL");
+    invite_url.set_fragment(Some(&format!(
+        "sha256={}",
+        hex::encode(sha2::Sha256::digest(&trusted_root))
+    )));
     registry
         .register_provider_repository(RegisterProviderRepository {
-            id: REPOSITORY_ID.to_owned(),
-            display_name: "Local official".to_owned(),
-            metadata_base_url: directory_url(&repository.join("metadata")),
-            targets_base_url: directory_url(&repository.join("targets")),
-            trusted_root_sha256: hex::encode(sha2::Sha256::digest(&trusted_root)),
-            trusted_root,
+            url: invite_url.to_string(),
             registered_at: timestamp(2),
         })
         .await
         .expect("repository registers");
-    registry
-        .refresh_provider_repository(RefreshProviderRepository {
-            repository_id: REPOSITORY_ID.to_owned(),
-            refreshed_at: timestamp(3),
-        })
-        .await
-        .expect("repository refreshes");
     let release = registry
         .list_provider_releases()
         .await
@@ -122,12 +116,6 @@ async fn signed_repository_installs_activates_and_launches_provider() {
         AdapterRetirement::Graceful
     );
     database.shutdown().await.expect("database shuts down");
-}
-
-fn directory_url(path: &Path) -> String {
-    Url::from_directory_path(path)
-        .expect("directory URL")
-        .to_string()
 }
 
 fn timestamp(second: i64) -> OffsetDateTime {
