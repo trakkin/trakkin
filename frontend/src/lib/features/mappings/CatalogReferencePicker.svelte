@@ -27,12 +27,14 @@ let sourceId = $state("");
 let query = $state("");
 let search = $state("");
 let entries = $state<CatalogEntry[]>([]);
+let publicationId = $state("");
 let nextCursor = $state<string | null>(null);
 let loading = $state(false);
 let loadingMore = $state(false);
 let errorMessage = $state("");
 let directorySequence = 0;
 let loadSequence = 0;
+let reloadSequence = $state(0);
 
 let selectedSource = $derived(directory?.sources.find((entry) => entry.source.id === sourceId) ?? null);
 let selectedSourceError = $derived(
@@ -50,6 +52,7 @@ $effect(() => {
   directory = null;
   sourceId = "";
   entries = [];
+  publicationId = "";
   nextCursor = null;
   loading = false;
   loadingMore = false;
@@ -70,8 +73,10 @@ $effect(() => {
 $effect(() => {
   const source = selectedSource;
   const currentSearch = search;
+  reloadSequence;
   if (!pickerOpen || !source || selectedSourceError) {
     entries = [];
+    publicationId = "";
     nextCursor = null;
     return;
   }
@@ -114,6 +119,7 @@ async function loadFirstPage(source: string, currentSearch: string, signal?: Abo
     );
     if (sequence !== loadSequence) return;
     entries = page.entries;
+    publicationId = page.publicationId;
     nextCursor = page.nextCursor ?? null;
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") return;
@@ -132,6 +138,7 @@ async function loadMore(): Promise<void> {
   const activeWorkspaceId = workspaceId;
   const activeSourceId = source.source.id;
   const activeSearch = search;
+  const activePublicationId = publicationId;
   loadingMore = true;
   errorMessage = "";
   try {
@@ -141,6 +148,10 @@ async function loadMore(): Promise<void> {
       ...(activeSearch ? { search: activeSearch } : {}),
     });
     if (sequence !== loadSequence) return;
+    if (page.publicationId !== activePublicationId) {
+      reloadSequence += 1;
+      return;
+    }
     entries = [...entries, ...page.entries];
     nextCursor = page.nextCursor ?? null;
   } catch (error) {

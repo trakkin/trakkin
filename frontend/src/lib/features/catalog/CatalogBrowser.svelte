@@ -1,6 +1,17 @@
 <script lang="ts">
-import { ArrowLeft, ChevronRight, Database, Layers3, RefreshCw, RotateCcw, Search, X } from "@lucide/svelte";
+import {
+  ArrowLeft,
+  ArrowRight,
+  ChevronRight,
+  Database,
+  Layers3,
+  RefreshCw,
+  RotateCcw,
+  Search,
+  X,
+} from "@lucide/svelte";
 import { onDestroy } from "svelte";
+import { goto } from "$app/navigation";
 import { AlertDialog, Button, Chip, IconButton, MediaArtwork, Panel, Select, Spinner, Tabs, TextInput } from "$lib";
 import {
   CATALOG_PAGE_LIMIT,
@@ -313,6 +324,66 @@ function rawEntry(entry: CatalogEntry): string {
 }
 </script>
 
+{#snippet catalogDetails(entry: CatalogEntry)}
+  <Panel
+    aria-label={`Catalog details for ${entryLabel(entry)}`}
+    class="overflow-hidden lg:sticky lg:top-0"
+    element="section"
+  >
+    <div class="relative aspect-video bg-surface-raised">
+      <MediaArtwork
+        alt=""
+        class="absolute inset-0 size-full rounded-none border-0"
+        shape="landscape"
+        src={preferredArtwork(entry)?.href}
+      /><IconButton
+        class="absolute top-2 right-2 z-10 border-border-strong bg-surface-overlay/90"
+        label="Close catalog details"
+        onclick={() => (focusedRelationId = "")}
+        size="sm"
+        ><X
+          aria-hidden="true"
+          size={14}
+        /></IconButton
+      >
+    </div>
+    <div class="grid gap-4 p-4">
+      <div>
+        <div class="flex flex-wrap gap-2">
+          <Chip tone="info">{entryKind(entry)}</Chip>
+          {#if entry.hasChildren}
+            <Chip tone="accent">Container</Chip>
+          {/if}
+        </div>
+        <h2 class="mt-2 text-title font-semibold text-text-primary">{entryLabel(entry)}</h2>
+        <p class="mt-1 break-all font-mono text-meta text-text-disabled">
+          {formatProviderKey(entry.item?.key ?? entry.relation.key)}
+        </p>
+      </div>
+      {#if entry.item?.portableReferences.length}
+        <section>
+          <h3 class="text-meta font-semibold uppercase text-text-disabled">Portable references</h3>
+          <div class="mt-2 grid gap-1.5">
+            {#each entry.item.portableReferences as reference}
+              <p
+                class="break-all rounded-md border border-border-subtle bg-black/10 px-2.5 py-2 font-mono text-meta text-text-muted"
+              >
+                {formatPortableReference(reference)}
+              </p>
+            {/each}
+          </div>
+        </section>
+      {/if}
+      <details>
+        <summary class="cursor-pointer text-label text-text-muted">Raw published entry</summary>
+        <pre
+          class="mt-2 max-h-72 overflow-auto rounded-md border border-border-subtle bg-black/15 p-3 font-mono text-caption text-text-muted"
+        >{rawEntry(entry)}</pre>
+      </details>
+    </div>
+  </Panel>
+{/snippet}
+
 <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
   <div class="shrink-0 border-b border-border-subtle bg-surface-panel px-4 py-3 sm:px-6">
     {#if data.sources.length > 0}
@@ -426,6 +497,17 @@ function rawEntry(entry: CatalogEntry): string {
           />
           <h2 class="mt-3 text-heading font-semibold text-text-primary">No attached sources</h2>
           <p class="mt-1 text-label text-text-muted">Attach a discovered source from Connections.</p>
+          <Button
+            class="mt-4"
+            onclick={() => goto(`/connections?workspace=${data.workspace.id}`)}
+            size="sm"
+          >
+            Attach sources
+            <ArrowRight
+              aria-hidden="true"
+              size={14}
+            />
+          </Button>
         </div></Panel
       >
     </div>
@@ -551,6 +633,11 @@ function rawEntry(entry: CatalogEntry): string {
                       >
                     {/if}
                   </li>
+                  {#if focusedRelationId === relationId(entry)}
+                    <li class="border-t border-border-subtle p-3 lg:hidden">
+                      {@render catalogDetails(entry)}
+                    </li>
+                  {/if}
                 {/each}
               </ul>
             </div>
@@ -571,64 +658,9 @@ function rawEntry(entry: CatalogEntry): string {
           {/if}
         </section>
 
-        <aside class="min-w-0">
+        <aside class="hidden min-w-0 lg:block">
           {#if focusedEntry}
-            <Panel
-              class="sticky top-0 overflow-hidden"
-              element="section"
-            >
-              <div class="relative aspect-video bg-surface-raised">
-                <MediaArtwork
-                  alt=""
-                  class="absolute inset-0 size-full rounded-none border-0"
-                  shape="landscape"
-                  src={preferredArtwork(focusedEntry)?.href}
-                /><IconButton
-                  class="absolute top-2 right-2 z-10 border-border-strong bg-surface-overlay/90"
-                  label="Close catalog details"
-                  onclick={() => (focusedRelationId = "")}
-                  size="sm"
-                  ><X
-                    aria-hidden="true"
-                    size={14}
-                  /></IconButton
-                >
-              </div>
-              <div class="grid gap-4 p-4">
-                <div>
-                  <div class="flex flex-wrap gap-2">
-                    <Chip tone="info">{entryKind(focusedEntry)}</Chip>
-                    {#if focusedEntry.hasChildren}
-                      <Chip tone="accent">Container</Chip>
-                    {/if}
-                  </div>
-                  <h2 class="mt-2 text-title font-semibold text-text-primary">{entryLabel(focusedEntry)}</h2>
-                  <p class="mt-1 break-all font-mono text-meta text-text-disabled">
-                    {formatProviderKey(focusedEntry.item?.key ?? focusedEntry.relation.key)}
-                  </p>
-                </div>
-                {#if focusedEntry.item?.portableReferences.length}
-                  <section>
-                    <h3 class="text-meta font-semibold uppercase text-text-disabled">Portable references</h3>
-                    <div class="mt-2 grid gap-1.5">
-                      {#each focusedEntry.item.portableReferences as reference}
-                        <p
-                          class="break-all rounded-md border border-border-subtle bg-black/10 px-2.5 py-2 font-mono text-meta text-text-muted"
-                        >
-                          {formatPortableReference(reference)}
-                        </p>
-                      {/each}
-                    </div>
-                  </section>
-                {/if}
-                <details>
-                  <summary class="cursor-pointer text-label text-text-muted">Raw published entry</summary>
-                  <pre
-                    class="mt-2 max-h-72 overflow-auto rounded-md border border-border-subtle bg-black/15 p-3 font-mono text-caption text-text-muted"
-                  >{rawEntry(focusedEntry)}</pre>
-                </details>
-              </div>
-            </Panel>
+            {@render catalogDetails(focusedEntry)}
           {:else}
             <Panel
               class="hidden min-h-40 place-items-center p-5 text-center text-label text-text-muted lg:grid"

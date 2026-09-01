@@ -38,6 +38,8 @@ test("authors and activates portable mapping revisions", async ({ page }) => {
   const staleCatalogPageGate = new Promise<void>((resolve) => {
     releaseStaleCatalogPage = resolve;
   });
+  let rootCatalogRequests = 0;
+  let mismatchedPublicationRequested = false;
 
   await mockApi(page, async (route) => {
     const url = new URL(route.request().url());
@@ -54,12 +56,26 @@ test("authors and activates portable mapping revisions", async ({ page }) => {
         await staleCatalogPageGate;
         return json(route, catalogPage([catalogEntry("Old result", "media/old-result", "old", false, false)]));
       }
+      if (url.searchParams.get("cursor") === "publication-page") {
+        mismatchedPublicationRequested = true;
+        return json(route, {
+          ...catalogPage([catalogEntry("Mismatched publication", "media/mismatched", "mismatched", false, false)]),
+          publicationId: "77777777-7777-7777-7777-777777777777",
+        });
+      }
       if (url.searchParams.get("search") === "fresh") {
         return json(route, catalogPage([catalogEntry("Fresh result", "media/fresh-result", "fresh", false, false)]));
       }
+      rootCatalogRequests += 1;
+      if (rootCatalogRequests >= 3) {
+        return json(route, {
+          ...catalogPage([catalogEntry("Current publication", "media/current", "current", false, false)]),
+          publicationId: "77777777-7777-7777-7777-777777777777",
+        });
+      }
       return json(route, {
         ...catalogPage([catalogEntry("Quiet signal", "media/quiet-signal", "quiet", false, false)]),
-        nextCursor: "stale-page",
+        nextCursor: rootCatalogRequests === 1 ? "stale-page" : "publication-page",
       });
     }
     if (url.pathname === `/api/v1/workspaces/${workspaceId}/mappings` && method === "GET") {
@@ -154,6 +170,14 @@ test("authors and activates portable mapping revisions", async ({ page }) => {
   await expect(page.getByText("Fresh result", { exact: true })).toBeVisible();
   releaseStaleCatalogPage();
   await expect(page.getByText("Old result", { exact: true })).not.toBeVisible();
+  await expect(page.getByText("Fresh result", { exact: true })).toBeVisible();
+  await page.getByLabel("Search catalog references").fill("");
+  await expect(page.getByText("Quiet signal", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Load more" }).click();
+  await expect.poll(() => mismatchedPublicationRequested).toBe(true);
+  await expect(page.getByText("Current publication", { exact: true })).toBeVisible();
+  await expect(page.getByText("Mismatched publication", { exact: true })).not.toBeVisible();
+  await page.getByLabel("Search catalog references").fill("Fresh");
   await expect(page.getByText("Fresh result", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Add example.media:media/fresh-result to mapping row 1" }).click();
   await expect(page.getByRole("textbox", { name: "Portable references for row 1" })).toHaveValue(

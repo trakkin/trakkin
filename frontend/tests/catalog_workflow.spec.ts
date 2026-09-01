@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import {
+  apiError,
   connection,
   connectionId,
   expectNoHorizontalOverflow,
@@ -15,6 +16,73 @@ import {
   workspaceId,
 } from "./support/api.ts";
 import { catalogEntry, catalogPage, childCatalog, rootCatalog } from "./support/catalog.ts";
+
+test("preserves healthy sources and keeps mobile inspection adjacent", async ({ page }) => {
+  const unavailableConnectionId = "22222222-2222-2222-2222-444444444444";
+  const unavailableConnection = {
+    ...connection,
+    id: unavailableConnectionId,
+    displayName: "Unavailable archive",
+  };
+  await mockApi(page, async (route) => {
+    const url = new URL(route.request().url());
+    const method = route.request().method();
+    if (url.pathname === "/api/v1/workspaces" && method === "GET") return json(route, [workspace]);
+    if (url.pathname === `/api/v1/workspaces/${workspaceId}` && method === "GET") return json(route, workspace);
+    if (url.pathname === "/api/v1/connections" && method === "GET") {
+      return json(route, [connection, unavailableConnection]);
+    }
+    if (url.pathname === `/api/v1/connections/${connectionId}/sources` && method === "GET") {
+      return json(route, [source]);
+    }
+    if (url.pathname === `/api/v1/connections/${unavailableConnectionId}/sources` && method === "GET") {
+      return apiError(route, 503, "sources_unavailable", "Archive source discovery is unavailable");
+    }
+    if (url.pathname === `/api/v1/workspaces/${workspaceId}/tasks` && method === "GET") return json(route, []);
+    if (url.pathname === `/api/v1/workspaces/${workspaceId}/sources/${sourceId}/catalog` && method === "GET") {
+      return json(
+        route,
+        catalogPage([
+          catalogEntry("First entry", "media/first", "first", false, false),
+          catalogEntry("Second entry", "media/second", "second", false, false),
+        ]),
+      );
+    }
+    return fallback(route);
+  });
+
+  await page.goto(`/w/${workspaceId}/catalog`);
+  await expect(page.getByRole("button", { name: "Inspect First entry" })).toBeVisible();
+  await expect(page.getByRole("alert")).toContainText("Unavailable archive");
+  await expect(page.getByRole("alert")).toContainText("Archive source discovery is unavailable");
+  await page.getByRole("button", { name: "Inspect First entry" }).click();
+  const details = page.getByRole("region", { name: "Catalog details for First entry" });
+  await expect(details).toBeVisible();
+  if ((page.viewportSize()?.width ?? 0) < 1024) {
+    const detailsBox = await details.boundingBox();
+    const secondEntryBox = await page.getByRole("button", { name: "Inspect Second entry" }).boundingBox();
+    expect(detailsBox?.y).toBeLessThan(secondEntryBox?.y ?? 0);
+  }
+  await expectNoHorizontalOverflow(page);
+});
+
+test("links empty catalog onboarding directly to source attachment", async ({ page }) => {
+  const emptyWorkspace = { ...workspace, sources: [] };
+  await mockApi(page, async (route) => {
+    const url = new URL(route.request().url());
+    const method = route.request().method();
+    if (url.pathname === "/api/v1/workspaces" && method === "GET") return json(route, [emptyWorkspace]);
+    if (url.pathname === `/api/v1/workspaces/${workspaceId}` && method === "GET") return json(route, emptyWorkspace);
+    if (url.pathname === "/api/v1/connections" && method === "GET") return json(route, []);
+    if (url.pathname === `/api/v1/workspaces/${workspaceId}/tasks` && method === "GET") return json(route, []);
+    return fallback(route);
+  });
+
+  await page.goto(`/w/${workspaceId}/catalog`);
+  await page.getByRole("button", { name: "Attach sources" }).click();
+  await expect(page).toHaveURL(new RegExp(`/connections\\?workspace=${workspaceId}$`));
+  await expectNoHorizontalOverflow(page);
+});
 
 test("browses published hierarchy, artwork, and refresh tasks", async ({ page }) => {
   const secondSourceId = "33333333-3333-3333-3333-444444444444";

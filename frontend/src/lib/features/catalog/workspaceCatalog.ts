@@ -13,12 +13,14 @@ export type WorkspaceCatalogSource = WorkspaceSourceDirectoryEntry & {
 export type WorkspaceCatalog = {
   workspace: WorkspaceSourceDirectory["workspace"];
   sources: WorkspaceCatalogSource[];
+  issues: WorkspaceSourceDirectory["issues"];
 };
 
 export async function loadWorkspaceCatalog(workspaceId: string, signal?: AbortSignal): Promise<WorkspaceCatalog> {
   const directory = await loadWorkspaceSourceDirectory(workspaceId, signal);
   return {
     workspace: directory.workspace,
+    issues: directory.issues,
     sources: directory.sources.map((entry) => ({
       ...entry,
       catalog: null,
