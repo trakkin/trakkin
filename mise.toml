@@ -29,15 +29,16 @@ run = [
 ]
 
 [tasks."build:backend"]
-run = "cargo build --locked --release --workspace --features trakkin/bundled"
+run = [
+  "mkdir -p target/openapi",
+  "cargo run --locked --quiet --bin export_openapi -- target/openapi/trakkin.openapi.json",
+  "pnpm --dir frontend exec openapi-typescript ../target/openapi/trakkin.openapi.json -o src/lib/api/generated/schema.ts",
+  "cargo build --locked --release --workspace --features trakkin/bundled",
+]
 
 [tasks."build:frontend"]
 dir = "frontend"
 run = "pnpm build"
-
-[tasks."build:frontend:bundle"]
-dir = "frontend"
-run = "pnpm exec vite build"
 
 [tasks."build:docs"]
 dir = "docs"
@@ -82,7 +83,7 @@ description = "Run backend and frontend development servers"
 run = [{ tasks = ["dev:backend", "dev:frontend"] }]
 
 [tasks."dev:backend"]
-description = "Regenerate the HTTP client and restart the backend when Rust inputs change"
+description = "Restart the backend when Rust inputs change"
 run = '''
 watchexec --restart --stop-signal SIGTERM \
   --watch Cargo.toml \
@@ -92,7 +93,7 @@ watchexec --restart --stop-signal SIGTERM \
   --watch src \
   --exts rs,toml,lock,sql \
   --shell=bash \
-  -- 'pnpm --dir frontend generate:api && cargo run --locked -p trakkin --features embedded-database --bin trakkin'
+  -- 'cargo run --locked -p trakkin --features embedded-database --bin trakkin'
 '''
 
 [tasks."dev:frontend"]
