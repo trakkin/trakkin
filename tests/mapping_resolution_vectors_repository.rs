@@ -51,7 +51,7 @@ async fn postgres_direct_segment_projection_executes_frozen_vectors() {
     let ratio_resolution = resolve_direct_segments(
         &pool,
         id(500),
-        vec![endpoint("example.media:original")],
+        vec![endpoint("example.media://original")],
         Some("episode:1..24"),
         now,
     )
@@ -96,7 +96,7 @@ async fn postgres_direct_segment_projection_executes_frozen_vectors() {
     let split_resolution = resolve_direct_segments(
         &pool,
         id(510),
-        vec![endpoint("example.media:original")],
+        vec![endpoint("example.media://original")],
         Some("episode:1..12"),
         now,
     )
@@ -112,8 +112,8 @@ async fn postgres_direct_segment_projection_executes_frozen_vectors() {
         &pool,
         id(520),
         vec![
-            endpoint("example.media:part-a"),
-            endpoint("example.media:part-b"),
+            endpoint("example.media://part-a"),
+            endpoint("example.media://part-b"),
         ],
         None,
         now,
@@ -145,7 +145,7 @@ async fn postgres_direct_segment_projection_executes_frozen_vectors() {
     let compatible = resolve_direct_segments(
         &pool,
         id(530),
-        vec![endpoint("example.media:a")],
+        vec![endpoint("example.media://a")],
         Some("episode:1..18"),
         now,
     )
@@ -161,7 +161,7 @@ async fn postgres_direct_segment_projection_executes_frozen_vectors() {
     let conflict = resolve_direct_segments(
         &pool,
         id(540),
-        vec![endpoint("example.media:a")],
+        vec![endpoint("example.media://a")],
         Some("episode:1..18"),
         now,
     )
@@ -198,7 +198,7 @@ async fn postgres_transitive_resolution_executes_frozen_vectors() {
         .resolve(ResolutionRequest {
             workspace_id: id(550),
             mode: ResolutionMode::Direct,
-            references: vec![endpoint("example.media:a")],
+            references: vec![endpoint("example.media://a")],
             window: None,
             resolved_at: now,
         })
@@ -214,7 +214,7 @@ async fn postgres_transitive_resolution_executes_frozen_vectors() {
         .resolve(ResolutionRequest {
             workspace_id: id(550),
             mode: ResolutionMode::Transitive,
-            references: vec![endpoint("example.media:a")],
+            references: vec![endpoint("example.media://a")],
             window: None,
             resolved_at: now,
         })
@@ -222,14 +222,16 @@ async fn postgres_transitive_resolution_executes_frozen_vectors() {
         .expect("transitive graph resolution succeeds");
     assert_eq!(transitive.completeness, ResolutionCompleteness::Complete);
     assert_eq!(transitive.correspondences.len(), 2);
-    assert_eq!(
-        transitive.correspondences[0].proof.kind,
-        ResolutionProofKind::Direct
-    );
-    assert_eq!(
-        transitive.correspondences[1].proof.kind,
-        ResolutionProofKind::Derived
-    );
+    assert!(transitive.correspondences.iter().any(|correspondence| {
+        correspondence.endpoints
+            == vec![endpoint("example.media://a"), endpoint("example.media://b")]
+            && correspondence.proof.kind == ResolutionProofKind::Direct
+    }));
+    assert!(transitive.correspondences.iter().any(|correspondence| {
+        correspondence.endpoints
+            == vec![endpoint("example.media://a"), endpoint("example.media://c")]
+            && correspondence.proof.kind == ResolutionProofKind::Derived
+    }));
 
     activate_correspondence_vector(&pool, "GRAPH-CONSISTENT-CYCLE-001", 560, now).await;
     let consistent =
@@ -237,7 +239,7 @@ async fn postgres_transitive_resolution_executes_frozen_vectors() {
             .resolve(ResolutionRequest {
                 workspace_id: id(560),
                 mode: ResolutionMode::Transitive,
-                references: vec![endpoint("example.media:a"), endpoint("example.media:c")],
+                references: vec![endpoint("example.media://a"), endpoint("example.media://c")],
                 window: None,
                 resolved_at: now,
             })
@@ -256,7 +258,7 @@ async fn postgres_transitive_resolution_executes_frozen_vectors() {
             .resolve(ResolutionRequest {
                 workspace_id: id(570),
                 mode: ResolutionMode::Transitive,
-                references: vec![endpoint("example.media:a"), endpoint("example.media:c")],
+                references: vec![endpoint("example.media://a"), endpoint("example.media://c")],
                 window: None,
                 resolved_at: now,
             })
@@ -278,7 +280,7 @@ async fn postgres_transitive_resolution_executes_frozen_vectors() {
     .resolve(ResolutionRequest {
         workspace_id: id(580),
         mode: ResolutionMode::Transitive,
-        references: vec![endpoint("example.media:a")],
+        references: vec![endpoint("example.media://a")],
         window: None,
         resolved_at: now,
     })
@@ -288,11 +290,14 @@ async fn postgres_transitive_resolution_executes_frozen_vectors() {
     assert_eq!(ambiguous.completeness, ResolutionCompleteness::Partial);
     assert_eq!(ambiguous.findings.len(), 1);
     assert_eq!(ambiguous.findings[0].kind, ResolutionFindingKind::Ambiguous);
-    assert_eq!(ambiguous.findings[0].endpoint, endpoint("example.media:b"));
+    assert_eq!(
+        ambiguous.findings[0].endpoint,
+        endpoint("example.media://b")
+    );
     assert!(ambiguous.correspondences.iter().all(|correspondence| {
         !correspondence
             .endpoints
-            .contains(&endpoint("example.media:c"))
+            .contains(&endpoint("example.media://c"))
     }));
 
     database.shutdown().await;
@@ -309,8 +314,8 @@ async fn postgres_semantic_budgets_execute_bounded_direct_topologies() {
         600,
         "bounded-sparse",
         vec![vec![
-            "budget.example:sparse/a".to_owned(),
-            "budget.example:sparse/b".to_owned(),
+            "budget.example://sparse/a".to_owned(),
+            "budget.example://sparse/b".to_owned(),
         ]],
         now,
     )
@@ -319,7 +324,7 @@ async fn postgres_semantic_budgets_execute_bounded_direct_topologies() {
         &pool,
         id(600),
         ResolutionMode::Direct,
-        "budget.example:sparse/a",
+        "budget.example://sparse/a",
         None,
         ResolutionSemanticLimits {
             endpoint_hits: 1,
@@ -344,8 +349,8 @@ async fn postgres_semantic_budgets_execute_bounded_direct_topologies() {
         (0..3)
             .map(|index| {
                 vec![
-                    "budget.example:hub".to_owned(),
-                    format!("budget.example:leaf/{index}"),
+                    "budget.example://hub".to_owned(),
+                    format!("budget.example://leaf/{index}"),
                 ]
             })
             .collect(),
@@ -363,7 +368,7 @@ async fn postgres_semantic_budgets_execute_bounded_direct_topologies() {
         &pool,
         id(610),
         ResolutionMode::Direct,
-        "budget.example:hub",
+        "budget.example://hub",
         None,
         exact_limits,
         now,
@@ -379,7 +384,7 @@ async fn postgres_semantic_budgets_execute_bounded_direct_topologies() {
         &pool,
         id(610),
         ResolutionMode::Direct,
-        "budget.example:hub",
+        "budget.example://hub",
         None,
         ResolutionSemanticLimits {
             endpoint_hits: 2,
@@ -397,14 +402,14 @@ async fn postgres_semantic_budgets_execute_bounded_direct_topologies() {
         endpoint_overflow
             .next_work_key
             .as_deref()
-            .is_some_and(|key| key.starts_with("endpoint:budget.example:leaf/"))
+            .is_some_and(|key| key.starts_with("endpoint:budget.example://leaf/"))
     );
 
     let candidate_overflow = resolve_with_limits(
         &pool,
         id(610),
         ResolutionMode::Direct,
-        "budget.example:hub",
+        "budget.example://hub",
         None,
         ResolutionSemanticLimits {
             candidate_rows: 2,
@@ -429,7 +434,7 @@ async fn postgres_semantic_budgets_execute_bounded_direct_topologies() {
         &pool,
         id(610),
         ResolutionMode::Direct,
-        "budget.example:hub",
+        "budget.example://hub",
         None,
         ResolutionSemanticLimits {
             partitions: 2,
@@ -447,7 +452,7 @@ async fn postgres_semantic_budgets_execute_bounded_direct_topologies() {
         partition_overflow
             .next_work_key
             .as_deref()
-            .is_some_and(|key| key.starts_with("correspondence:budget.example:"))
+            .is_some_and(|key| key.starts_with("correspondence:budget.example://"))
     );
 
     activate_mapping_rows(
@@ -458,8 +463,8 @@ async fn postgres_semantic_budgets_execute_bounded_direct_topologies() {
             .map(|start| {
                 let end = start + 2;
                 vec![
-                    format!("budget.example:dense/a[episode:{start}..{end}]"),
-                    format!("budget.example:dense/b[episode:{start}..{end}]"),
+                    format!("budget.example://dense/a[episode:{start}..{end}]"),
+                    format!("budget.example://dense/b[episode:{start}..{end}]"),
                 ]
             })
             .collect(),
@@ -477,7 +482,7 @@ async fn postgres_semantic_budgets_execute_bounded_direct_topologies() {
         &pool,
         id(620),
         ResolutionMode::Direct,
-        "budget.example:dense/a",
+        "budget.example://dense/a",
         Some("episode:1..5"),
         dense_limits,
         now,
@@ -492,7 +497,7 @@ async fn postgres_semantic_budgets_execute_bounded_direct_topologies() {
         &pool,
         id(620),
         ResolutionMode::Direct,
-        "budget.example:dense/a",
+        "budget.example://dense/a",
         Some("episode:1..5"),
         ResolutionSemanticLimits {
             partitions: 2,
@@ -507,7 +512,7 @@ async fn postgres_semantic_budgets_execute_bounded_direct_topologies() {
     );
     assert_eq!(dense_overflow.semantic_work.partitions, 2);
     assert!(dense_overflow.next_work_key.as_deref().is_some_and(|key| {
-        key.starts_with("segment:budget.example:dense/a[episode:3..5]:episode:3")
+        key.starts_with("segment:budget.example://dense/a[episode:3..5]:episode:3")
     }));
 
     database.shutdown().await;
@@ -526,8 +531,8 @@ async fn postgres_semantic_budgets_execute_bounded_transitive_topologies() {
         (0..3)
             .map(|index| {
                 vec![
-                    format!("budget.example:chain/{index}"),
-                    format!("budget.example:chain/{}", index + 1),
+                    format!("budget.example://chain/{index}"),
+                    format!("budget.example://chain/{}", index + 1),
                 ]
             })
             .collect(),
@@ -545,7 +550,7 @@ async fn postgres_semantic_budgets_execute_bounded_transitive_topologies() {
         &pool,
         id(630),
         ResolutionMode::Transitive,
-        "budget.example:chain/0",
+        "budget.example://chain/0",
         None,
         chain_limits,
         now,
@@ -559,7 +564,7 @@ async fn postgres_semantic_budgets_execute_bounded_transitive_topologies() {
         &pool,
         id(630),
         ResolutionMode::Transitive,
-        "budget.example:chain/0",
+        "budget.example://chain/0",
         None,
         ResolutionSemanticLimits {
             traversal_hops: 2,
@@ -572,7 +577,7 @@ async fn postgres_semantic_budgets_execute_bounded_transitive_topologies() {
     assert_eq!(hop_overflow.semantic_work.traversal_hops, 2);
     assert_eq!(
         hop_overflow.next_work_key.as_deref(),
-        Some("endpoint:budget.example:chain/2")
+        Some("endpoint:budget.example://chain/2")
     );
 
     activate_mapping_rows(
@@ -581,16 +586,16 @@ async fn postgres_semantic_budgets_execute_bounded_transitive_topologies() {
         "bounded-cycle",
         vec![
             vec![
-                "budget.example:cycle/a".to_owned(),
-                "budget.example:cycle/b".to_owned(),
+                "budget.example://cycle/a".to_owned(),
+                "budget.example://cycle/b".to_owned(),
             ],
             vec![
-                "budget.example:cycle/b".to_owned(),
-                "budget.example:cycle/c".to_owned(),
+                "budget.example://cycle/b".to_owned(),
+                "budget.example://cycle/c".to_owned(),
             ],
             vec![
-                "budget.example:cycle/c".to_owned(),
-                "budget.example:cycle/a".to_owned(),
+                "budget.example://cycle/c".to_owned(),
+                "budget.example://cycle/a".to_owned(),
             ],
         ],
         now,
@@ -600,7 +605,7 @@ async fn postgres_semantic_budgets_execute_bounded_transitive_topologies() {
         &pool,
         id(640),
         ResolutionMode::Transitive,
-        "budget.example:cycle/a",
+        "budget.example://cycle/a",
         None,
         ResolutionSemanticLimits {
             endpoint_hits: u64::MAX,
@@ -785,11 +790,11 @@ impl MappingEndpointLookup for AmbiguousTraversalLookup {
     > {
         Box::pin(async move {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            assert!(request.endpoints.contains(&endpoint("example.media:b")));
+            assert!(request.endpoints.contains(&endpoint("example.media://b")));
             Ok(MappingEndpointLookupBatch {
                 matches: Vec::new(),
                 findings: vec![ResolutionFinding {
-                    endpoint: endpoint("example.media:b"),
+                    endpoint: endpoint("example.media://b"),
                     kind: ResolutionFindingKind::Ambiguous,
                     span: None,
                     proof_paths: Vec::new(),

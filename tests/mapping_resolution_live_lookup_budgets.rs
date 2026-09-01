@@ -18,7 +18,7 @@ use uuid::Uuid;
 #[tokio::test]
 async fn direct_resolution_discards_proof_when_live_lookup_pins_change() {
     let resolved_at = fixture_time();
-    let requested = endpoint("example.media:item[episode:1..12]");
+    let requested = endpoint("example.media://item[episode:1..12]");
     let snapshot = live_lookup_snapshot(requested.clone());
 
     for (name, mutation) in [
@@ -66,8 +66,8 @@ async fn direct_resolution_discards_proof_when_live_lookup_pins_change() {
 async fn direct_resolution_enforces_lookup_reference_and_byte_budgets() {
     let resolved_at = fixture_time();
     let requested = vec![
-        endpoint("example.media:a[episode:1]"),
-        endpoint("example.media:b[episode:1]"),
+        endpoint("example.media://a[episode:1]"),
+        endpoint("example.media://b[episode:1]"),
     ];
     let snapshot = lookup_budget_snapshot(&requested);
     let exact_bytes = requested
@@ -134,7 +134,7 @@ async fn direct_resolution_enforces_lookup_reference_and_byte_budgets() {
     assert_eq!(reference_overflow.semantic_work.lookup_references, 1);
     assert_eq!(
         reference_overflow.next_work_key.as_deref(),
-        Some("reference:example.media:b[episode:1]")
+        Some("reference:example.media://b[episode:1]")
     );
     assert!(
         reference_requests
@@ -176,7 +176,7 @@ async fn direct_resolution_enforces_lookup_reference_and_byte_budgets() {
     );
     assert_eq!(
         byte_overflow.next_work_key.as_deref(),
-        Some("reference:example.media:b[episode:1]@byte:0")
+        Some("reference:example.media://b[episode:1]@byte:0")
     );
     assert!(
         byte_requests
@@ -191,8 +191,8 @@ async fn direct_resolution_enforces_lookup_reference_and_byte_budgets() {
 async fn direct_resolution_enforces_lookup_batch_call_budget() {
     let resolved_at = fixture_time();
     let requested = vec![
-        endpoint("example.media:a[episode:1]"),
-        endpoint("example.media:b[episode:1]"),
+        endpoint("example.media://a[episode:1]"),
+        endpoint("example.media://b[episode:1]"),
     ];
     let snapshot = lookup_budget_snapshot(&requested);
 
@@ -242,7 +242,7 @@ async fn direct_resolution_enforces_lookup_batch_call_budget() {
     assert_eq!(overflow.lookup_calls, 2);
     assert_eq!(
         overflow.next_work_key.as_deref(),
-        Some("lookup-call:example.media:b[episode:1]")
+        Some("lookup-call:example.media://b[episode:1]")
     );
 }
 
@@ -268,7 +268,7 @@ fn lookup_budget_snapshot(requested: &[PortableEndpoint]) -> DirectFrontierSnaps
                         endpoint_ordinal: 0,
                     },
                     FrontierEndpoint {
-                        endpoint: endpoint(&format!("example.media:peer-{index}[episode:1]")),
+                        endpoint: endpoint(&format!("example.media://peer-{index}[episode:1]")),
                         endpoint_hash: format!("sha256:lookup-budget-peer-{index}"),
                         endpoint_ordinal: 1,
                     },
@@ -302,7 +302,7 @@ fn live_lookup_snapshot(requested: PortableEndpoint) -> DirectFrontierSnapshot {
                     endpoint_ordinal: 0,
                 },
                 FrontierEndpoint {
-                    endpoint: endpoint("example.media:peer[episode:1..12]"),
+                    endpoint: endpoint("example.media://peer[episode:1..12]"),
                     endpoint_hash: "sha256:peer".to_owned(),
                     endpoint_ordinal: 1,
                 },

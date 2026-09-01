@@ -99,7 +99,7 @@ async fn mapping_resolution_previews_exact_revisions_with_bounded_closed_results
         Request::post(format!("/api/v1/workspaces/{workspace_id}/mappings"))
             .header("content-type", "application/json")
             .body(Body::from(
-                r#"{"schema":"trakkin.mapping/v1","mappings":[["example.media:a","example.media:b"]]}"#,
+                r#"{"schema":"trakkin.mapping/v1","mappings":[["example.media://a","example.media://b"]]}"#,
             ))
             .expect("historical mapping request is built"),
     )
@@ -121,8 +121,8 @@ async fn mapping_resolution_previews_exact_revisions_with_bounded_closed_results
             json!({
                 "baseContentHash": historical_hash,
                 "mappings": [
-                    ["example.media:a", "example.media:b"],
-                    ["example.media:b", "example.media:c"]
+                    ["example.media://a", "example.media://b"],
+                    ["example.media://b", "example.media://c"]
                 ]
             })
             .to_string(),
@@ -146,7 +146,7 @@ async fn mapping_resolution_previews_exact_revisions_with_bounded_closed_results
         Request::post(format!("/api/v1/workspaces/{workspace_id}/mappings"))
             .header("content-type", "application/json")
             .body(Body::from(
-                r#"{"schema":"trakkin.mapping/v1","mappings":[["example.media:a","example.media:decoy"]]}"#,
+                r#"{"schema":"trakkin.mapping/v1","mappings":[["example.media://a","example.media://decoy"]]}"#,
             ))
             .expect("decoy mapping request is built"),
     )
@@ -166,7 +166,7 @@ async fn mapping_resolution_previews_exact_revisions_with_bounded_closed_results
         workspace_id,
         mapping_id,
         historical_hash,
-        json!({"mode": "transitive", "references": ["example.media:a"]}),
+        json!({"mode": "transitive", "references": ["example.media://a"]}),
     )
     .await;
     assert_eq!(historical_preview.0, StatusCode::OK);
@@ -178,14 +178,14 @@ async fn mapping_resolution_previews_exact_revisions_with_bounded_closed_results
     assert_eq!(historical_preview.1["semanticWork"]["endpointHits"], 2);
     assert_eq!(
         historical_preview.1["correspondences"][0]["endpoints"],
-        json!(["example.media:a", "example.media:b"])
+        json!(["example.media://a", "example.media://b"])
     );
-    assert!(!historical_preview.1.to_string().contains("example.media:c"));
+    assert!(!historical_preview.1.to_string().contains("example.media://c"));
     assert!(
         !historical_preview
             .1
             .to_string()
-            .contains("example.media:decoy")
+            .contains("example.media://decoy")
     );
 
     let direct = mapping_resolution_preview_request(
@@ -193,22 +193,22 @@ async fn mapping_resolution_previews_exact_revisions_with_bounded_closed_results
         workspace_id,
         mapping_id,
         successor_hash,
-        json!({"mode": "direct", "references": ["example.media:a"]}),
+        json!({"mode": "direct", "references": ["example.media://a"]}),
     )
     .await;
     assert_eq!(direct.0, StatusCode::OK);
-    assert!(!direct.1.to_string().contains("example.media:c"));
+    assert!(!direct.1.to_string().contains("example.media://c"));
     let transitive = mapping_resolution_preview_request(
         &router,
         workspace_id,
         mapping_id,
         successor_hash,
-        json!({"mode": "transitive", "references": ["example.media:a"]}),
+        json!({"mode": "transitive", "references": ["example.media://a"]}),
     )
     .await;
     assert_eq!(transitive.0, StatusCode::OK);
-    assert!(transitive.1.to_string().contains("example.media:c"));
-    assert!(!transitive.1.to_string().contains("example.media:decoy"));
+    assert!(transitive.1.to_string().contains("example.media://c"));
+    assert!(!transitive.1.to_string().contains("example.media://decoy"));
 
     let partial = mapping_resolution_preview_request(
         &router,
@@ -217,7 +217,7 @@ async fn mapping_resolution_previews_exact_revisions_with_bounded_closed_results
         historical_hash,
         json!({
             "mode": "direct",
-            "references": ["example.media:a", "example.media:missing"]
+            "references": ["example.media://a", "example.media://missing"]
         }),
     )
     .await;
@@ -227,7 +227,7 @@ async fn mapping_resolution_previews_exact_revisions_with_bounded_closed_results
 
     for (payload, path) in [
         (
-            json!({"mode": "sideways", "references": ["example.media:a"]}),
+            json!({"mode": "sideways", "references": ["example.media://a"]}),
             "mode",
         ),
         (json!({"mode": "direct", "references": []}), "references"),
@@ -236,7 +236,7 @@ async fn mapping_resolution_previews_exact_revisions_with_bounded_closed_results
             "references[0]",
         ),
         (
-            json!({"mode": "direct", "references": ["example.media:a"], "window": "episode:1.."}),
+            json!({"mode": "direct", "references": ["example.media://a"], "window": "episode:1.."}),
             "window",
         ),
     ] {
@@ -257,7 +257,7 @@ async fn mapping_resolution_previews_exact_revisions_with_bounded_closed_results
         workspace_id,
         mapping_id,
         "not-a-hash",
-        json!({"mode": "direct", "references": ["example.media:a"]}),
+        json!({"mode": "direct", "references": ["example.media://a"]}),
     )
     .await;
     assert_eq!(invalid_hash.0, StatusCode::BAD_REQUEST);
@@ -268,7 +268,7 @@ async fn mapping_resolution_previews_exact_revisions_with_bounded_closed_results
         workspace_id,
         mapping_id,
         &format!("sha256:{}", "0".repeat(64)),
-        json!({"mode": "direct", "references": ["example.media:a"]}),
+        json!({"mode": "direct", "references": ["example.media://a"]}),
     )
     .await;
     assert_eq!(missing_revision.0, StatusCode::NOT_FOUND);
@@ -282,7 +282,7 @@ async fn mapping_resolution_previews_exact_revisions_with_bounded_closed_results
         workspace_id,
         mapping_id,
         historical_hash,
-        json!({"mode": "direct", "references": ["example.media:a"]}),
+        json!({"mode": "direct", "references": ["example.media://a"]}),
     )
     .await;
     assert_eq!(stale.0, StatusCode::OK);
@@ -299,7 +299,7 @@ async fn mapping_resolution_previews_exact_revisions_with_bounded_closed_results
         workspace_id,
         mapping_id,
         historical_hash,
-        json!({"mode": "direct", "references": ["example.media:a"]}),
+        json!({"mode": "direct", "references": ["example.media://a"]}),
     )
     .await;
     assert_eq!(oversized.0, StatusCode::PAYLOAD_TOO_LARGE);

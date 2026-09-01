@@ -14,7 +14,7 @@
             "evidenceId": "state-evidence-a-r1",
             "source": "source-local-contributor-a",
             "subject": "provider-subject-a",
-            "root": "example.media:original[episode:1..12]",
+            "root": "example.media://original[episode:1..12]",
             "presence": "present",
             "coverage": ["episode:1..4"],
             "publication": "state-a-r1"
@@ -24,7 +24,7 @@
             "evidenceId": "state-evidence-b-r1",
             "source": "source-local-contributor-b",
             "subject": "provider-subject-b",
-            "root": "example.media:aggregate[episode:1..12]",
+            "root": "example.media://aggregate[episode:1..12]",
             "presence": "present",
             "coverage": ["episode:1..7"],
             "publication": "state-b-r1"
@@ -34,17 +34,17 @@
           {
             "proofId": "mapping-proof-a",
             "endpoints": [
-              "example.media:original[episode:1..6]",
-              "example.media:part-a[episode:1..6]",
-              "example.media:aggregate[episode:1..6]"
+              "example.media://original[episode:1..6]",
+              "example.media://part-a[episode:1..6]",
+              "example.media://aggregate[episode:1..6]"
             ]
           },
           {
             "proofId": "mapping-proof-b",
             "endpoints": [
-              "example.media:original[episode:7..12]",
-              "example.media:part-b[episode:1..6]",
-              "example.media:aggregate[episode:7..12]"
+              "example.media://original[episode:7..12]",
+              "example.media://part-b[episode:1..6]",
+              "example.media://aggregate[episode:7..12]"
             ]
           }
         ],

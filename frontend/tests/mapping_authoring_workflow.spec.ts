@@ -21,8 +21,8 @@ test("authors and activates portable mapping revisions", async ({ page }) => {
   const firstHash = `sha256:${"1".repeat(64)}`;
   const externalHash = `sha256:${"2".repeat(64)}`;
   const savedHash = `sha256:${"3".repeat(64)}`;
-  const initialRows = [["example.alt:item/one", "example.media:item/one"]];
-  const externalRows = [...initialRows, ["example.alt:external", "example.media:external"]];
+  const initialRows = [["example.alt://item/one", "example.media://item/one"]];
+  const externalRows = [...initialRows, ["example.alt://external", "example.media://external"]];
   let summary: ReturnType<typeof mappingSummary> | null = null;
   let headRows = initialRows;
   let revisions: Array<ReturnType<typeof mappingRevision>> = [];
@@ -113,14 +113,14 @@ test("authors and activates portable mapping revisions", async ({ page }) => {
             message: "Mapping head moved since the selected base revision",
             fieldProblems: [],
             currentHead: externalHash,
-            added: [["example.alt:draft", "example.media:draft"]],
-            removed: [["example.alt:external", "example.media:external"]],
+            added: [["example.alt://draft", "example.media://draft"]],
+            removed: [["example.alt://external", "example.media://external"]],
           },
           409,
         );
       }
       summary = mappingSummary(mappingId, savedHash, 3, 1, null);
-      headRows = [["example.alt:draft", "example.media:draft"]];
+      headRows = [["example.alt://draft", "example.media://draft"]];
       revisions = [
         mappingRevision(savedHash, 3, 1),
         mappingRevision(externalHash, 2, 2),
@@ -179,13 +179,13 @@ test("authors and activates portable mapping revisions", async ({ page }) => {
   await expect(page.getByText("Mismatched publication", { exact: true })).not.toBeVisible();
   await page.getByLabel("Search catalog references").fill("Fresh");
   await expect(page.getByText("Fresh result", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Add example.media:media/fresh-result to mapping row 1" }).click();
+  await page.getByRole("button", { name: "Add example.media://media/fresh-result to mapping row 1" }).click();
   await expect(page.getByRole("textbox", { name: "Portable references for row 1" })).toHaveValue(
-    "example.media:media/fresh-result",
+    "example.media://media/fresh-result",
   );
   await page
     .getByRole("textbox", { name: "Portable references for row 1" })
-    .fill("example.media:item/one\nexample.alt:item/one");
+    .fill("example.media://item/one\nexample.alt://item/one");
   await page.getByRole("button", { name: "Create mapping" }).click();
   await expect.poll(() => staleSaveRequested).toBe(true);
   await page.keyboard.press("Escape");
@@ -213,7 +213,7 @@ test("authors and activates portable mapping revisions", async ({ page }) => {
   await page.getByRole("button", { name: "New revision" }).click();
   await page
     .getByRole("textbox", { name: "Portable references for row 1" })
-    .fill("example.media:draft\nexample.alt:draft");
+    .fill("example.media://draft\nexample.alt://draft");
   await page.getByRole("button", { name: "Save revision" }).click();
   await expect(page.getByRole("alert")).toContainText("Mapping head moved");
   await expect(page.getByRole("alert")).toContainText("1 added · 1 removed");

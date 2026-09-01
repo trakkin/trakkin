@@ -860,9 +860,9 @@ mod tests {
                 maximum_response_bytes: 65_536,
             }),
         };
-        let bare = PortableEndpoint::parse("example.media:media/quiet-signal")
+        let bare = PortableEndpoint::parse("example.media://media/quiet-signal")
             .expect("bare endpoint is valid");
-        let selected = PortableEndpoint::parse("example.media:media/quiet-signal[segment:1..12]")
+        let selected = PortableEndpoint::parse("example.media://media/quiet-signal[segment:1..12]")
             .expect("selected endpoint is valid");
 
         assert_eq!(

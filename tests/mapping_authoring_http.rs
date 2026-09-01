@@ -90,7 +90,7 @@ async fn mapping_authoring_uses_hash_native_revisions_and_activation() {
         Request::post(format!("/api/v1/workspaces/{workspace_id}/mappings"))
             .header("content-type", "application/json")
             .body(Body::from(
-                r#"{"schema":"trakkin.mapping/v2","mappings":[["tmdb:movie/603","imdb:title/tt0133093"]]}"#,
+                r#"{"schema":"trakkin.mapping/v2","mappings":[["metadata.example://movie/secondary","catalog.example://title/primary"]]}"#,
             ))
             .expect("invalid mapping request is built"),
     )
@@ -104,7 +104,7 @@ async fn mapping_authoring_uses_hash_native_revisions_and_activation() {
         Request::post(format!("/api/v1/workspaces/{workspace_id}/mappings"))
             .header("content-type", "application/json")
             .body(Body::from(
-                r#"{"schema":"trakkin.mapping/v1","mappings":[["tmdb:movie/603","imdb:title/tt0133093"]]}"#,
+                r#"{"schema":"trakkin.mapping/v1","mappings":[["metadata.example://movie/secondary","catalog.example://title/primary"]]}"#,
             ))
             .expect("mapping create request is built"),
     )
@@ -130,8 +130,8 @@ async fn mapping_authoring_uses_hash_native_revisions_and_activation() {
             json!({
                 "baseContentHash": first_hash,
                 "mappings": [
-                    ["tmdb:movie/603", "imdb:title/tt0133093"],
-                    ["example.media:head", "example.alt:head"]
+                    ["metadata.example://movie/secondary", "catalog.example://title/primary"],
+                    ["example.media://head", "example.alt://head"]
                 ]
             })
             .to_string(),
@@ -156,8 +156,8 @@ async fn mapping_authoring_uses_hash_native_revisions_and_activation() {
             json!({
                 "baseContentHash": first_hash,
                 "mappings": [
-                    ["tmdb:movie/603", "imdb:title/tt0133093"],
-                    ["example.media:proposed", "example.alt:proposed"]
+                    ["metadata.example://movie/secondary", "catalog.example://title/primary"],
+                    ["example.media://proposed", "example.alt://proposed"]
                 ]
             })
             .to_string(),
@@ -170,11 +170,11 @@ async fn mapping_authoring_uses_hash_native_revisions_and_activation() {
     assert_eq!(stale.1["currentHead"], head_hash);
     assert_eq!(
         stale.1["added"],
-        json!([["example.alt:proposed", "example.media:proposed"]])
+        json!([["example.alt://proposed", "example.media://proposed"]])
     );
     assert_eq!(
         stale.1["removed"],
-        json!([["example.alt:head", "example.media:head"]])
+        json!([["example.alt://head", "example.media://head"]])
     );
     assert_eq!(stale.1.as_object().map(serde_json::Map::len), Some(6));
 

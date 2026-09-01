@@ -2395,7 +2395,8 @@ mod tests {
                 workspace_id: Uuid::from_u128(2),
                 mode: ResolutionMode::Direct,
                 references: vec![
-                    PortableEndpoint::parse("example.media:a").expect("deadline endpoint is valid"),
+                    PortableEndpoint::parse("example.media://a")
+                        .expect("deadline endpoint is valid"),
                 ],
                 window: None,
                 resolved_at: OffsetDateTime::UNIX_EPOCH,
@@ -2422,8 +2423,9 @@ mod tests {
     #[test]
     fn adapter_lookup_plan_enforces_canonical_batch_call_limit() {
         let endpoints = vec![
-            PortableEndpoint::parse("example.media:a[episode:1]").expect("first endpoint is valid"),
-            PortableEndpoint::parse("example.media:b[episode:1]")
+            PortableEndpoint::parse("example.media://a[episode:1]")
+                .expect("first endpoint is valid"),
+            PortableEndpoint::parse("example.media://b[episode:1]")
                 .expect("second endpoint is valid"),
         ];
         let target = MappingEndpointLookupTarget {
@@ -2451,7 +2453,7 @@ mod tests {
         );
         assert_eq!(
             overflow.next_work_key.as_deref(),
-            Some("lookup-call:example.media:b[episode:1]")
+            Some("lookup-call:example.media://b[episode:1]")
         );
     }
 }

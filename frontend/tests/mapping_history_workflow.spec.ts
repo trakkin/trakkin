@@ -119,7 +119,10 @@ test("inspects paged portable mapping history", async ({ page }) => {
     if (decodedPath === `/api/v1/workspaces/${workspaceId}/mappings/${current.mappingId}/revisions/${historicalHash}`) {
       staleRevisionRequested = true;
       await staleRevisionGate;
-      return json(route, mappingDetail(current, historicalHash, 2, [["tmdb:101", "imdb:tt0101"]]));
+      return json(
+        route,
+        mappingDetail(current, historicalHash, 2, [["catalog.example://title/101", "metadata.example://movie/101"]]),
+      );
     }
     if (
       decodedPath ===
@@ -128,8 +131,8 @@ test("inspects paged portable mapping history", async ({ page }) => {
       return json(
         route,
         mappingDetail(current, current.headContentHash, 3, [
-          ["tmdb:101", "imdb:tt0101"],
-          ["tvdb:202", "tmdb:202"],
+          ["catalog.example://title/101", "metadata.example://movie/101"],
+          ["registry.example://series/202", "metadata.example://show/202"],
         ]),
       );
     }
@@ -137,13 +140,18 @@ test("inspects paged portable mapping history", async ({ page }) => {
       return json(
         route,
         mappingDetail(current, current.headContentHash, 3, [
-          ["tmdb:101", "imdb:tt0101"],
-          ["tvdb:202", "tmdb:202"],
+          ["catalog.example://title/101", "metadata.example://movie/101"],
+          ["registry.example://series/202", "metadata.example://show/202"],
         ]),
       );
     }
     if (url.pathname === `/api/v1/workspaces/${workspaceId}/mappings/${selected.mappingId}`) {
-      return json(route, mappingDetail(selected, selected.headContentHash, 1, [["tmdb:303", "imdb:tt0303"]]));
+      return json(
+        route,
+        mappingDetail(selected, selected.headContentHash, 1, [
+          ["catalog.example://title/303", "metadata.example://movie/303"],
+        ]),
+      );
     }
     if (url.pathname === `/api/v1/workspaces/${workspaceId}/mappings/${current.mappingId}/retirement`) {
       staleRetirementRequested = true;
@@ -230,7 +238,9 @@ test("inspects paged portable mapping history", async ({ page }) => {
   await page.getByRole("button", { name: "Retire" }).click();
   await expect.poll(() => staleRetirementRequested).toBe(true);
   await page.getByRole("button", { name: `Inspect mapping ${selected.mappingId}` }).click();
-  await expect(page.getByRole("region", { name: "Portable mapping document" })).toContainText("tmdb:303");
+  await expect(page.getByRole("region", { name: "Portable mapping document" })).toContainText(
+    "catalog.example://title/303",
+  );
   await expect(page.getByRole("button", { name: "Activate head" })).toBeEnabled();
   await page.getByRole("button", { name: "Activate head" }).click();
   await expect.poll(() => selectedActivationRequests).toBe(1);

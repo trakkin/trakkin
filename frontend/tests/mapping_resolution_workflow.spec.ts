@@ -19,10 +19,10 @@ test("previews exact portable mapping revisions", async ({ page }) => {
   const historicalHash = `sha256:${"3".repeat(64)}`;
   const summary = mappingSummary(mappingId, contentHash, 2, 2, null);
   const mappings = [
-    ["example.media:item/one", "example.alt:item/one"],
-    ["example.alt:item/one", "example.third:item/one"],
+    ["example.media://item/one", "example.alt://item/one"],
+    ["example.alt://item/one", "example.third://item/one"],
   ];
-  const historicalMappings = [["example.media:item/historical", "example.alt:item/historical"]];
+  const historicalMappings = [["example.media://item/historical", "example.alt://item/historical"]];
   let previewRequests = 0;
   let deferredPreviewRequested = false;
   let deferredPreviewCompleted = false;
@@ -79,17 +79,19 @@ test("previews exact portable mapping revisions", async ({ page }) => {
   const preview = page.getByRole("region", { name: "Resolution preview" });
   await preview.getByRole("button", { name: "Preview" }).click();
   await expect(preview.getByText("complete", { exact: true })).toBeVisible();
-  await expect(preview.getByRole("region", { name: "Resolved correspondences" })).toContainText("example.alt:item/one");
+  await expect(preview.getByRole("region", { name: "Resolved correspondences" })).toContainText(
+    "example.alt://item/one",
+  );
 
   await preview.getByRole("button", { name: "Transitive" }).click();
   await preview
     .getByRole("textbox", { name: "Requested portable endpoints" })
-    .fill("example.media:item/one\nexample.media:missing");
+    .fill("example.media://item/one\nexample.media://missing");
   await preview.getByRole("textbox", { name: "Finite resolution window" }).fill("episode:1..24");
   await preview.getByRole("button", { name: "Preview" }).click();
   await expect(preview.getByText("partial", { exact: true })).toBeVisible();
   await expect(preview.getByRole("region", { name: "Resolved correspondences" })).toContainText(
-    "example.third:item/one",
+    "example.third://item/one",
   );
   await expect(preview.getByRole("region", { name: "Resolution findings" })).toContainText("unresolved");
   await expect(preview.getByRole("region", { name: "Resolution findings" })).toContainText("ambiguous");
@@ -101,7 +103,7 @@ test("previews exact portable mapping revisions", async ({ page }) => {
     .getByRole("button", { name: "Inspect revision 1" })
     .click();
   await expect(preview.getByRole("textbox", { name: "Requested portable endpoints" })).toHaveValue(
-    "example.media:item/historical\nexample.alt:item/historical",
+    "example.media://item/historical\nexample.alt://item/historical",
   );
   await expect(preview.getByRole("button", { name: "Direct" })).toHaveAttribute("aria-pressed", "true");
   releaseDeferredPreview();
@@ -137,8 +139,8 @@ function mappingResolutionPreview(mappingId: string, contentHash: string, mode: 
     correspondences: [
       {
         endpoints: transitive
-          ? ["example.media:item/one", "example.third:item/one"]
-          : ["example.media:item/one", "example.alt:item/one"],
+          ? ["example.media://item/one", "example.third://item/one"]
+          : ["example.media://item/one", "example.alt://item/one"],
         segment: null,
         proof,
         supportingProofs: [proof],
@@ -147,8 +149,8 @@ function mappingResolutionPreview(mappingId: string, contentHash: string, mode: 
     ],
     findings: transitive
       ? [
-          { endpoint: "example.media:missing", kind: "unresolved", span: null, proofPaths: [] },
-          { endpoint: "example.media:ambiguous", kind: "ambiguous", span: null, proofPaths: [] },
+          { endpoint: "example.media://missing", kind: "unresolved", span: null, proofPaths: [] },
+          { endpoint: "example.media://ambiguous", kind: "ambiguous", span: null, proofPaths: [] },
         ]
       : [],
     publishedEvidence: [],

@@ -778,7 +778,7 @@ fn preview_command_with_partitions(
                         subject: provider_subject(&format!("contributor-{proof_key}")),
                         semantic_field: "trakkin.state:progress".to_owned(),
                         root: PortableEndpoint::parse(&format!(
-                            "example.media:original[episode:{start}..{end}]"
+                            "example.media://original[episode:{start}..{end}]"
                         ))
                         .expect("portable contributor root"),
                         presence: PublishedStatePresence::Present,

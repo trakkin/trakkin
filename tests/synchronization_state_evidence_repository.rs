@@ -66,7 +66,7 @@ async fn postgres_sync_state_evidence_preserves_presence_and_publication_pins() 
     assert_eq!(roots.contributors[0].roots.len(), 1);
     assert_eq!(
         roots.contributors[0].roots[0].as_str(),
-        "example.media:media/quiet-signal"
+        "example.media://media/quiet-signal"
     );
 
     let projection = repository

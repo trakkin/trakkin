@@ -44,8 +44,8 @@ VALUES ($1, 'Mappings', 'active', $2, $2)
     .expect("workspace should be inserted");
 
     let original_rows = vec![vec![
-        "imdb:title/tt0133093".to_owned(),
-        "tmdb:movie/603".to_owned(),
+        "catalog.example://title/primary".to_owned(),
+        "metadata.example://movie/secondary".to_owned(),
     ]];
     let created = service
         .create(CreateMapping {
@@ -74,7 +74,10 @@ WHERE content_hash = $1
 
     let updated_rows = vec![
         original_rows[0].clone(),
-        vec!["example.media:a".to_owned(), "example.media:b".to_owned()],
+        vec![
+            "example.media://a".to_owned(),
+            "example.media://b".to_owned(),
+        ],
     ];
     let updated = service
         .update(UpdateMapping {
@@ -96,7 +99,10 @@ WHERE content_hash = $1
     let stale_rows = vec![
         updated_rows[0].clone(),
         updated_rows[1].clone(),
-        vec!["example.media:c".to_owned(), "example.media:d".to_owned()],
+        vec![
+            "example.media://c".to_owned(),
+            "example.media://d".to_owned(),
+        ],
     ];
     let stale = service
         .update(UpdateMapping {
@@ -110,8 +116,8 @@ WHERE content_hash = $1
     let expected_added: Vec<String> = MappingDocument::from_mappings(
         1,
         vec![vec![
-            "example.media:c".to_owned(),
-            "example.media:d".to_owned(),
+            "example.media://c".to_owned(),
+            "example.media://d".to_owned(),
         ]],
     )
     .expect("expected diff row is valid")
@@ -195,8 +201,8 @@ WHERE content_hash = $1
             mappings: vec![
                 original_rows[0].clone(),
                 vec![
-                    "example.media:fork".to_owned(),
-                    "example.media:new".to_owned(),
+                    "example.media://fork".to_owned(),
+                    "example.media://new".to_owned(),
                 ],
             ],
             forked_at: now,
@@ -245,24 +251,24 @@ WHERE content_hash = $1
     let cycle_one = MappingDocument::from_mappings(
         1,
         vec![vec![
-            "cycle.example:one".to_owned(),
-            "cycle.example:shared".to_owned(),
+            "cycle.example://one".to_owned(),
+            "cycle.example://shared".to_owned(),
         ]],
     )
     .expect("first cycle document should parse");
     let cycle_two = MappingDocument::from_mappings(
         2,
         vec![vec![
-            "cycle.example:two".to_owned(),
-            "cycle.example:shared".to_owned(),
+            "cycle.example://two".to_owned(),
+            "cycle.example://shared".to_owned(),
         ]],
     )
     .expect("second cycle document should parse");
     let cycle_three = MappingDocument::from_mappings(
         3,
         vec![vec![
-            "cycle.example:three".to_owned(),
-            "cycle.example:shared".to_owned(),
+            "cycle.example://three".to_owned(),
+            "cycle.example://shared".to_owned(),
         ]],
     )
     .expect("third cycle document should parse");
@@ -324,8 +330,8 @@ WHERE content_hash = $1
     let packaged_parent_document = MappingDocument::from_mappings(
         1,
         vec![vec![
-            "example.media:package-parent".to_owned(),
-            "example.media:shared".to_owned(),
+            "example.media://package-parent".to_owned(),
+            "example.media://shared".to_owned(),
         ]],
     )
     .expect("package parent document should parse");
@@ -334,8 +340,8 @@ WHERE content_hash = $1
         1,
         vec![
             vec![
-                "example.media:double-length[episode:1..*2]".to_owned(),
-                "example.media:weekly[episode:1..]".to_owned(),
+                "example.media://double-length[episode:1..*2]".to_owned(),
+                "example.media://weekly[episode:1..]".to_owned(),
             ],
             original_rows[0].clone(),
         ],

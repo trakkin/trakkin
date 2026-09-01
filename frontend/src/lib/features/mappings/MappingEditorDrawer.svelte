@@ -201,7 +201,7 @@ function shortHash(value: string | null): string {
               disabled={busy}
               id={`mapping-row-${index}`}
               onfocus={() => (targetRowIndex = index)}
-              placeholder={'example.media:item/one\nexample.alt:item/one'}
+              placeholder={'example.media://item/one\nexample.alt://item/one'}
               rows={4}
               bind:value={rowDrafts[index]}
             />

@@ -34,7 +34,7 @@ async fn postgres_resolution_is_portable_across_independent_instances() {
         .expect("portability vector is valid JSON");
     let document = MappingDocument::from_json(&vector["document"].to_string())
         .expect("portable mapping document is valid");
-    let requested = endpoint("example.media:original[episode:1..12]");
+    let requested = endpoint("example.media://original[episode:1..12]");
     let now = fixture_time();
     let first_ids = PortableInstanceIds {
         mapping_id: id(601),
@@ -149,8 +149,8 @@ VALUES ($1, 'Exact revision resolution', 'active', $2, $2)
         .create(CreateMapping {
             mapping_id,
             mappings: vec![vec![
-                "example.media:a".to_owned(),
-                "example.media:b".to_owned(),
+                "example.media://a".to_owned(),
+                "example.media://b".to_owned(),
             ]],
             created_at: now,
         })
@@ -161,8 +161,14 @@ VALUES ($1, 'Exact revision resolution', 'active', $2, $2)
             mapping_id,
             base_content_hash: historical.content_hash.clone(),
             mappings: vec![
-                vec!["example.media:a".to_owned(), "example.media:b".to_owned()],
-                vec!["example.media:b".to_owned(), "example.media:c".to_owned()],
+                vec![
+                    "example.media://a".to_owned(),
+                    "example.media://b".to_owned(),
+                ],
+                vec![
+                    "example.media://b".to_owned(),
+                    "example.media://c".to_owned(),
+                ],
             ],
             updated_at: now,
         })
@@ -185,8 +191,8 @@ VALUES ($1, 'Exact revision resolution', 'active', $2, $2)
         .create(CreateMapping {
             mapping_id: decoy_mapping_id,
             mappings: vec![vec![
-                "example.media:a".to_owned(),
-                "example.media:decoy".to_owned(),
+                "example.media://a".to_owned(),
+                "example.media://decoy".to_owned(),
             ]],
             created_at: now,
         })
@@ -214,7 +220,7 @@ VALUES ($1, 'Exact revision resolution', 'active', $2, $2)
                 ResolutionRequest {
                     workspace_id,
                     mode: ResolutionMode::Transitive,
-                    references: vec![endpoint("example.media:a")],
+                    references: vec![endpoint("example.media://a")],
                     window: None,
                     resolved_at: now,
                 },
@@ -226,7 +232,7 @@ VALUES ($1, 'Exact revision resolution', 'active', $2, $2)
     assert_eq!(resolution.correspondences.len(), 1);
     assert_eq!(
         resolution.correspondences[0].endpoints,
-        vec![endpoint("example.media:a"), endpoint("example.media:b")]
+        vec![endpoint("example.media://a"), endpoint("example.media://b")]
     );
     assert!(resolution.correspondences.iter().all(|correspondence| {
         correspondence.proof.revision_hash == historical.content_hash

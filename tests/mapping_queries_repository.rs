@@ -60,8 +60,8 @@ VALUES ($1, $2, 'active', $3, $3)
             .create(CreateMapping {
                 mapping_id,
                 mappings: vec![vec![
-                    format!("example.media:item-{index}"),
-                    format!("example.alt:item-{index}"),
+                    format!("example.media://item-{index}"),
+                    format!("example.alt://item-{index}"),
                 ]],
                 created_at,
             })
@@ -75,12 +75,12 @@ VALUES ($1, $2, 'active', $3, $3)
                     base_content_hash: created.content_hash,
                     mappings: vec![
                         vec![
-                            "example.media:item-0".to_owned(),
-                            "example.alt:item-0".to_owned(),
+                            "example.media://item-0".to_owned(),
+                            "example.alt://item-0".to_owned(),
                         ],
                         vec![
-                            "example.media:bonus-0".to_owned(),
-                            "example.alt:bonus-0".to_owned(),
+                            "example.media://bonus-0".to_owned(),
+                            "example.alt://bonus-0".to_owned(),
                         ],
                     ],
                     updated_at: created_at + Duration::milliseconds(1),

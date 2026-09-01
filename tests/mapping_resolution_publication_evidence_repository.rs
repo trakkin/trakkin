@@ -89,7 +89,7 @@ async fn postgres_direct_bare_reference_resolution_executes_initial_vectors() {
                 .into_iter()
                 .chain([vec![
                     published_reference.to_owned(),
-                    "example.media:receiver".to_owned(),
+                    "example.media://receiver".to_owned(),
                 ]])
                 .collect(),
             created_at: now,
@@ -112,8 +112,8 @@ async fn postgres_direct_bare_reference_resolution_executes_initial_vectors() {
         .create(CreateMapping {
             mapping_id: id(20),
             mappings: vec![vec![
-                "imdb:title/tt0133093".to_owned(),
-                "example.media:inactive".to_owned(),
+                "catalog.example://title/primary".to_owned(),
+                "example.media://inactive".to_owned(),
             ]],
             created_at: now,
         })
@@ -166,7 +166,10 @@ async fn postgres_direct_bare_reference_resolution_executes_initial_vectors() {
     );
     assert_eq!(
         graph.correspondences[0].endpoints,
-        vec![endpoint("imdb:title/tt0133093"), endpoint("tmdb:movie/603")]
+        vec![
+            endpoint("catalog.example://title/primary"),
+            endpoint("metadata.example://movie/secondary"),
+        ]
     );
     assert_eq!(
         graph.correspondences[0].proof.kind,
@@ -311,7 +314,7 @@ async fn postgres_direct_selected_resolution_uses_exact_coordinate_evidence() {
             mapping_id: id(120),
             mappings: vec![vec![
                 missing_endpoint.to_string(),
-                "example.media:missing-peer[episode:1..12]".to_owned(),
+                "example.media://missing-peer[episode:1..12]".to_owned(),
             ]],
             created_at: now,
         })
@@ -632,8 +635,8 @@ async fn resolve_after_database_pin_mutation(
         .create(CreateMapping {
             mapping_id,
             mappings: vec![vec![
-                "example.media:published".to_owned(),
-                "example.media:receiver".to_owned(),
+                "example.media://published".to_owned(),
+                "example.media://receiver".to_owned(),
             ]],
             created_at: now,
         })
@@ -661,7 +664,7 @@ async fn resolve_after_database_pin_mutation(
             workspace_id,
             mode: ResolutionMode::Direct,
             window: None,
-            references: vec![endpoint("example.media:published")],
+            references: vec![endpoint("example.media://published")],
             resolved_at: now,
         })
         .await
@@ -782,7 +785,7 @@ async fn seed_standard_published_reference(
             catalog_publication_id,
             coordinate_publication_id,
         },
-        &endpoint("example.media:published"),
+        &endpoint("example.media://published"),
         b"published-item".as_slice(),
         now,
     )

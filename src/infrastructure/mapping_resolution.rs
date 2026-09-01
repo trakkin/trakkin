@@ -627,8 +627,8 @@ SELECT
     ordinal - 1,
     'sha256:' || LPAD(TO_HEX(ordinal), 64, '0'),
     JSONB_BUILD_ARRAY(
-        'example.media:node-' || ordinal,
-        'example.media:peer-' || ordinal
+        'example.media://node-' || ordinal,
+        'example.media://peer-' || ordinal
     )
 FROM GENERATE_SERIES(1, 10000) AS ordinal",
         )

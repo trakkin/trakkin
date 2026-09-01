@@ -148,8 +148,8 @@ impl SyncReceiverPreflightApi for StaticReceiverPreflight {
 #[tokio::test]
 async fn production_collector_joins_bounded_pinned_inputs_without_writes() {
     let root =
-        PortableEndpoint::parse("example.media:original[episode:1..12]").expect("contributor root");
-    let receiver_endpoint = PortableEndpoint::parse("example.media:receiver[episode:1..12]")
+        PortableEndpoint::parse("example.media://original[episode:1..12]").expect("contributor root");
+    let receiver_endpoint = PortableEndpoint::parse("example.media://receiver[episode:1..12]")
         .expect("receiver endpoint");
     let field = progress_field();
     let contributor_subject = provider_subject("contributor");
