@@ -98,10 +98,22 @@ test("creates and edits active provider connections without stale command state"
       return json(route, deletionImpact());
     }
     if (url.pathname === `/api/v1/connections/${connectionId}/inspection`) {
-      return json(route, { fields: [], fieldProblems: [], authenticationMethods: [] });
+      return json(route, {
+        fields: [],
+        settings: [],
+        configuredSecretKeys: [],
+        fieldProblems: [],
+        authenticationMethods: [],
+      });
     }
     if (url.pathname === `/api/v1/connections/${archiveConnectionId}/inspection`) {
-      return json(route, { fields: [], fieldProblems: [], authenticationMethods: [] });
+      return json(route, {
+        fields: [],
+        settings: [],
+        configuredSecretKeys: [],
+        fieldProblems: [],
+        authenticationMethods: [],
+      });
     }
     if (url.pathname === `/api/v1/connections/${connectionId}/sources`) return json(route, []);
     if (url.pathname === `/api/v1/connections/${archiveConnectionId}/sources`) return json(route, []);
@@ -243,6 +255,52 @@ test("keeps retained active providers selectable after catalog removal", async (
   await expect(page.getByLabel("Provider")).toHaveText(`${retainedProviderId} 2.0.0 (${providerTarget})`);
   await page.getByLabel("Connection name").fill("Retained provider");
   await expect(page.getByRole("button", { name: "Create connection" })).toBeEnabled();
+  await expectNoHorizontalOverflow(page);
+});
+
+test("reconfigures provider settings without exposing stored secrets", async ({ page }) => {
+  let revision = "v2";
+  let reconfiguration:
+    | {
+        settings: Array<{ key: string; value: { kind: string; value: string } }>;
+        secretPatches: Array<{ key: string; value: number[] }>;
+      }
+    | undefined;
+  await mockApi(page, async (route) => {
+    const url = new URL(route.request().url());
+    const method = route.request().method();
+    if (url.pathname === "/api/v1/workspaces" && method === "GET") return json(route, [workspace]);
+    if (url.pathname === "/api/v1/connections" && method === "GET") return json(route, [connection]);
+    if (url.pathname === `/api/v1/connections/${connectionId}/inspection` && method === "GET") {
+      return json(route, configurationInspection(revision));
+    }
+    if (url.pathname === `/api/v1/connections/${connectionId}/configuration` && method === "PUT") {
+      reconfiguration = route.request().postDataJSON() as typeof reconfiguration;
+      revision = reconfiguration?.settings[0]?.value.value ?? revision;
+      return json(route, { ...connection, capabilityRevision: connection.capabilityRevision + 1 });
+    }
+    if (url.pathname === `/api/v1/connections/${connectionId}/sources` && method === "GET") return json(route, []);
+    return fallback(route);
+  });
+
+  await page.goto(`/connections?workspace=${workspaceId}`);
+  await page.getByRole("button", { name: "Expand Fixture account" }).first().click();
+  await expect(page.getByLabel("Catalog revision")).toHaveText("Revision v2");
+  await expect(page.getByLabel("API token")).toHaveValue("");
+  await expect(page.getByLabel("API token")).toHaveAttribute("placeholder", "Configured; enter a replacement");
+  await page.getByLabel("Catalog revision").click();
+  await page.getByRole("option", { name: "Revision v1", exact: true }).click();
+  await page.getByLabel("API token").fill("replacement-secret");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+
+  await expect
+    .poll(() => reconfiguration?.settings[0])
+    .toEqual({
+      key: "revision",
+      value: { kind: "text", value: "v1" },
+    });
+  expect(reconfiguration?.secretPatches).toEqual([{ key: "api_token", value: bytes("replacement-secret") }]);
+  await expect(page.getByLabel("API token")).toHaveValue("");
   await expectNoHorizontalOverflow(page);
 });
 
@@ -392,6 +450,8 @@ function deletionImpact() {
 function authenticationInspection() {
   return {
     fields: [],
+    settings: [],
+    configuredSecretKeys: [],
     fieldProblems: [],
     authenticationMethods: [
       {
@@ -401,6 +461,26 @@ function authenticationInspection() {
         fields: [adapterField("account_name", "Account name")],
       },
     ],
+  };
+}
+
+function configurationInspection(revision: string) {
+  return {
+    fields: [
+      {
+        ...adapterField("revision", "Catalog revision"),
+        defaultValue: { kind: "text", value: "v1" },
+        options: [
+          { displayName: "Revision v1", value: { kind: "text", value: "v1" } },
+          { displayName: "Revision v2", value: { kind: "text", value: "v2" } },
+        ],
+      },
+      { ...adapterField("api_token", "API token"), secret: true },
+    ],
+    settings: [{ key: "revision", value: { kind: "text", value: revision } }],
+    configuredSecretKeys: ["api_token"],
+    fieldProblems: [],
+    authenticationMethods: [],
   };
 }
 

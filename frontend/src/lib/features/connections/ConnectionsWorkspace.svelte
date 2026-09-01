@@ -8,6 +8,7 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  Save,
   Server,
   Trash2,
   X,
@@ -19,6 +20,7 @@ import {
   type AdapterField,
   type AdapterSetting,
   type AdapterValue,
+  type AdapterValueDisplay,
   type AuthenticationMethod,
   type AuthenticationStep,
   type Connection,
@@ -34,6 +36,7 @@ import {
   inspectConnection,
   listConnectionSources,
   listConnections,
+  reconfigureConnection,
   renameConnection,
   retryAfterMilliseconds,
   startConnectionAuthentication,
@@ -91,6 +94,8 @@ let sources = $state<Record<string, ConnectionSource[]>>({});
 let authentications = $state<Record<string, AuthenticationStep | undefined>>({});
 let selectedMethods = $state<Record<string, string>>({});
 let drafts = $state<Record<string, Record<string, string>>>({});
+let configurationDrafts = $state<Record<string, Record<string, string>>>({});
+let secretReplacementDrafts = $state<Record<string, Record<string, string>>>({});
 let pending = $state<Record<string, boolean>>({});
 let copiedCodeConnectionId = $state("");
 let errorMessage = $state("");
@@ -247,6 +252,12 @@ async function loadConnection(connectionId: string, force = false) {
     if (!lifecycleActive()) return;
     inspections = { ...inspections, [connectionId]: inspection };
     sources = { ...sources, [connectionId]: connectionSources };
+    configurationDrafts = {
+      ...configurationDrafts,
+      [connectionId]: Object.fromEntries(
+        inspection.settings.map((setting) => [setting.key, valueToDraft(setting.value) ?? ""]),
+      ),
+    };
     selectedMethods = {
       ...selectedMethods,
       [connectionId]: selectedMethods[connectionId] ?? inspection.authenticationMethods[0]?.key ?? "",
@@ -289,6 +300,20 @@ async function saveRename(connection: Connection) {
     false,
     () => ownsRenameSession(session, connectionId),
   );
+}
+
+async function saveConfiguration(connection: Connection) {
+  const inspection = inspections[connection.id];
+  if (!inspection) return;
+  const input = configurationInput(connection.id, inspection);
+  if (!input) return;
+  await runPending(`configuration:${connection.id}`, async () => {
+    const updated = await reconfigureConnection(connection.id, input, lifecycleController.signal);
+    if (!lifecycleActive()) return;
+    connections = connections.map((candidate) => (candidate.id === updated.id ? updated : candidate));
+    secretReplacementDrafts = { ...secretReplacementDrafts, [connection.id]: {} };
+    await loadConnection(connection.id, true);
+  });
 }
 
 function ownsRenameSession(session: number, connectionId: string): boolean {
@@ -501,7 +526,7 @@ async function scanCatalog(source: ConnectionSource) {
 }
 
 function inputsFor(connectionId: string, fields: AdapterField[]): AdapterSetting[] | undefined {
-  const missing = fields.find((field) => field.required && !fieldValue(connectionId, field).trim());
+  const missing = fields.find((field) => field.required && !fieldValue(connectionId, field, "authentication").trim());
   if (missing) {
     errorMessage = `${missing.displayName} is required`;
     return;
@@ -513,6 +538,35 @@ function inputsFor(connectionId: string, fields: AdapterField[]): AdapterSetting
     });
   } catch (error) {
     errorMessage = messageFor(error, "Authentication input is invalid");
+  }
+}
+
+function configurationInput(connectionId: string, inspection: ConnectionInspection) {
+  const configuredSecrets = new Set(inspection.configuredSecretKeys);
+  const missing = inspection.fields.find((field) => {
+    if (!field.required) return false;
+    const raw = fieldValue(connectionId, field, "configuration").trim();
+    return field.secret ? !raw && !configuredSecrets.has(field.key) : !raw;
+  });
+  if (missing) {
+    errorMessage = `${missing.displayName} is required`;
+    return;
+  }
+  try {
+    return {
+      settings: inspection.fields.flatMap((field) => {
+        if (field.secret) return [];
+        const raw = fieldValue(connectionId, field, "configuration");
+        return raw === "" && !field.required ? [] : [{ key: field.key, value: adapterValue(field, raw) }];
+      }),
+      secretPatches: inspection.fields.flatMap((field) => {
+        if (!field.secret) return [];
+        const raw = fieldValue(connectionId, field, "configuration");
+        return raw === "" ? [] : [{ key: field.key, value: Array.from(new TextEncoder().encode(raw)) }];
+      }),
+    };
+  } catch (error) {
+    errorMessage = messageFor(error, "Connection configuration is invalid");
   }
 }
 
@@ -543,18 +597,47 @@ function textSetting(key: string, value: string): AdapterSetting {
   return { key, value: { kind: "text", value } };
 }
 
-function updateDraft(connectionId: string, key: string, value: string) {
-  drafts = { ...drafts, [connectionId]: { ...drafts[connectionId], [key]: value } };
+type DraftScope = "authentication" | "configuration";
+
+function updateDraft(connectionId: string, key: string, value: string, scope: DraftScope) {
+  if (scope === "authentication") {
+    drafts = { ...drafts, [connectionId]: { ...drafts[connectionId], [key]: value } };
+  } else if (inspections[connectionId]?.fields.find((field) => field.key === key)?.secret) {
+    secretReplacementDrafts = {
+      ...secretReplacementDrafts,
+      [connectionId]: { ...secretReplacementDrafts[connectionId], [key]: value },
+    };
+  } else {
+    configurationDrafts = {
+      ...configurationDrafts,
+      [connectionId]: { ...configurationDrafts[connectionId], [key]: value },
+    };
+  }
 }
 
-function fieldValue(connectionId: string, field: AdapterField): string {
-  return drafts[connectionId]?.[field.key] ?? valueToDraft(field.defaultValue) ?? "";
+function fieldValue(connectionId: string, field: AdapterField, scope: DraftScope = "authentication"): string {
+  if (scope === "authentication") {
+    return drafts[connectionId]?.[field.key] ?? valueToDraft(field.defaultValue) ?? "";
+  }
+  if (field.secret) return secretReplacementDrafts[connectionId]?.[field.key] ?? "";
+  return configurationDrafts[connectionId]?.[field.key] ?? valueToDraft(field.defaultValue) ?? "";
 }
 
-function valueToDraft(value: AdapterValue | null | undefined): string | undefined {
+function valueToDraft(value: AdapterValue | AdapterValueDisplay | null | undefined): string | undefined {
   if (!value) return;
   if (value.kind === "bytes") return new TextDecoder().decode(Uint8Array.from(value.value));
   return String(value.value);
+}
+
+function fieldPlaceholder(connectionId: string, field: AdapterField, scope: DraftScope): string | undefined {
+  if (
+    scope === "configuration" &&
+    field.secret &&
+    inspections[connectionId]?.configuredSecretKeys.includes(field.key)
+  ) {
+    return "Configured; enter a replacement";
+  }
+  return field.placeholder || undefined;
 }
 
 function fieldItems(field: AdapterField) {
@@ -634,7 +717,7 @@ function messageFor(error: unknown, fallback: string): string {
 }
 </script>
 
-{#snippet configurationFields(connectionId: string, fields: AdapterField[])}
+{#snippet configurationFields(connectionId: string, fields: AdapterField[], scope: DraftScope)}
   {#if fields.length > 0}
     <div class="grid gap-3 sm:grid-cols-2">
       {#each fields as field (field.key)}
@@ -652,10 +735,10 @@ function messageFor(error: unknown, fallback: string): string {
             <Select
               ariaLabel={field.displayName}
               items={fieldItems(field)}
-              onValueChange={(value) => updateDraft(connectionId, field.key, value)}
+              onValueChange={(value) => updateDraft(connectionId, field.key, value, scope)}
               placeholder={field.placeholder || `Select ${field.displayName}`}
               triggerClass="w-full min-w-0"
-              value={fieldValue(connectionId, field)}
+              value={fieldValue(connectionId, field, scope)}
             />
           {:else}
             <TextInput
@@ -664,11 +747,11 @@ function messageFor(error: unknown, fallback: string): string {
               class="w-full"
               id={`${connectionId}-${field.key}`}
               inputmode={field.valueKind === "integer" || field.valueKind === "decimal" ? "numeric" : undefined}
-              oninput={(event) => updateDraft(connectionId, field.key, event.currentTarget.value)}
-              placeholder={field.placeholder || undefined}
+              oninput={(event) => updateDraft(connectionId, field.key, event.currentTarget.value, scope)}
+              placeholder={fieldPlaceholder(connectionId, field, scope)}
               required={field.required}
               type={field.secret ? "password" : field.valueKind === "integer" ? "number" : "text"}
-              value={fieldValue(connectionId, field)}
+              value={fieldValue(connectionId, field, scope)}
             />
           {/if}
         </label>
@@ -1012,7 +1095,34 @@ function messageFor(error: unknown, fallback: string): string {
                   </div>
                 {:else}
                   <section class="border-t border-border-subtle px-4 py-4 sm:px-5">
-                    <h3 class="text-label font-[510] text-text-primary">Authentication</h3>
+                    <div class="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <h3 class="text-label font-[510] text-text-primary">Configuration</h3>
+                        <p class="mt-0.5 text-meta text-text-muted">Provider settings and credential replacement</p>
+                      </div>
+                      <Button
+                        disabled={pending[`configuration:${connection.id}`]}
+                        onclick={() => saveConfiguration(connection)}
+                        size="sm"
+                        variant="ghost"
+                      >
+                        {#if pending[`configuration:${connection.id}`]}
+                          <Spinner size={13} />
+                        {:else}
+                          <Save
+                            aria-hidden="true"
+                            size={13}
+                          />
+                        {/if}
+                        Save</Button
+                      >
+                    </div>
+                    <div class="mt-4">
+                      {@render configurationFields(connection.id, inspection?.fields ?? [], "configuration")}
+                    </div>
+                    {#if inspection?.fields.length === 0}
+                      <p class="mt-3 text-label text-text-muted">This provider has no configurable fields.</p>
+                    {/if}
                     {#if inspection?.fieldProblems.length}
                       <div
                         class="mt-3 grid gap-1 rounded-md border border-warning/25 bg-warning/8 px-3 py-2 text-meta text-warning"
@@ -1022,6 +1132,10 @@ function messageFor(error: unknown, fallback: string): string {
                         {/each}
                       </div>
                     {/if}
+                  </section>
+
+                  <section class="border-t border-border-subtle px-4 py-4 sm:px-5">
+                    <h3 class="text-label font-[510] text-text-primary">Authentication</h3>
                     {#if authentication?.status === "completed"}
                       <p class="mt-3 flex items-center gap-2 text-label text-text-secondary">
                         <CheckCircle2
@@ -1083,7 +1197,7 @@ function messageFor(error: unknown, fallback: string): string {
                             {/if}
                           </div>
                         {/if}
-                        {@render configurationFields(connection.id, authentication.prompt?.fields ?? [])}
+                        {@render configurationFields(connection.id, authentication.prompt?.fields ?? [], "authentication")}
                         <div class="flex gap-2">
                           <Button
                             disabled={pending[`authentication:${connection.id}`]}
@@ -1117,7 +1231,7 @@ function messageFor(error: unknown, fallback: string): string {
                             value={selectedMethods[connection.id]}
                           />
                         {/if}
-                        {@render configurationFields(connection.id, selectedMethod.fields)}
+                        {@render configurationFields(connection.id, selectedMethod.fields, "authentication")}
                         <Button
                           class="w-fit"
                           disabled={pending[`authentication:${connection.id}`]}

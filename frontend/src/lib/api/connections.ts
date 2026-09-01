@@ -4,6 +4,7 @@ import type { components, operations } from "./generated/schema.ts";
 export type AdapterField = components["schemas"]["AdapterConfigurationFieldResponse"];
 export type AdapterSetting = components["schemas"]["AdapterSettingRequest"];
 export type AdapterValue = components["schemas"]["AdapterValueRequest"];
+export type AdapterValueDisplay = components["schemas"]["AdapterValueResponse"];
 export type AuthenticationMethod = components["schemas"]["AuthenticationMethodResponse"];
 export type AuthenticationStep = components["schemas"]["AuthenticationStepResponse"];
 export type Connection = components["schemas"]["ConnectionResponse"];
@@ -13,6 +14,8 @@ export type ConnectionSource = components["schemas"]["ConnectionSourceResponse"]
 export type ConnectionTask = components["schemas"]["TaskResponse"];
 
 export type CreateConnectionInput = operations["create_connection"]["requestBody"]["content"]["application/json"];
+export type ReconfigureConnectionInput =
+  operations["reconfigure_connection"]["requestBody"]["content"]["application/json"];
 type RenameConnectionRequest = operations["rename_connection"]["requestBody"]["content"]["application/json"];
 type StartAuthenticationRequest = operations["start_authentication"]["requestBody"]["content"]["application/json"];
 type ContinueAuthenticationRequest =
@@ -30,6 +33,14 @@ export function createConnection(input: CreateConnectionInput, signal?: AbortSig
 export function renameConnection(connectionId: string, displayName: string, signal?: AbortSignal): Promise<Connection> {
   const body: RenameConnectionRequest = { displayName };
   return request(`/api/v1/connections/${connectionId}`, { method: "PATCH", body, signal });
+}
+
+export function reconfigureConnection(
+  connectionId: string,
+  input: ReconfigureConnectionInput,
+  signal?: AbortSignal,
+): Promise<Connection> {
+  return request(`/api/v1/connections/${connectionId}/configuration`, { method: "PUT", body: input, signal });
 }
 
 export function getConnectionDeletionImpact(
