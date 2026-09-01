@@ -1,10 +1,12 @@
 use std::{
     env,
+    ffi::OsStr,
     fs::{self, OpenOptions},
     io::{self, Read, Write},
-    net::SocketAddr,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream},
     path::{Path, PathBuf},
     process::ExitCode,
+    time::Duration,
 };
 
 use thiserror::Error;
@@ -14,10 +16,21 @@ use trakkin::{host::Host, http, infrastructure::connection::ConnectionMasterKey}
 
 const DEFAULT_BIND_ADDRESS: &str = "127.0.0.1:8725";
 const DEFAULT_DATA_DIRECTORY: &str = ".trakkin";
+const HEALTHCHECK_ARGUMENT: &str = "healthcheck";
+const HEALTHCHECK_PATH: &str = "/api/v1/openapi.json";
 const MASTER_KEY_FILE: &str = "master.key";
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    if env::args_os().nth(1).as_deref() == Some(OsStr::new(HEALTHCHECK_ARGUMENT)) {
+        return match run_healthcheck() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("trakkin healthcheck failed: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     match run().await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -25,6 +38,42 @@ async fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn run_healthcheck() -> Result<(), io::Error> {
+    let bind_address = env::var("TRAKKIN_BIND")
+        .unwrap_or_else(|_| DEFAULT_BIND_ADDRESS.to_owned())
+        .parse::<SocketAddr>()
+        .map_err(io::Error::other)?;
+    let address = healthcheck_address(bind_address);
+    let timeout = Duration::from_secs(3);
+    let mut stream = TcpStream::connect_timeout(&address, timeout)?;
+    stream.set_read_timeout(Some(timeout))?;
+    stream.set_write_timeout(Some(timeout))?;
+    write!(
+        stream,
+        "GET {HEALTHCHECK_PATH} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+    )?;
+    let mut response = [0_u8; 32];
+    let bytes_read = stream.read(&mut response)?;
+    if healthy_http_status(&response[..bytes_read]) {
+        Ok(())
+    } else {
+        Err(io::Error::other("HTTP endpoint did not return 200"))
+    }
+}
+
+fn healthcheck_address(bind_address: SocketAddr) -> SocketAddr {
+    let address = match bind_address.ip() {
+        IpAddr::V4(address) if address.is_unspecified() => IpAddr::V4(Ipv4Addr::LOCALHOST),
+        IpAddr::V6(address) if address.is_unspecified() => IpAddr::V6(Ipv6Addr::LOCALHOST),
+        address => address,
+    };
+    SocketAddr::new(address, bind_address.port())
+}
+
+fn healthy_http_status(response: &[u8]) -> bool {
+    response.starts_with(b"HTTP/1.1 200 ") || response.starts_with(b"HTTP/1.0 200 ")
 }
 
 async fn run() -> Result<(), MainError> {
@@ -249,4 +298,24 @@ mod tests {
         fs::remove_dir(second).expect("second runtime directory is removed");
     }
 
+    #[test]
+    fn healthcheck_uses_loopback_for_unspecified_bind_addresses() {
+        assert_eq!(
+            healthcheck_address("0.0.0.0:8725".parse().expect("IPv4 bind address")),
+            "127.0.0.1:8725".parse().expect("IPv4 health address")
+        );
+        assert_eq!(
+            healthcheck_address("[::]:8725".parse().expect("IPv6 bind address")),
+            "[::1]:8725".parse().expect("IPv6 health address")
+        );
+    }
+
+    #[test]
+    fn healthcheck_accepts_only_success_status_lines() {
+        assert!(healthy_http_status(b"HTTP/1.1 200 OK\r\n"));
+        assert!(healthy_http_status(b"HTTP/1.0 200 OK\r\n"));
+        assert!(!healthy_http_status(
+            b"HTTP/1.1 503 Service Unavailable\r\n"
+        ));
+    }
 }
