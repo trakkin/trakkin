@@ -364,6 +364,7 @@ test("starts synchronization from a stored policy preview", async ({ page }) => 
   await expect(page.getByRole("heading", { name: "Sync action detail" })).not.toBeVisible();
   await page.getByLabel(new RegExp(`Inspect Progress action ${actionId}`)).click();
   await expect(page.getByRole("heading", { name: "Sync action detail" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Cancel" })).toBeEnabled();
   const activityRequestsBeforeCancellationCompletion = activityRequests;
   const cancellationCompletionResponse = page.waitForResponse(
     (response) =>
