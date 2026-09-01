@@ -1,6 +1,6 @@
 # Changelog
 
-Notable changes to Trakkin are recorded here by Release Please from the repository's [Conventional Commit](https://www.conventionalcommits.org/en/v1.0.0/) history.
+Notable changes are recorded here by Release Please from the repository's [Conventional Commit](https://www.conventionalcommits.org/en/v1.0.0/) history.
 
 <!--
 Release template:

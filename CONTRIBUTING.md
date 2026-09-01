@@ -53,7 +53,6 @@ The repository uses these tools for formatting, linting, testing, and developmen
 
 - **Rust:** `rustfmt` for formatting, Clippy for linting, and Cargo's test runner for tests.
 - **Frontend:** Biome and the frontend package scripts for formatting and linting.
-- **Protobuf:** Buf for linting and formatting.
 - **SQL:** `cargo-dylint` and sqruff.
 - **GitHub Actions:** actionlint.
 - **JavaScript tooling:** Node.js and pnpm.
@@ -79,7 +78,6 @@ Run the checks that cover your change while iterating:
 - Backend: `mise run lint:backend` and `mise run test:backend`
 - Frontend: `mise run lint:frontend`, `mise run test:frontend`, and `mise run build:frontend`
 - Documentation: `mise run lint:docs` and `mise run build:docs`
-- Protobuf: `mise run lint:proto`
 - SQL: `mise run lint:sql`
 
 ## Branches
