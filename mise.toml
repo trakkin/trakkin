@@ -3,13 +3,14 @@ lockfile = true
 minimum_release_age = "3d"
 
 [tools]
+"npm:actions-up" = "1.18.0"
 "cargo:cargo-dylint" = "6.0.3"
+"cargo:cargo-edit" = { version = "0.13.13", default-features = false, features = "upgrade" }
 "cargo:dylint-link" = "6.0.3"
 "github:quarylabs/sqruff" = "0.40.0"
+"github:kjanat/actionlint" = "1.13.0"
 act = "0.2.89"
-actionlint = "1.7.12"
 biome = "2.5.8"
-buf = "1.72.0"
 cargo-binstall = "1.21.1"
 node = "26.7.0"
 pnpm = "11.21.0"
@@ -33,6 +34,10 @@ run = "cargo build --locked --release --workspace --features trakkin/bundled"
 [tasks."build:frontend"]
 dir = "frontend"
 run = "pnpm build"
+
+[tasks."build:frontend:bundle"]
+dir = "frontend"
+run = "pnpm exec vite build"
 
 [tasks."build:docs"]
 dir = "docs"
@@ -74,54 +79,60 @@ run = "rm -rf dist"
 
 [tasks.dev]
 description = "Run backend and frontend development servers"
-run = [{ tasks = ["dev:backend", "dev:frontend", "dev:openapi"] }]
+run = [{ tasks = ["dev:backend", "dev:frontend"] }]
 
 [tasks."dev:backend"]
-description = "Restart the backend when Rust inputs change"
+description = "Regenerate the HTTP client and restart the backend when Rust inputs change"
 run = '''
 watchexec --restart --stop-signal SIGTERM \
   --watch Cargo.toml \
   --watch Cargo.lock \
   --watch build.rs \
   --watch migrations \
-  --watch proto \
   --watch src \
-  --watch crates \
-  --exts rs,toml,lock,sql,proto \
-  -- mise run dev:backend:serve
+  --exts rs,toml,lock,sql \
+  --shell=bash \
+  -- 'pnpm --dir frontend generate:api && cargo run --locked -p trakkin --features embedded-database --bin trakkin'
 '''
-
-[tasks."dev:backend:serve"]
-run = [
-  "cargo build --locked -p trakkin-fixture-adapter",
-  "cargo run --locked -p trakkin --features embedded-database --bin trakkin",
-]
 
 [tasks."dev:frontend"]
 dir = "frontend"
 run = "pnpm dev"
 
-[tasks."dev:openapi"]
-description = "Regenerate OpenAPI and frontend types when the HTTP contract changes"
-run = '''
-watchexec --restart \
-  --watch Cargo.toml \
-  --watch Cargo.lock \
-  --watch src/http \
-  --exts rs,toml,lock \
-  -- pnpm --dir frontend generate:api
-'''
-
 [tasks."dev:docs"]
 dir = "docs"
 run = "pnpm dev"
+
+[tasks.start]
+description = "Build and start the backend, frontend, and documentation servers"
+run = [
+  { tasks = [
+    "build:frontend",
+    "build:docs",
+  ] },
+  { tasks = [
+    "start:backend",
+    "start:frontend",
+    "start:docs",
+  ] },
+]
+
+[tasks."start:backend"]
+run = "cargo run --locked -p trakkin --features embedded-database --bin trakkin"
+
+[tasks."start:frontend"]
+dir = "frontend"
+run = "pnpm start"
+
+[tasks."start:docs"]
+dir = "docs"
+run = "pnpm start"
 
 [tasks.fix]
 description = "Automatically fix lint and formatting issues"
 run = [
   { task = "fix:backend" },
   { task = "fix:frontend" },
-  { task = "fix:proto" },
   { task = "fix:sql" },
 ]
 
@@ -131,9 +142,6 @@ run = "cargo clippy --fix --workspace --all-targets --all-features --allow-dirty
 [tasks."fix:frontend"]
 dir = "frontend"
 run = "pnpm fix"
-
-[tasks."fix:proto"]
-run = "buf format -w"
 
 [tasks."fix:sql"]
 run = [
@@ -150,7 +158,6 @@ description = "Format the project"
 run = [
   { task = "format:backend" },
   { task = "format:frontend" },
-  { task = "format:proto" },
   { task = "format:sql" },
 ]
 
@@ -160,9 +167,6 @@ run = "cargo fmt --all"
 [tasks."format:frontend"]
 dir = "frontend"
 run = "pnpm format"
-
-[tasks."format:proto"]
-run = "buf format -w"
 
 [tasks."format:sql"]
 run = [
@@ -196,7 +200,6 @@ run = [
     "lint:actions",
     "lint:backend",
     "lint:frontend",
-    "lint:proto",
     "lint:sql",
   ] },
 ]
@@ -209,9 +212,6 @@ run = "cargo clippy --workspace --all-targets --all-features -- -D warnings"
 [tasks."lint:frontend"]
 dir = "frontend"
 run = "pnpm lint"
-
-[tasks."lint:proto"]
-run = ["buf lint", "buf format --diff --exit-code"]
 
 [tasks."lint:sql"]
 run = [
@@ -245,3 +245,33 @@ run = "cargo test --workspace --all-features"
 [tasks."test:frontend"]
 dir = "frontend"
 run = "pnpm test"
+
+[tasks.update]
+description = "Update tools and dependencies"
+run = [
+  { task = "update:tools" },
+  { tasks = [
+    "update:actions",
+    "update:backend",
+    "update:frontend",
+    "update:docs",
+  ] },
+]
+
+[tasks."update:actions"]
+description = "Update and SHA-pin GitHub Actions dependencies"
+run = "actions-up --yes"
+
+[tasks."update:backend"]
+run = "cargo upgrade --incompatible allow --pinned allow"
+
+[tasks."update:frontend"]
+dir = "frontend"
+run = "pnpm update --latest"
+
+[tasks."update:docs"]
+dir = "docs"
+run = "pnpm update --latest"
+
+[tasks."update:tools"]
+run = "mise upgrade --bump"

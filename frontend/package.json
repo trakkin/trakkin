@@ -12,6 +12,7 @@
     "generate:api": "mkdir -p ../target/openapi && cargo run --locked --quiet --manifest-path ../Cargo.toml --bin export_openapi -- ../target/openapi/trakkin.openapi.json && openapi-typescript ../target/openapi/trakkin.openapi.json -o src/lib/api/generated/schema.ts",
     "lint": "biome check --formatter-enabled=false . && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "setup": "pnpm exec playwright install chromium",
+    "start": "vite preview --host 0.0.0.0 --port 5173",
     "test": "playwright test"
   },
   "dependencies": {
