@@ -72,7 +72,7 @@ where
     R::Error: IntoApplicationError + Send,
     G: ConnectionSessionRegistry<S>,
     S: AdapterSession + 'static,
-    S::Error: Send,
+    S::Error: Send + std::fmt::Debug,
 {
     fn lookup_portable_references(
         &self,
@@ -183,6 +183,7 @@ impl<RepositoryError, AdapterError> IntoApplicationError
     for ReferenceLookupServiceError<RepositoryError, AdapterError>
 where
     RepositoryError: IntoApplicationError,
+    AdapterError: std::fmt::Debug,
 {
     fn into_application_error(self) -> ApplicationError {
         match self {
@@ -217,9 +218,9 @@ where
             ),
             Self::Repository(error) => error.into_application_error(),
             Self::Rejected(error) => error.into_application_error(),
-            Self::Adapter(_) => ApplicationError::new(
-                ApplicationErrorCode::Internal,
+            Self::Adapter(error) => ApplicationError::internal(
                 "reference lookup adapter operation failed",
+                format_args!("{error:?}"),
             ),
         }
     }

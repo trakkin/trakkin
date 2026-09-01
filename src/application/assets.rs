@@ -92,7 +92,7 @@ where
     R::Error: IntoApplicationError + Send,
     G: ConnectionSessionRegistry<S>,
     S: AdapterSession + 'static,
-    S::Error: Send,
+    S::Error: Send + std::fmt::Debug,
 {
     fn read_published_binary_asset(
         &self,
@@ -212,6 +212,7 @@ impl<RepositoryError, AdapterError> IntoApplicationError
     for BinaryAssetServiceError<RepositoryError, AdapterError>
 where
     RepositoryError: IntoApplicationError,
+    AdapterError: std::fmt::Debug,
 {
     fn into_application_error(self) -> ApplicationError {
         match self {
@@ -233,9 +234,9 @@ where
             ),
             Self::Repository(error) => error.into_application_error(),
             Self::Rejected(error) => error.into_application_error(),
-            Self::Adapter(_) => ApplicationError::new(
-                ApplicationErrorCode::Internal,
+            Self::Adapter(error) => ApplicationError::internal(
                 "binary asset adapter operation failed",
+                format_args!("{error:?}"),
             ),
         }
     }

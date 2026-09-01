@@ -166,8 +166,12 @@ pub async fn seed_catalog_read(pool: PgPool) {
     sqlx::query(
         "INSERT INTO tasks (
              id, workspace_id, connection_id, kind, status,
-             cancellation_supported, created_at, started_at, updated_at
-         ) VALUES ($1, $2, $3, 'catalog_read', 'running', TRUE, $4, $4, $4)",
+             cancellation_supported, invocation_context, created_at, started_at, updated_at
+         ) VALUES (
+             $1, $2, $3, 'catalog_read', 'running', TRUE,
+             jsonb_build_object('correlationId', 'request:test', 'traceparent', NULL, 'tracestate', NULL),
+             $4, $4, $4
+         )",
     )
     .bind(TASK_ID)
     .bind(WORKSPACE_ID)

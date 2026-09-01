@@ -204,16 +204,20 @@ FOR SHARE OF connections, workspace_sources
             .bind(command.admitted_at)
             .execute(&mut *transaction)
             .await?;
+            let invocation_context = crate::observability::task_invocation_context(action.task_id);
             sqlx::query(
                 "INSERT INTO tasks (
     id, workspace_id, connection_id, kind, status, cancellation_supported,
-    created_at, updated_at
-) VALUES ($1, $2, $3, 'sync_action', 'queued', TRUE, $4, $4)
+    invocation_context, created_at, updated_at
+) VALUES ($1, $2, $3, 'sync_action', 'queued', TRUE, $4, $5, $5)
 ",
             )
             .bind(action.task_id)
             .bind(command.workspace_id)
             .bind(row.connection_id)
+            .bind(super::task_manager::invocation_context_json(
+                &invocation_context,
+            ))
             .bind(command.admitted_at)
             .execute(&mut *transaction)
             .await?;

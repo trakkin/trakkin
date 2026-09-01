@@ -14,7 +14,9 @@ use trakkin::{
     },
     database::DatabaseRuntime,
     infrastructure::task_manager::{PostgresTaskRepository, TaskManagerError},
+    observability,
 };
+use trakkin_provider_sdk::InvocationContext;
 use uuid::Uuid;
 
 const CONNECTION_ALPHA: Uuid = Uuid::from_u128(1);
@@ -40,7 +42,17 @@ async fn claims_are_connection_scoped_and_terminal_completion_releases_them() {
     seed_connection(&database.pool(), CONNECTION_ALPHA, "Alpha").await;
     seed_connection(&database.pool(), CONNECTION_BETA, "Beta").await;
     let manager = manager(database.pool());
-    admit_discovery(&manager, TASK_ALPHA_ONE, CONNECTION_ALPHA, timestamp(0)).await;
+    let invocation_context = InvocationContext::new(
+        "request:task-repository",
+        Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"),
+        Some("vendor=value"),
+    )
+    .unwrap();
+    observability::in_invocation_context(
+        invocation_context,
+        admit_discovery(&manager, TASK_ALPHA_ONE, CONNECTION_ALPHA, timestamp(0)),
+    )
+    .await;
     admit_discovery(&manager, TASK_ALPHA_TWO, CONNECTION_ALPHA, timestamp(1)).await;
     admit_discovery(&manager, TASK_BETA, CONNECTION_BETA, timestamp(2)).await;
 
@@ -57,6 +69,15 @@ async fn claims_are_connection_scoped_and_terminal_completion_releases_them() {
     assert_eq!(alpha.task.id, TASK_ALPHA_ONE);
     assert_eq!(alpha.task.status, TaskStatus::Running);
     assert_eq!(alpha.attempt_ordinal, 0);
+    assert_eq!(
+        alpha.invocation_context.correlation_id(),
+        "request:task-repository"
+    );
+    assert_eq!(
+        alpha.invocation_context.traceparent(),
+        Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+    );
+    assert_eq!(alpha.invocation_context.tracestate(), Some("vendor=value"));
 
     let beta = manager
         .claim_next(ClaimNextTask {
@@ -136,27 +157,19 @@ async fn claims_are_connection_scoped_and_terminal_completion_releases_them() {
         .expect("next task on the connection is available");
     assert_eq!(next_alpha.task.id, TASK_ALPHA_TWO);
 
+    let failure = TaskFailure::coded("adapter_unavailable", true);
     let failed = manager
         .complete(CompleteTask {
             task_id: TASK_BETA,
             attempt_id: ATTEMPT_TWO,
             owner_id: OWNER_TWO,
-            completion: TaskCompletion::Failed(TaskFailure {
-                code: "adapter_unavailable".to_owned(),
-                retryable: true,
-            }),
+            completion: TaskCompletion::Failed(failure.clone()),
             completed_at: timestamp(10),
         })
         .await
         .expect("claimed task records failure evidence");
     assert_eq!(failed.status, TaskStatus::Failed);
-    assert_eq!(
-        failed.failure,
-        Some(TaskFailure {
-            code: "adapter_unavailable".to_owned(),
-            retryable: true,
-        })
-    );
+    assert_eq!(failed.failure, Some(failure));
 
     database.shutdown().await.expect("database shuts down");
 }

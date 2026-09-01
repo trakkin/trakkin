@@ -1,4 +1,4 @@
-use serde_json::{Value, json};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::{FromRow, PgPool};
 use thiserror::Error;
@@ -19,7 +19,7 @@ use crate::{
             SyncActionReconciliationSnapshot, SyncActionReconciliationState,
             classify_reconciliation,
         },
-        task_manager::TaskDefinition,
+        task_manager::{TaskDefinition, TaskFailure},
     },
     domain::acquisition::{
         CatalogRelationKey, ProviderItemKey, StateField, StateSubject, StateValue, Term,
@@ -364,10 +364,9 @@ WHERE id = $3 AND status = 'indeterminate'
             }
         }
         let operational_failure = match &command.outcome {
-            AdapterTargetedStateReadOutcome::Indeterminate(error) => Some(json!({
-                "code": error.code,
-                "retryable": error.retryable,
-            })),
+            AdapterTargetedStateReadOutcome::Indeterminate(error) => Some(
+                super::task_manager::failure_json(&TaskFailure::from_adapter(error)),
+            ),
             _ => None,
         };
         let attempt = if retry_queued || operational_failure.is_some() {

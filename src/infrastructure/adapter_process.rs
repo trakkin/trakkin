@@ -1,30 +1,43 @@
-use std::{collections::HashSet, net::SocketAddr, path::Path, process::Stdio, time::Duration};
+use std::{
+    collections::HashSet,
+    env,
+    net::SocketAddr,
+    path::Path,
+    process::Stdio,
+    sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
+};
 
+use futures_util::StreamExt;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     process::{Child, Command},
+    task::JoinHandle,
     time::timeout,
 };
+use tokio_util::codec::{FramedRead, LinesCodec};
 use tonic::{Request, transport::Channel};
 use trakkin_provider_sdk::{
-    BOOTSTRAP_VERSION, LaunchRequest, LaunchToken, ReadyMessage, supported_protocol_range,
+    BOOTSTRAP_VERSION, InvocationContext, LaunchRequest, LaunchToken, PROVIDER_LOG_FILTER_ENV,
+    PROVIDER_LOG_FORMAT_ENV, ReadyMessage, supported_protocol_range,
 };
 use trakkin_provider_sdk::{
     current_protocol_version,
     v1::{
-        AccountSnapshot as ProtoAccountSnapshot, AdapterError,
-        AuthenticationPrompt as ProtoAuthenticationPrompt,
+        AuthenticationProgress as ProtoAuthenticationProgress,
         AuthenticationStatus as ProtoAuthenticationStatus, CancelAuthenticationRequest,
         ConfigurationField, ConfigurationValue, ContinueAuthenticationRequest,
         ContinueAuthenticationResponse, CoordinateBacking as ProtoCoordinateBacking, DecimalValue,
         DescribeConnectionRequest, DiscoverSourcesRequest, HealthRequest, HealthStatus, Key,
         ListAuthenticationMethodsRequest, LookupPortableReferencesRequest, OpenConnectionRequest,
-        PortableEndpoint as ProtoPortableEndpoint, ProtocolVersion, ReadAssetRequest,
-        ReadCatalogRequest, ReadCatalogResponse as ProtoCatalogReadEvent,
-        ReadMode as ProtoReadMode, ReadStateRequest, ReadStateResponse as ProtoStateReadEvent,
-        ReadTargetedStateRequest, ResolvePortableEndpointsRequest, SecretPatch, SecretValue,
+        OperationFailure, OperationFailureCategory, PortableEndpoint as ProtoPortableEndpoint,
+        ProtocolVersion, ReadAssetRequest, ReadCatalogRequest,
+        ReadCatalogResponse as ProtoCatalogReadEvent, ReadMode as ProtoReadMode, ReadStateRequest,
+        ReadStateResponse as ProtoStateReadEvent, ReadTargetedStateRequest,
+        ResolvePortableEndpointsRequest, RetryDisposition, SecretPatch, SecretValue,
         ShutdownRequest, SourceAvailability, SourceMembership as ProtoSourceMembership,
         StartAuthenticationRequest, StartAuthenticationResponse, StateField as ProtoStateField,
         StateFieldQuantizer, StatePresence as ProtoStatePresence, TargetedStateClear,
@@ -40,11 +53,12 @@ use trakkin_provider_sdk::{
         TargetedStateWriteStatus as ProtoTargetedStateWriteStatus, TimestampValue,
         ValidateConnectionRequest, Value, WriteTargetedStateRequest,
         adapter_service_client::AdapterServiceClient, cancel_authentication_response,
-        cancel_operation_response, describe_connection_response, discover_sources_response,
-        list_authentication_methods_response, lookup_portable_references_response,
-        open_connection_response, portable_endpoint_resolution, portable_reference_lookup_result,
-        read_asset_response, read_catalog_response, read_state_response,
-        read_targeted_state_response, resolve_portable_endpoints_response, secret_patch,
+        cancel_operation_response, continue_authentication_response, describe_connection_response,
+        discover_sources_response, list_authentication_methods_response,
+        lookup_portable_references_response, open_connection_response,
+        portable_endpoint_resolution, portable_reference_lookup_result, read_asset_response,
+        read_catalog_response, read_state_response, read_targeted_state_response,
+        resolve_portable_endpoints_response, secret_patch, start_authentication_response,
         state_observation, subject_reference, targeted_state_write_intent,
         validate_connection_response, value,
     },
@@ -57,25 +71,25 @@ use crate::application::adapter_runtime::{
     AdapterBinaryAsset, AdapterCallError, AdapterConfigurationField, AdapterConfigurationOption,
     AdapterConnectionCapabilities, AdapterConnectionDescription, AdapterConnectionValidation,
     AdapterEndpointLookupCandidate, AdapterEndpointLookupCapability, AdapterEndpointLookupOutcome,
-    AdapterEndpointResolutionOperation, AdapterFieldProblem, AdapterFuture, AdapterHealth,
-    AdapterHealthStatus, AdapterIdentity, AdapterKey, AdapterLauncher, AdapterLookupCandidate,
-    AdapterLookupCapability, AdapterLookupEvidence, AdapterLookupOutcome,
-    AdapterPortableEndpointResolution, AdapterPortableReferenceLookup, AdapterRatingScale,
-    AdapterReadCapability, AdapterReadCompletion, AdapterReadEvent, AdapterReadStream,
-    AdapterRetirement, AdapterRetirementFuture, AdapterRetryAfter, AdapterSecretPatch,
-    AdapterSession, AdapterSource, AdapterSourceAvailability, AdapterSourceCapabilities,
-    AdapterSourceMembership, AdapterStateField, AdapterStateNumericRange, AdapterStatePresence,
-    AdapterTargetedStateField, AdapterTargetedStateFieldEffect,
-    AdapterTargetedStateFieldEffectKind, AdapterTargetedStateFieldWriteCapability,
-    AdapterTargetedStateMatch, AdapterTargetedStateMembershipEffect,
-    AdapterTargetedStateReadCapability, AdapterTargetedStateReadOutcome,
-    AdapterTargetedStateWriteCapability, AdapterTargetedStateWriteCausation,
-    AdapterTargetedStateWriteCertainty, AdapterTargetedStateWriteIdempotencyMode,
-    AdapterTargetedStateWriteOperation, AdapterTargetedStateWriteOutcome,
-    AdapterTargetedStateWritePreconditionMode, AdapterTargetedStateWriteRetryDisposition,
-    AdapterTargetedStateWriteStatus, AdapterTerm, AdapterValue, AdapterValueKind,
-    ContinueAdapterAuthentication, DiscoveredAdapterSources, LaunchAdapter,
-    LookupAdapterPortableReferences, OpenAdapterConnection, OpenedAdapterConnection,
+    AdapterEndpointResolutionOperation, AdapterFailureCategory, AdapterFieldProblem, AdapterFuture,
+    AdapterHealth, AdapterHealthStatus, AdapterIdentity, AdapterKey, AdapterLauncher,
+    AdapterLookupCandidate, AdapterLookupCapability, AdapterLookupEvidence, AdapterLookupOutcome,
+    AdapterOperationResult, AdapterPortableEndpointResolution, AdapterPortableReferenceLookup,
+    AdapterRatingScale, AdapterReadCapability, AdapterReadCompletion, AdapterReadEvent,
+    AdapterReadStream, AdapterRetirement, AdapterRetirementFuture, AdapterRetryAfter,
+    AdapterSecretPatch, AdapterSession, AdapterSource, AdapterSourceAvailability,
+    AdapterSourceCapabilities, AdapterSourceMembership, AdapterStateField,
+    AdapterStateNumericRange, AdapterStatePresence, AdapterTargetedStateField,
+    AdapterTargetedStateFieldEffect, AdapterTargetedStateFieldEffectKind,
+    AdapterTargetedStateFieldWriteCapability, AdapterTargetedStateMatch,
+    AdapterTargetedStateMembershipEffect, AdapterTargetedStateReadCapability,
+    AdapterTargetedStateReadOutcome, AdapterTargetedStateWriteCapability,
+    AdapterTargetedStateWriteCausation, AdapterTargetedStateWriteCertainty,
+    AdapterTargetedStateWriteIdempotencyMode, AdapterTargetedStateWriteOperation,
+    AdapterTargetedStateWriteOutcome, AdapterTargetedStateWritePreconditionMode,
+    AdapterTargetedStateWriteRetryDisposition, AdapterTargetedStateWriteStatus, AdapterTerm,
+    AdapterValue, AdapterValueKind, ContinueAdapterAuthentication, DiscoveredAdapterSources,
+    LaunchAdapter, LookupAdapterPortableReferences, OpenAdapterConnection, OpenedAdapterConnection,
     ReadAdapterAsset, ReadAdapterSource, ReadAdapterTargetedState, ResolveAdapterPortableEndpoints,
     StartAdapterAuthentication, ValidateAdapterConnection, WriteAdapterTargetedState,
     endpoint_resolution_operation,
@@ -95,6 +109,8 @@ use crate::{
 };
 
 const MAXIMUM_READY_MESSAGE_BYTES: u64 = 16 * 1024;
+const MAXIMUM_PROVIDER_DIAGNOSTIC_BYTES: usize = 64 * 1024;
+const MAXIMUM_PROVIDER_DIAGNOSTIC_TEXT_BYTES: usize = 2 * 1024;
 
 #[derive(Clone)]
 pub struct AdapterProcessLauncher<R> {
@@ -155,6 +171,11 @@ where
             launch_token: launch_token.clone(),
         };
         let mut child = spawn_child(&target.executable, &target.working_directory)?;
+        let diagnostic_task = start_provider_diagnostic_drain(
+            &mut child,
+            target.provider_id.clone(),
+            launch.process_instance_id.clone(),
+        )?;
         let initialization = initialize_child(
             &mut child,
             &launch,
@@ -168,6 +189,7 @@ where
             Ok(initialized) => initialized,
             Err(error) => {
                 force_stop(&mut child).await;
+                finish_provider_diagnostic_drain(diagnostic_task).await;
                 return Err(error);
             }
         };
@@ -176,8 +198,11 @@ where
             client,
             token,
             identity,
+            diagnostic_task,
             account_keys: Vec::new(),
             connection_capabilities: None,
+            correlation_prefix: correlation_prefix(&launch.process_instance_id),
+            correlation_sequence: AtomicU64::new(1),
             rpc_timeout: self.rpc_timeout,
             shutdown_timeout: self.shutdown_timeout,
         })
@@ -217,8 +242,11 @@ pub struct AdapterProcess {
     client: AdapterServiceClient<Channel>,
     token: LaunchToken,
     identity: AdapterIdentity,
+    diagnostic_task: JoinHandle<()>,
     account_keys: Vec<Key>,
     connection_capabilities: Option<AdapterConnectionCapabilities>,
+    correlation_prefix: String,
+    correlation_sequence: AtomicU64,
     rpc_timeout: Duration,
     shutdown_timeout: Duration,
 }
@@ -326,7 +354,8 @@ impl AdapterSession for AdapterProcess {
 
     fn describe_connection(
         &mut self,
-    ) -> AdapterFuture<'_, AdapterConnectionDescription, Self::Error> {
+    ) -> AdapterFuture<'_, Result<AdapterConnectionDescription, AdapterCallError>, Self::Error>
+    {
         Box::pin(async move {
             let request = self.signed(DescribeConnectionRequest {});
             let response = timeout(self.rpc_timeout, self.client.describe_connection(request))
@@ -342,19 +371,19 @@ impl AdapterSession for AdapterProcess {
             {
                 describe_connection_response::Outcome::Result(result) => result,
                 describe_connection_response::Outcome::Error(error) => {
-                    return Err(AdapterProcessError::Adapter(map_adapter_error(error)));
+                    return Ok(Err(map_adapter_error(error)));
                 }
             };
-            Ok(AdapterConnectionDescription {
+            Ok(Ok(AdapterConnectionDescription {
                 fields: map_configuration_fields(result.fields)?,
-            })
+            }))
         })
     }
 
     fn validate_connection(
         &mut self,
         command: ValidateAdapterConnection,
-    ) -> AdapterFuture<'_, AdapterConnectionValidation, Self::Error> {
+    ) -> AdapterFuture<'_, Result<AdapterConnectionValidation, AdapterCallError>, Self::Error> {
         Box::pin(async move {
             let request = self.signed(ValidateConnectionRequest {
                 settings: map_settings(command.settings),
@@ -373,22 +402,23 @@ impl AdapterSession for AdapterProcess {
             {
                 validate_connection_response::Outcome::Result(result) => result,
                 validate_connection_response::Outcome::Error(error) => {
-                    return Err(AdapterProcessError::Adapter(map_adapter_error(error)));
+                    return Ok(Err(map_adapter_error(error)));
                 }
             };
-            Ok(AdapterConnectionValidation {
+            Ok(Ok(AdapterConnectionValidation {
                 field_problems: result
                     .field_problems
                     .into_iter()
                     .map(map_field_problem)
                     .collect(),
-            })
+            }))
         })
     }
 
     fn list_authentication_methods(
         &mut self,
-    ) -> AdapterFuture<'_, Vec<AdapterAuthenticationMethod>, Self::Error> {
+    ) -> AdapterFuture<'_, Result<Vec<AdapterAuthenticationMethod>, AdapterCallError>, Self::Error>
+    {
         Box::pin(async move {
             let request = self.signed(ListAuthenticationMethodsRequest {});
             let response = timeout(
@@ -407,10 +437,10 @@ impl AdapterSession for AdapterProcess {
             {
                 list_authentication_methods_response::Outcome::Result(result) => result,
                 list_authentication_methods_response::Outcome::Error(error) => {
-                    return Err(AdapterProcessError::Adapter(map_adapter_error(error)));
+                    return Ok(Err(map_adapter_error(error)));
                 }
             };
-            result
+            let methods = result
                 .methods
                 .into_iter()
                 .map(|method| {
@@ -430,14 +460,15 @@ impl AdapterSession for AdapterProcess {
                         fields: map_configuration_fields(method.fields)?,
                     })
                 })
-                .collect()
+                .collect::<Result<_, AdapterProcessError>>()?;
+            Ok(Ok(methods))
         })
     }
 
     fn start_authentication(
         &mut self,
         command: StartAdapterAuthentication,
-    ) -> AdapterFuture<'_, AdapterAuthenticationStep, Self::Error> {
+    ) -> AdapterFuture<'_, AdapterOperationResult<AdapterAuthenticationStep>, Self::Error> {
         Box::pin(async move {
             if command.method.is_empty() {
                 return Err(AdapterProcessError::InvalidAuthenticationRequest);
@@ -457,7 +488,7 @@ impl AdapterSession for AdapterProcess {
     fn continue_authentication(
         &mut self,
         command: ContinueAdapterAuthentication,
-    ) -> AdapterFuture<'_, AdapterAuthenticationStep, Self::Error> {
+    ) -> AdapterFuture<'_, AdapterOperationResult<AdapterAuthenticationStep>, Self::Error> {
         Box::pin(async move {
             if command.authentication_id.is_empty() {
                 return Err(AdapterProcessError::InvalidAuthenticationRequest);
@@ -480,7 +511,7 @@ impl AdapterSession for AdapterProcess {
     fn cancel_authentication(
         &mut self,
         authentication_id: String,
-    ) -> AdapterFuture<'_, (), Self::Error> {
+    ) -> AdapterFuture<'_, Result<(), AdapterCallError>, Self::Error> {
         Box::pin(async move {
             if authentication_id.is_empty() {
                 return Err(AdapterProcessError::InvalidAuthenticationRequest);
@@ -497,9 +528,9 @@ impl AdapterSession for AdapterProcess {
                 .outcome
                 .expect("validated authentication cancellation outcome")
             {
-                cancel_authentication_response::Outcome::Result(_) => Ok(()),
+                cancel_authentication_response::Outcome::Result(_) => Ok(Ok(())),
                 cancel_authentication_response::Outcome::Error(error) => {
-                    Err(AdapterProcessError::Adapter(map_adapter_error(error)))
+                    Ok(Err(map_adapter_error(error)))
                 }
             }
         })
@@ -508,7 +539,7 @@ impl AdapterSession for AdapterProcess {
     fn open_connection(
         &mut self,
         command: OpenAdapterConnection,
-    ) -> AdapterFuture<'_, OpenedAdapterConnection, Self::Error> {
+    ) -> AdapterFuture<'_, Result<OpenedAdapterConnection, AdapterCallError>, Self::Error> {
         Box::pin(async move {
             let request = self.signed(OpenConnectionRequest {
                 settings: map_settings(command.settings),
@@ -523,7 +554,7 @@ impl AdapterSession for AdapterProcess {
             let result = match response.outcome.expect("validated open connection outcome") {
                 open_connection_response::Outcome::Result(result) => result,
                 open_connection_response::Outcome::Error(error) => {
-                    return Err(AdapterProcessError::Adapter(map_adapter_error(error)));
+                    return Ok(Err(map_adapter_error(error)));
                 }
             };
             self.account_keys = result
@@ -540,7 +571,7 @@ impl AdapterSession for AdapterProcess {
                 .collect::<Result<_, _>>()?;
             let capabilities = map_connection_capabilities(result.capabilities);
             self.connection_capabilities = Some(capabilities.clone());
-            Ok(OpenedAdapterConnection {
+            Ok(Ok(OpenedAdapterConnection {
                 accounts: result
                     .accounts
                     .into_iter()
@@ -553,11 +584,13 @@ impl AdapterSession for AdapterProcess {
                     .collect::<Result<_, AdapterProcessError>>()?,
                 capabilities,
                 secret_patches: map_secret_patches(result.secret_patches)?,
-            })
+            }))
         })
     }
 
-    fn discover_sources(&mut self) -> AdapterFuture<'_, DiscoveredAdapterSources, Self::Error> {
+    fn discover_sources(
+        &mut self,
+    ) -> AdapterFuture<'_, Result<DiscoveredAdapterSources, AdapterCallError>, Self::Error> {
         Box::pin(async move {
             if self.account_keys.is_empty() {
                 return Err(AdapterProcessError::ConnectionNotOpen);
@@ -575,17 +608,17 @@ impl AdapterSession for AdapterProcess {
             {
                 discover_sources_response::Outcome::Result(result) => result,
                 discover_sources_response::Outcome::Error(error) => {
-                    return Err(AdapterProcessError::Adapter(map_adapter_error(error)));
+                    return Ok(Err(map_adapter_error(error)));
                 }
             };
-            Ok(DiscoveredAdapterSources {
+            Ok(Ok(DiscoveredAdapterSources {
                 sources: result
                     .sources
                     .into_iter()
                     .map(map_source)
                     .collect::<Result<_, _>>()?,
                 secret_patches: map_secret_patches(result.secret_patches)?,
-            })
+            }))
         })
     }
 
@@ -960,9 +993,9 @@ impl AdapterSession for AdapterProcess {
                 .expect("validated operation cancellation outcome")
             {
                 cancel_operation_response::Outcome::Result(_) => Ok(()),
-                cancel_operation_response::Outcome::Error(error) => {
-                    Err(AdapterProcessError::Adapter(map_adapter_error(error)))
-                }
+                cancel_operation_response::Outcome::Error(error) => Err(
+                    AdapterProcessError::Adapter(Box::new(map_adapter_error(error))),
+                ),
             }
         })
     }
@@ -971,18 +1004,22 @@ impl AdapterSession for AdapterProcess {
         Box::pin(async move {
             let request = self.signed(ShutdownRequest { grace_period: None });
             let shutdown = timeout(self.rpc_timeout, self.client.shutdown(request)).await;
-            if matches!(shutdown, Ok(Ok(_))) {
+            let result = if matches!(shutdown, Ok(Ok(_))) {
                 match timeout(self.shutdown_timeout, self.child.wait()).await {
-                    Ok(Ok(status)) if status.success() => return Ok(AdapterRetirement::Graceful),
-                    Ok(Ok(status)) => {
-                        return Err(AdapterProcessError::UnexpectedExit(status.code()));
+                    Ok(Ok(status)) if status.success() => Ok(AdapterRetirement::Graceful),
+                    Ok(Ok(status)) => Err(AdapterProcessError::UnexpectedExit(status.code())),
+                    Ok(Err(error)) => Err(error.into()),
+                    Err(_) => {
+                        force_stop(&mut self.child).await;
+                        Ok(AdapterRetirement::Forced)
                     }
-                    Ok(Err(error)) => return Err(error.into()),
-                    Err(_) => {}
                 }
-            }
-            force_stop(&mut self.child).await;
-            Ok(AdapterRetirement::Forced)
+            } else {
+                force_stop(&mut self.child).await;
+                Ok(AdapterRetirement::Forced)
+            };
+            finish_provider_diagnostic_drain(self.diagnostic_task).await;
+            result
         })
     }
 }
@@ -991,8 +1028,26 @@ impl AdapterProcess {
     fn signed<T>(&self, value: T) -> Request<T> {
         let mut request = Request::new(value);
         self.token.apply(&mut request);
+        let sequence = self.correlation_sequence.fetch_add(1, Ordering::Relaxed);
+        apply_invocation_context(
+            &mut request,
+            &format!("adapter:{}:{sequence}", self.correlation_prefix),
+        );
         request
     }
+}
+
+fn apply_invocation_context<T>(request: &mut Request<T>, fallback_correlation_id: &str) {
+    let context = crate::observability::current_invocation_context().unwrap_or_else(|| {
+        InvocationContext::new(fallback_correlation_id, None, None)
+            .expect("generated adapter correlation ID is valid")
+    });
+    context.apply(request);
+}
+
+fn correlation_prefix(process_instance_id: &str) -> String {
+    let digest = Sha256::digest(process_instance_id.as_bytes());
+    hex::encode(&digest[..8])
 }
 
 async fn initialize_child(
@@ -1042,6 +1097,13 @@ async fn initialize_child(
         process_instance_id: launch.process_instance_id.clone(),
     });
     token.apply(&mut handshake_request);
+    apply_invocation_context(
+        &mut handshake_request,
+        &format!(
+            "adapter:{}:0",
+            correlation_prefix(&launch.process_instance_id)
+        ),
+    );
     let handshake = timeout(rpc_timeout, client.clone().handshake(handshake_request))
         .await
         .map_err(|_| AdapterProcessError::RpcTimeout("handshake"))??
@@ -1075,11 +1137,132 @@ fn spawn_child(executable: &Path, working_directory: &Path) -> Result<Child, Ada
     Ok(Command::new(executable)
         .current_dir(working_directory)
         .env_clear()
+        .env(
+            PROVIDER_LOG_FILTER_ENV,
+            env::var(PROVIDER_LOG_FILTER_ENV).unwrap_or_else(|_| "info".to_owned()),
+        )
+        .env(PROVIDER_LOG_FORMAT_ENV, "json")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()?)
+}
+
+fn start_provider_diagnostic_drain(
+    child: &mut Child,
+    provider_id: String,
+    process_instance_id: String,
+) -> Result<JoinHandle<()>, AdapterProcessError> {
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or(AdapterProcessError::MissingChildPipe("stderr"))?;
+    Ok(tokio::spawn(async move {
+        let mut lines = FramedRead::new(
+            stderr,
+            LinesCodec::new_with_max_length(MAXIMUM_PROVIDER_DIAGNOSTIC_BYTES),
+        );
+        while let Some(line) = lines.next().await {
+            match line {
+                Ok(line) => log_provider_diagnostic(&provider_id, &process_instance_id, &line),
+                Err(error) => tracing::warn!(
+                    event = "provider.diagnostic.invalid",
+                    provider.id = provider_id,
+                    process.instance_id = process_instance_id,
+                    error = %error,
+                ),
+            }
+        }
+    }))
+}
+
+async fn finish_provider_diagnostic_drain(task: JoinHandle<()>) {
+    if let Err(error) = task.await {
+        tracing::error!(event = "provider.diagnostic.join.failed", error = ?error);
+    }
+}
+
+fn log_provider_diagnostic(provider_id: &str, process_instance_id: &str, line: &str) {
+    let digest = hex::encode(Sha256::digest(line.as_bytes()));
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+        tracing::warn!(
+            event = "provider.diagnostic.malformed",
+            provider.id = provider_id,
+            process.instance_id = process_instance_id,
+            diagnostic.sha256 = digest,
+            diagnostic.bytes = line.len(),
+        );
+        return;
+    };
+    let level = diagnostic_text(&value, "/level").unwrap_or("UNKNOWN");
+    let provider_event = diagnostic_text(&value, "/event").unwrap_or("provider.log");
+    let message = diagnostic_text(&value, "/message").unwrap_or("");
+    let correlation_id = diagnostic_text(&value, "/span/trakkin.correlation_id")
+        .or_else(|| diagnostic_text(&value, "/trakkin.correlation_id"))
+        .unwrap_or("");
+    let traceparent = diagnostic_text(&value, "/span/otel.traceparent")
+        .or_else(|| diagnostic_text(&value, "/otel.traceparent"))
+        .unwrap_or("");
+    let tracestate = diagnostic_text(&value, "/span/otel.tracestate")
+        .or_else(|| diagnostic_text(&value, "/otel.tracestate"))
+        .unwrap_or("");
+    match level {
+        "ERROR" => tracing::error!(
+            event = "provider.diagnostic",
+            provider.id = provider_id,
+            process.instance_id = process_instance_id,
+            provider.event = provider_event,
+            provider.message = message,
+            trakkin.correlation_id = correlation_id,
+            otel.traceparent = traceparent,
+            otel.tracestate = tracestate,
+            diagnostic.sha256 = digest,
+        ),
+        "WARN" => tracing::warn!(
+            event = "provider.diagnostic",
+            provider.id = provider_id,
+            process.instance_id = process_instance_id,
+            provider.event = provider_event,
+            provider.message = message,
+            trakkin.correlation_id = correlation_id,
+            otel.traceparent = traceparent,
+            otel.tracestate = tracestate,
+            diagnostic.sha256 = digest,
+        ),
+        "DEBUG" | "TRACE" => tracing::debug!(
+            event = "provider.diagnostic",
+            provider.id = provider_id,
+            process.instance_id = process_instance_id,
+            provider.event = provider_event,
+            provider.message = message,
+            trakkin.correlation_id = correlation_id,
+            otel.traceparent = traceparent,
+            otel.tracestate = tracestate,
+            diagnostic.sha256 = digest,
+        ),
+        _ => tracing::info!(
+            event = "provider.diagnostic",
+            provider.id = provider_id,
+            process.instance_id = process_instance_id,
+            provider.event = provider_event,
+            provider.message = message,
+            trakkin.correlation_id = correlation_id,
+            otel.traceparent = traceparent,
+            otel.tracestate = tracestate,
+            diagnostic.sha256 = digest,
+        ),
+    }
+}
+
+fn diagnostic_text<'a>(value: &'a serde_json::Value, pointer: &str) -> Option<&'a str> {
+    value
+        .pointer(pointer)
+        .and_then(serde_json::Value::as_str)
+        .filter(|text| {
+            text.len() <= MAXIMUM_PROVIDER_DIAGNOSTIC_TEXT_BYTES
+                && !text.chars().any(char::is_control)
+        })
 }
 
 fn validate_process_instance_id(process_instance_id: &str) -> Result<(), AdapterProcessError> {
@@ -1264,7 +1447,9 @@ fn map_read_completion(
     })
 }
 
-fn map_read_failure(error: Option<AdapterError>) -> Result<AdapterCallError, AdapterProcessError> {
+fn map_read_failure(
+    error: Option<OperationFailure>,
+) -> Result<AdapterCallError, AdapterProcessError> {
     let error = error.ok_or(AdapterProcessError::InvalidResponse(
         "read failure error is missing",
     ))?;
@@ -2155,52 +2340,42 @@ fn map_configuration_fields(
 
 fn map_start_authentication_response(
     response: StartAuthenticationResponse,
-) -> Result<AdapterAuthenticationStep, AdapterProcessError> {
+) -> Result<AdapterOperationResult<AdapterAuthenticationStep>, AdapterProcessError> {
     validation::start_authentication_response(&response)
         .map_err(|_| AdapterProcessError::InvalidResponse("invalid authentication step"))?;
-    map_authentication_response(
-        response.authentication_id,
-        response.status,
-        response.prompt,
-        response.accounts,
-        response.secret_patches,
-        response.retry_after.map(|retry_after| AdapterRetryAfter {
-            seconds: retry_after.seconds,
-            nanoseconds: retry_after.nanos,
-        }),
-        response.error,
-    )
+    match response
+        .outcome
+        .expect("validated authentication start outcome")
+    {
+        start_authentication_response::Outcome::Result(progress) => {
+            map_authentication_progress(progress).map(Ok)
+        }
+        start_authentication_response::Outcome::Error(error) => Ok(Err(map_adapter_error(error))),
+    }
 }
 
 fn map_continue_authentication_response(
     response: ContinueAuthenticationResponse,
-) -> Result<AdapterAuthenticationStep, AdapterProcessError> {
+) -> Result<AdapterOperationResult<AdapterAuthenticationStep>, AdapterProcessError> {
     validation::continue_authentication_response(&response)
         .map_err(|_| AdapterProcessError::InvalidResponse("invalid authentication step"))?;
-    map_authentication_response(
-        response.authentication_id,
-        response.status,
-        response.prompt,
-        response.accounts,
-        response.secret_patches,
-        response.retry_after.map(|retry_after| AdapterRetryAfter {
-            seconds: retry_after.seconds,
-            nanoseconds: retry_after.nanos,
-        }),
-        response.error,
-    )
+    match response
+        .outcome
+        .expect("validated authentication continuation outcome")
+    {
+        continue_authentication_response::Outcome::Result(progress) => {
+            map_authentication_progress(progress).map(Ok)
+        }
+        continue_authentication_response::Outcome::Error(error) => {
+            Ok(Err(map_adapter_error(error)))
+        }
+    }
 }
 
-fn map_authentication_response(
-    authentication_id: String,
-    status: i32,
-    prompt: Option<ProtoAuthenticationPrompt>,
-    accounts: Vec<ProtoAccountSnapshot>,
-    secret_patches: Vec<SecretPatch>,
-    retry_after: Option<AdapterRetryAfter>,
-    error: Option<AdapterError>,
+fn map_authentication_progress(
+    progress: ProtoAuthenticationProgress,
 ) -> Result<AdapterAuthenticationStep, AdapterProcessError> {
-    let status = match ProtoAuthenticationStatus::try_from(status)
+    let status = match ProtoAuthenticationStatus::try_from(progress.status)
         .map_err(|_| AdapterProcessError::InvalidResponse("unknown authentication status"))?
     {
         ProtoAuthenticationStatus::Waiting => AdapterAuthenticationStatus::Waiting,
@@ -2208,17 +2383,17 @@ fn map_authentication_response(
         ProtoAuthenticationStatus::Completed => AdapterAuthenticationStatus::Completed,
         ProtoAuthenticationStatus::Cancelled => AdapterAuthenticationStatus::Cancelled,
         ProtoAuthenticationStatus::Expired => AdapterAuthenticationStatus::Expired,
-        ProtoAuthenticationStatus::Failed => AdapterAuthenticationStatus::Failed,
-        ProtoAuthenticationStatus::Unspecified => {
+        ProtoAuthenticationStatus::Failed | ProtoAuthenticationStatus::Unspecified => {
             return Err(AdapterProcessError::InvalidResponse(
-                "authentication status is unspecified",
+                "authentication progress status is invalid",
             ));
         }
     };
     Ok(AdapterAuthenticationStep {
-        authentication_id,
+        authentication_id: progress.authentication_id,
         status,
-        prompt: prompt
+        prompt: progress
+            .prompt
             .map(
                 |prompt| -> Result<AdapterAuthenticationPrompt, AdapterProcessError> {
                     Ok(AdapterAuthenticationPrompt {
@@ -2230,7 +2405,8 @@ fn map_authentication_response(
                 },
             )
             .transpose()?,
-        accounts: accounts
+        accounts: progress
+            .accounts
             .into_iter()
             .map(|account| {
                 Ok(AdapterAccount {
@@ -2239,13 +2415,16 @@ fn map_authentication_response(
                 })
             })
             .collect::<Result<_, AdapterProcessError>>()?,
-        secret_patches: map_secret_patches(secret_patches)?,
-        retry_after,
-        error: error.map(map_adapter_error),
+        secret_patches: map_secret_patches(progress.secret_patches)?,
+        retry_after: progress.retry_after.map(|retry_after| AdapterRetryAfter {
+            seconds: retry_after.seconds,
+            nanoseconds: retry_after.nanos,
+        }),
+        error: None,
     })
 }
 
-fn validate_adapter_error(error: &AdapterError) -> Result<(), AdapterProcessError> {
+fn validate_adapter_error(error: &OperationFailure) -> Result<(), AdapterProcessError> {
     validation::adapter_error(error)
         .map_err(|_| AdapterProcessError::InvalidResponse("invalid adapter error"))
 }
@@ -2258,12 +2437,37 @@ fn map_field_problem(problem: trakkin_provider_sdk::v1::FieldProblem) -> Adapter
     }
 }
 
-fn map_adapter_error(error: AdapterError) -> AdapterCallError {
+fn map_adapter_error(error: OperationFailure) -> AdapterCallError {
+    let category = match OperationFailureCategory::try_from(error.category)
+        .expect("validated operation failure category")
+    {
+        OperationFailureCategory::InvalidInput => AdapterFailureCategory::InvalidInput,
+        OperationFailureCategory::Authentication => AdapterFailureCategory::Authentication,
+        OperationFailureCategory::Authorization => AdapterFailureCategory::Authorization,
+        OperationFailureCategory::RateLimited => AdapterFailureCategory::RateLimited,
+        OperationFailureCategory::Unavailable => AdapterFailureCategory::Unavailable,
+        OperationFailureCategory::Conflict => AdapterFailureCategory::Conflict,
+        OperationFailureCategory::Unsupported => AdapterFailureCategory::Unsupported,
+        OperationFailureCategory::InvalidRemoteData => AdapterFailureCategory::InvalidRemoteData,
+        OperationFailureCategory::Internal => AdapterFailureCategory::Internal,
+        OperationFailureCategory::Unspecified => {
+            unreachable!("validated operation failure category")
+        }
+    };
+    let retry = error
+        .retry
+        .expect("validated operation failure retry advice");
+    let disposition =
+        RetryDisposition::try_from(retry.disposition).expect("validated retry disposition");
     AdapterCallError {
+        category,
         code: error.code,
         safe_message: error.safe_message,
-        retryable: error.retryable,
-        retry_after: error.retry_after.map(|retry_after| AdapterRetryAfter {
+        retryable: matches!(
+            disposition,
+            RetryDisposition::Retryable | RetryDisposition::RetryAfter
+        ),
+        retry_after: retry.after.map(|retry_after| AdapterRetryAfter {
             seconds: retry_after.seconds,
             nanoseconds: retry_after.nanos,
         }),
@@ -2276,6 +2480,7 @@ fn map_adapter_error(error: AdapterError) -> AdapterCallError {
                 message: problem.message,
             })
             .collect(),
+        diagnostic_id: error.diagnostic_id,
     }
 }
 
@@ -2603,7 +2808,7 @@ pub enum AdapterProcessError {
     #[error("adapter response failed validation: {0}")]
     InvalidResponse(&'static str),
     #[error("adapter rejected the request: {0:?}")]
-    Adapter(AdapterCallError),
+    Adapter(Box<AdapterCallError>),
     #[error("adapter connection is not open")]
     ConnectionNotOpen,
     #[error("adapter operation ID is invalid")]
@@ -2642,7 +2847,7 @@ mod tests {
     fn handshake_identity_matches_resolved_installation() {
         let target = ProviderLaunchTarget {
             provider_id: "dev.trakkin.fixture".to_owned(),
-            version: "0.1.0".to_owned(),
+            version: "0.0.0".to_owned(),
             installation_id: uuid::Uuid::nil(),
             generation: uuid::Uuid::nil(),
             executable: PathBuf::from("bin/provider"),
@@ -2657,10 +2862,34 @@ mod tests {
         };
 
         assert!(validate_handshake(&handshake, &selected_protocol, "process-1", &target).is_ok());
-        handshake.adapter_version = "0.2.0".to_owned();
+        handshake.adapter_version = "invalid-version".to_owned();
         assert!(matches!(
             validate_handshake(&handshake, &selected_protocol, "process-1", &target),
             Err(AdapterProcessError::InvalidHandshake)
         ));
+    }
+
+    #[test]
+    fn authentication_failures_remain_operation_outcomes() {
+        let response = StartAuthenticationResponse {
+            outcome: Some(start_authentication_response::Outcome::Error(
+                OperationFailure {
+                    category: OperationFailureCategory::Authentication as i32,
+                    code: "authentication_denied".to_owned(),
+                    safe_message: "Authentication was denied".to_owned(),
+                    retry: Some(trakkin_provider_sdk::v1::RetryAdvice {
+                        disposition: RetryDisposition::NotRetryable as i32,
+                        after: None,
+                    }),
+                    diagnostic_id: "provider:auth:1".to_owned(),
+                    ..OperationFailure::default()
+                },
+            )),
+        };
+
+        let outcome = map_start_authentication_response(response).unwrap();
+        let error = outcome.expect_err("provider failure must not become a transport error");
+        assert_eq!(error.code, "authentication_denied");
+        assert_eq!(error.diagnostic_id, "provider:auth:1");
     }
 }

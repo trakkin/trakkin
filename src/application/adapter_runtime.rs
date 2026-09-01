@@ -11,11 +11,13 @@ use crate::domain::synchronization::Quantizer;
 
 use super::acquisition::ReadMode;
 use super::error::{
-    ApplicationError, ApplicationErrorCode, ApplicationFieldProblem, IntoApplicationError,
+    ApplicationError, ApplicationErrorCode, ApplicationFieldProblem, ApplicationRetryAdvice,
+    ApplicationRetryAfter, IntoApplicationError,
 };
 
 pub type AdapterFuture<'a, T, E> = Pin<Box<dyn Future<Output = Result<T, E>> + Send + 'a>>;
 pub type AdapterRetirementFuture<T, E> = Pin<Box<dyn Future<Output = Result<T, E>> + Send>>;
+pub type AdapterOperationResult<T> = Result<T, AdapterCallError>;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LaunchAdapter {
@@ -58,22 +60,56 @@ pub struct AdapterRetryAfter {
     pub nanoseconds: i32,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AdapterFailureCategory {
+    InvalidInput,
+    Authentication,
+    Authorization,
+    RateLimited,
+    Unavailable,
+    Conflict,
+    Unsupported,
+    InvalidRemoteData,
+    Internal,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AdapterCallError {
+    pub category: AdapterFailureCategory,
     pub code: String,
     pub safe_message: String,
     pub retryable: bool,
     pub retry_after: Option<AdapterRetryAfter>,
     pub field_problems: Vec<AdapterFieldProblem>,
+    pub diagnostic_id: String,
 }
 
 impl IntoApplicationError for AdapterCallError {
     fn into_application_error(self) -> ApplicationError {
-        ApplicationError {
-            code: ApplicationErrorCode::InvalidProviderData,
-            message: self.safe_message,
-            field_problems: self
-                .field_problems
+        let code = match self.category {
+            AdapterFailureCategory::InvalidInput => ApplicationErrorCode::ProviderInvalidInput,
+            AdapterFailureCategory::Authentication => {
+                ApplicationErrorCode::ProviderAuthenticationFailed
+            }
+            AdapterFailureCategory::Authorization => {
+                ApplicationErrorCode::ProviderAuthorizationFailed
+            }
+            AdapterFailureCategory::RateLimited => ApplicationErrorCode::ProviderRateLimited,
+            AdapterFailureCategory::Unavailable => ApplicationErrorCode::ProviderUnavailable,
+            AdapterFailureCategory::Conflict => ApplicationErrorCode::ProviderConflict,
+            AdapterFailureCategory::Unsupported => ApplicationErrorCode::ProviderUnsupported,
+            AdapterFailureCategory::InvalidRemoteData => ApplicationErrorCode::InvalidProviderData,
+            AdapterFailureCategory::Internal => ApplicationErrorCode::ProviderInternal,
+        };
+        let retry_after = self.retry_after.map(|retry_after| ApplicationRetryAfter {
+            seconds: retry_after.seconds,
+            nanoseconds: retry_after.nanoseconds,
+        });
+        ApplicationError::provider(
+            code,
+            self.safe_message,
+            self.code,
+            self.field_problems
                 .into_iter()
                 .map(|problem| ApplicationFieldProblem {
                     path: problem.path,
@@ -81,7 +117,12 @@ impl IntoApplicationError for AdapterCallError {
                     message: problem.message,
                 })
                 .collect(),
-        }
+            ApplicationRetryAdvice {
+                retryable: self.retryable,
+                after: retry_after,
+            },
+            self.diagnostic_id,
+        )
     }
 }
 
@@ -716,38 +757,40 @@ pub trait AdapterSession: Send {
 
     fn describe_connection(
         &mut self,
-    ) -> AdapterFuture<'_, AdapterConnectionDescription, Self::Error>;
+    ) -> AdapterFuture<'_, AdapterOperationResult<AdapterConnectionDescription>, Self::Error>;
 
     fn validate_connection(
         &mut self,
         command: ValidateAdapterConnection,
-    ) -> AdapterFuture<'_, AdapterConnectionValidation, Self::Error>;
+    ) -> AdapterFuture<'_, AdapterOperationResult<AdapterConnectionValidation>, Self::Error>;
 
     fn list_authentication_methods(
         &mut self,
-    ) -> AdapterFuture<'_, Vec<AdapterAuthenticationMethod>, Self::Error>;
+    ) -> AdapterFuture<'_, AdapterOperationResult<Vec<AdapterAuthenticationMethod>>, Self::Error>;
 
     fn start_authentication(
         &mut self,
         command: StartAdapterAuthentication,
-    ) -> AdapterFuture<'_, AdapterAuthenticationStep, Self::Error>;
+    ) -> AdapterFuture<'_, AdapterOperationResult<AdapterAuthenticationStep>, Self::Error>;
 
     fn continue_authentication(
         &mut self,
         command: ContinueAdapterAuthentication,
-    ) -> AdapterFuture<'_, AdapterAuthenticationStep, Self::Error>;
+    ) -> AdapterFuture<'_, AdapterOperationResult<AdapterAuthenticationStep>, Self::Error>;
 
     fn cancel_authentication(
         &mut self,
         authentication_id: String,
-    ) -> AdapterFuture<'_, (), Self::Error>;
+    ) -> AdapterFuture<'_, AdapterOperationResult<()>, Self::Error>;
 
     fn open_connection(
         &mut self,
         command: OpenAdapterConnection,
-    ) -> AdapterFuture<'_, OpenedAdapterConnection, Self::Error>;
+    ) -> AdapterFuture<'_, AdapterOperationResult<OpenedAdapterConnection>, Self::Error>;
 
-    fn discover_sources(&mut self) -> AdapterFuture<'_, DiscoveredAdapterSources, Self::Error>;
+    fn discover_sources(
+        &mut self,
+    ) -> AdapterFuture<'_, AdapterOperationResult<DiscoveredAdapterSources>, Self::Error>;
 
     fn read_catalog(
         &mut self,

@@ -142,6 +142,8 @@ impl ConnectionInteraction for StaticConnectionInteraction {
                     }],
                     fields: Vec::new(),
                 }],
+                settings: Vec::new(),
+                configured_secret_keys: Vec::new(),
             })
         })
     }

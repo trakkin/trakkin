@@ -74,11 +74,15 @@ tokio = { version = "1.52.4", features = [
   "sync",
   "time",
 ] }
+tokio-util = { version = "0.7.19", features = ["codec"] }
 tonic = "0.14.6"
+tower-http = { version = "0.6.8", features = ["request-id", "trace"] }
 tough = { version = "0.24.0", features = ["http"] }
-trakkin-mapping = { git = "https://github.com/trakkin/trakkin-contracts.git", rev = "90afcd32fea7a072e00737d57853ba4c1ee28724" }
-trakkin-provider-release = { git = "https://github.com/trakkin/trakkin-contracts.git", rev = "90afcd32fea7a072e00737d57853ba4c1ee28724" }
-trakkin-provider-sdk = { git = "https://github.com/trakkin/trakkin-contracts.git", rev = "90afcd32fea7a072e00737d57853ba4c1ee28724" }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter", "json"] }
+trakkin-mapping = { git = "https://github.com/trakkin/trakkin-contracts.git", rev = "9ee9d9f4805ffffb8f86af419a70245bb18b8930" }
+trakkin-provider-release = { git = "https://github.com/trakkin/trakkin-contracts.git", rev = "9ee9d9f4805ffffb8f86af419a70245bb18b8930" }
+trakkin-provider-sdk = { git = "https://github.com/trakkin/trakkin-contracts.git", rev = "9ee9d9f4805ffffb8f86af419a70245bb18b8930" }
 utoipa = { version = "5.5.0", features = ["uuid"] }
 url = "2.5.8"
 uuid = { version = "1.24.0", features = ["serde"] }
@@ -88,7 +92,7 @@ zstd = "0.13.3"
 http-body-util = "0.1.3"
 tempfile = "3.27.0"
 tower = { version = "0.5.3", features = ["util"] }
-trakkin-mapping = { git = "https://github.com/trakkin/trakkin-contracts.git", rev = "90afcd32fea7a072e00737d57853ba4c1ee28724", features = [
+trakkin-mapping = { git = "https://github.com/trakkin/trakkin-contracts.git", rev = "9ee9d9f4805ffffb8f86af419a70245bb18b8930", features = [
   "fixtures",
 ] }
 

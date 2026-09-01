@@ -635,11 +635,13 @@ async fn sync_precondition_failure_records_no_write_and_isolates_receiver() {
             successor_precondition: None,
             receipt: Vec::new(),
             error: Some(AdapterCallError {
+                category: trakkin::application::adapter_runtime::AdapterFailureCategory::Conflict,
                 code: "precondition_failed".to_owned(),
                 safe_message: "receiver state changed after preview".to_owned(),
                 retryable: false,
                 retry_after: None,
                 field_problems: Vec::new(),
+                diagnostic_id: "fixture:precondition_failed".to_owned(),
             }),
         })]),
     });
@@ -2377,13 +2379,15 @@ async fn sync_missing_session_terminalizes_execution_consistently() {
         .expect("missing session failure is recorded")
         .expect("sessionless sync action is claimable");
     assert_eq!(completed.status, TaskStatus::Failed);
-    assert_eq!(
-        completed.failure,
-        Some(trakkin::application::task_manager::TaskFailure {
-            code: "connection_session_unavailable".to_owned(),
-            retryable: true,
-        })
-    );
+    let failure = completed
+        .failure
+        .expect("sessionless execution records a structured failure");
+    assert!(failure.id.starts_with("task:"));
+    assert_eq!(failure.code, "connection_session_unavailable");
+    assert_eq!(failure.message, "connection session unavailable");
+    assert!(failure.retryable);
+    assert_eq!(failure.retry_after, None);
+    assert_eq!(failure.diagnostic_id, None);
     assert_eq!(table_count(&pool, "task_attempts").await, 1);
     assert_eq!(table_count(&pool, "sync_action_attempts").await, 0);
     assert_eq!(table_count(&pool, "task_claims").await, 0);

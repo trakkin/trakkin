@@ -134,6 +134,7 @@ async fn sync_activity_pages_filters_and_details_applied_and_reconciled_runs() {
     let activity = SyncActivityService::new(PostgresSyncActivityRepository::new(pool.clone()));
     let query = QuerySyncActivity {
         workspace_id: WORKSPACE_ID,
+        run_id: None,
         statuses: Vec::new(),
         receiver_source_id: None,
         semantic_field: None,

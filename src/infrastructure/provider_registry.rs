@@ -985,12 +985,14 @@ FOR UPDATE
                 "active provider installation cannot be removed",
             ));
         }
-        sqlx::query("DELETE FROM provider_installations WHERE id = $1
-")
-            .bind(command.installation_id)
-            .execute(&mut *transaction)
-            .await
-            .map_err(internal_error)?;
+        sqlx::query(
+            "DELETE FROM provider_installations WHERE id = $1
+",
+        )
+        .bind(command.installation_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(internal_error)?;
         let blob_referenced = sqlx::query_scalar::<_, bool>(
             "SELECT EXISTS(
     SELECT 1
@@ -1548,10 +1550,7 @@ fn provider_launch_application_error(error: ProviderLaunchError) -> ApplicationE
 }
 
 fn internal_error(error: impl std::fmt::Display) -> ApplicationError {
-    ApplicationError::new(
-        ApplicationErrorCode::Internal,
-        format!("provider registry failed: {error}"),
-    )
+    ApplicationError::internal("provider registry operation failed", error)
 }
 
 fn has_database_code(error: &sqlx::Error, code: &str) -> bool {

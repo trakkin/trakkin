@@ -38,6 +38,7 @@ use super::{
 #[serde(rename_all = "camelCase")]
 #[into_params(parameter_in = Query)]
 pub struct ActivityQueryParameters {
+    pub run_id: Option<uuid::Uuid>,
     pub status: Option<String>,
     pub source_id: Option<uuid::Uuid>,
     pub field: Option<String>,

@@ -72,49 +72,53 @@ where
         else {
             return Ok(None);
         };
-        let outcome = self
-            .handler
-            .execute(&claimed, command.completed_at)
-            .await
-            .map_err(TaskDispatcherError::Handler)?;
-        let completed = match outcome {
-            TaskHandlerOutcome::Complete(completion) => self
-                .task_manager
-                .complete(CompleteTask {
-                    task_id: claimed.task.id,
-                    attempt_id: claimed.attempt_id,
-                    owner_id: claimed.owner_id,
-                    completion,
-                    completed_at: command.completed_at,
-                })
+        let invocation_context = claimed.invocation_context.clone();
+        crate::observability::in_invocation_context(invocation_context, async {
+            let outcome = self
+                .handler
+                .execute(&claimed, command.completed_at)
                 .await
-                .map_err(TaskDispatcherError::Repository)?,
-            TaskHandlerOutcome::Terminalized => {
-                let task = self
+                .map_err(TaskDispatcherError::Handler)?;
+            let completed = match outcome {
+                TaskHandlerOutcome::Complete(completion) => self
                     .task_manager
-                    .get(claimed.task.id)
+                    .complete(CompleteTask {
+                        task_id: claimed.task.id,
+                        attempt_id: claimed.attempt_id,
+                        owner_id: claimed.owner_id,
+                        completion,
+                        completed_at: command.completed_at,
+                    })
                     .await
-                    .map_err(TaskDispatcherError::Repository)?
-                    .ok_or(TaskDispatcherError::TerminalTaskMissing)?;
-                if !task.status.terminal() {
-                    return Err(TaskDispatcherError::TerminalTaskNotCompleted(task.status));
+                    .map_err(TaskDispatcherError::Repository)?,
+                TaskHandlerOutcome::Terminalized => {
+                    let task = self
+                        .task_manager
+                        .get(claimed.task.id)
+                        .await
+                        .map_err(TaskDispatcherError::Repository)?
+                        .ok_or(TaskDispatcherError::TerminalTaskMissing)?;
+                    if !task.status.terminal() {
+                        return Err(TaskDispatcherError::TerminalTaskNotCompleted(task.status));
+                    }
+                    task
                 }
-                task
-            }
-            TaskHandlerOutcome::RetryQueued => {
-                let task = self
-                    .task_manager
-                    .get(claimed.task.id)
-                    .await
-                    .map_err(TaskDispatcherError::Repository)?
-                    .ok_or(TaskDispatcherError::TerminalTaskMissing)?;
-                if task.status != TaskStatus::Queued {
-                    return Err(TaskDispatcherError::RetryTaskNotQueued(task.status));
+                TaskHandlerOutcome::RetryQueued => {
+                    let task = self
+                        .task_manager
+                        .get(claimed.task.id)
+                        .await
+                        .map_err(TaskDispatcherError::Repository)?
+                        .ok_or(TaskDispatcherError::TerminalTaskMissing)?;
+                    if task.status != TaskStatus::Queued {
+                        return Err(TaskDispatcherError::RetryTaskNotQueued(task.status));
+                    }
+                    task
                 }
-                task
-            }
-        };
-        Ok(Some(completed))
+            };
+            Ok(Some(completed))
+        })
+        .await
     }
 }
 

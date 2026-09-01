@@ -923,8 +923,12 @@ async fn seed_catalog_refetch(pool: PgPool) {
     sqlx::query(
         "INSERT INTO tasks (
              id, workspace_id, connection_id, kind, status,
-             cancellation_supported, created_at, started_at, updated_at
-         ) VALUES ($1, $2, $3, 'catalog_read', 'running', TRUE, $4, $4, $4)",
+             cancellation_supported, invocation_context, created_at, started_at, updated_at
+         ) VALUES (
+             $1, $2, $3, 'catalog_read', 'running', TRUE,
+             jsonb_build_object('correlationId', 'request:test', 'traceparent', NULL, 'tracestate', NULL),
+             $4, $4, $4
+         )",
     )
     .bind(REFETCH_TASK_ID)
     .bind(WORKSPACE_ID)
@@ -969,8 +973,12 @@ async fn seed_concurrent_catalog_reset_task(pool: PgPool) {
     sqlx::query(
         "INSERT INTO tasks (
              id, workspace_id, connection_id, kind, status,
-             cancellation_supported, created_at, started_at, updated_at
-         ) VALUES ($1, $2, $3, 'catalog_reset', 'running', TRUE, $4, $4, $4)",
+             cancellation_supported, invocation_context, created_at, started_at, updated_at
+         ) VALUES (
+             $1, $2, $3, 'catalog_reset', 'running', TRUE,
+             jsonb_build_object('correlationId', 'request:test', 'traceparent', NULL, 'tracestate', NULL),
+             $4, $4, $4
+         )",
     )
     .bind(REFETCH_TASK_ID)
     .bind(WORKSPACE_ID)
@@ -1015,10 +1023,18 @@ async fn seed_concurrent_state_read_and_queued_task(pool: PgPool) {
     sqlx::query(
         "INSERT INTO tasks (
              id, workspace_id, connection_id, kind, status,
-             cancellation_supported, created_at, started_at, updated_at
+             cancellation_supported, invocation_context, created_at, started_at, updated_at
          ) VALUES
-             ($1, $2, $3, 'state_read', 'running', TRUE, $4, $4, $4),
-             ($5, $2, $3, 'catalog_read', 'queued', TRUE, $4, NULL, $4)",
+             (
+                 $1, $2, $3, 'state_read', 'running', TRUE,
+                 jsonb_build_object('correlationId', 'request:test', 'traceparent', NULL, 'tracestate', NULL),
+                 $4, $4, $4
+             ),
+             (
+                 $5, $2, $3, 'catalog_read', 'queued', TRUE,
+                 jsonb_build_object('correlationId', 'request:test', 'traceparent', NULL, 'tracestate', NULL),
+                 $4, NULL, $4
+             )",
     )
     .bind(SECOND_TASK_ID)
     .bind(WORKSPACE_ID)

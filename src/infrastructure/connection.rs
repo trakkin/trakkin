@@ -24,8 +24,8 @@ use crate::application::{
         BeginConnectionDeletion, ConnectionDeletionImpact, ConnectionFuture, ConnectionRepository,
         ConnectionRetirement, ConnectionSessionRegistry, ConnectionSourceSummary, ConnectionStatus,
         ConnectionSummary, CreateConnection, FinishConnectionDeletion, MarkAuthenticationCancelled,
-        MarkConnectionUnavailable, PublishConnectionSnapshot, RenameConnection,
-        SaveAuthenticationStep, StoredAuthenticationSession, StoredConnection,
+        MarkConnectionUnavailable, PublishConnectionSnapshot, ReconfigureConnection,
+        RenameConnection, SaveAuthenticationStep, StoredAuthenticationSession, StoredConnection,
     },
     error::{ApplicationError, ApplicationErrorCode, IntoApplicationError},
 };
@@ -599,6 +599,86 @@ RETURNING
         .into_summary()
     }
 
+    async fn reconfigure(
+        &self,
+        command: ReconfigureConnection,
+    ) -> Result<ConnectionSummary, ConnectionPersistenceError> {
+        validate_named_values(
+            command.settings.iter().map(|setting| setting.key.as_str()),
+            "setting",
+        )?;
+        validate_named_values(
+            command
+                .secret_patches
+                .iter()
+                .map(|patch| patch.key.as_str()),
+            "secret patch",
+        )?;
+        let mut transaction = self.pool.begin().await?;
+        let exists = sqlx::query_scalar::<_, Uuid>(
+            "SELECT id
+FROM connections
+WHERE id = $1 AND deleted_at IS NULL AND status <> 'disabled'
+FOR UPDATE
+",
+        )
+        .bind(command.connection_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        if exists.is_none() {
+            return Err(ConnectionPersistenceError::ConnectionNotFound);
+        }
+        sqlx::query(
+            "DELETE FROM connection_settings WHERE connection_id = $1
+",
+        )
+        .bind(command.connection_id)
+        .execute(&mut *transaction)
+        .await?;
+        for setting in command.settings {
+            sqlx::query(
+                "INSERT INTO connection_settings (
+    connection_id, setting_key, value, updated_at
+) VALUES ($1, $2, $3, $4)
+",
+            )
+            .bind(command.connection_id)
+            .bind(setting.key)
+            .bind(encode_value(setting.value))
+            .bind(command.reconfigured_at)
+            .execute(&mut *transaction)
+            .await?;
+        }
+        apply_secret_patches(
+            &mut transaction,
+            &self.master_key,
+            command.connection_id,
+            command.secret_patches,
+            command.reconfigured_at,
+        )
+        .await?;
+        let summary = sqlx::query_as::<_, ConnectionSummaryRow>(
+            "UPDATE connections
+SET
+    status = 'pending',
+    capabilities = '{}'::JSONB,
+    capability_revision = capability_revision + 1,
+    updated_at = $1
+WHERE id = $2
+RETURNING
+    id, provider_id, display_name, status, capability_revision,
+    created_at, updated_at
+",
+        )
+        .bind(command.reconfigured_at)
+        .bind(command.connection_id)
+        .fetch_one(&mut *transaction)
+        .await?
+        .into_summary()?;
+        transaction.commit().await?;
+        Ok(summary)
+    }
+
     async fn list_sources(
         &self,
         connection_id: Uuid,
@@ -821,6 +901,13 @@ impl ConnectionRepository for PostgresConnectionRepository {
         command: RenameConnection,
     ) -> ConnectionFuture<'_, ConnectionSummary, Self::Error> {
         Box::pin(self.rename(command))
+    }
+
+    fn reconfigure_connection(
+        &self,
+        command: ReconfigureConnection,
+    ) -> ConnectionFuture<'_, ConnectionSummary, Self::Error> {
+        Box::pin(self.reconfigure(command))
     }
 
     fn list_connection_sources(

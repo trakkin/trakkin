@@ -1,4 +1,4 @@
-use serde_json::{Value, json};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::{FromRow, PgPool, Postgres, Transaction};
 use thiserror::Error;
@@ -7,8 +7,8 @@ use uuid::Uuid;
 use crate::{
     application::{
         adapter_runtime::{
-            AdapterCallError, AdapterFieldProblem, AdapterKey, AdapterRetryAfter,
-            AdapterSourceMembership, AdapterTargetedStateFieldEffect,
+            AdapterCallError, AdapterFailureCategory, AdapterFieldProblem, AdapterKey,
+            AdapterRetryAfter, AdapterSourceMembership, AdapterTargetedStateFieldEffect,
             AdapterTargetedStateFieldEffectKind, AdapterTargetedStateFieldWriteCapability,
             AdapterTargetedStateMembershipEffect, AdapterTargetedStateWriteCapability,
             AdapterTargetedStateWriteCertainty, AdapterTargetedStateWriteIdempotencyMode,
@@ -506,13 +506,15 @@ SET
     outcome_provider_revision = $5,
     outcome_successor_precondition = $6,
     outcome_receipt = $7,
-    outcome_error_code = $8,
-    outcome_error_retryable = $9,
-    outcome_error_safe_message = $10,
-    outcome_error_retry_after_seconds = $11,
-    outcome_error_retry_after_nanoseconds = $12,
-    settled_at = $13
-WHERE task_attempt_id = $14 AND state = 'dispatched'
+    outcome_error_category = $8,
+    outcome_error_code = $9,
+    outcome_error_retryable = $10,
+    outcome_error_safe_message = $11,
+    outcome_error_diagnostic_id = $12,
+    outcome_error_retry_after_seconds = $13,
+    outcome_error_retry_after_nanoseconds = $14,
+    settled_at = $15
+WHERE task_attempt_id = $16 AND state = 'dispatched'
 ",
         )
         .bind(write_status_name(command.outcome.status))
@@ -522,9 +524,11 @@ WHERE task_attempt_id = $14 AND state = 'dispatched'
         .bind(&command.outcome.provider_revision)
         .bind(&command.outcome.successor_precondition)
         .bind(&command.outcome.receipt)
+        .bind(error.map(|error| failure_category_name(error.category)))
         .bind(error.map(|error| &error.code))
         .bind(error.map(|error| error.retryable))
         .bind(error.map(|error| &error.safe_message))
+        .bind(error.map(|error| &error.diagnostic_id))
         .bind(retry_after.map(|retry_after| retry_after.seconds))
         .bind(retry_after.map(|retry_after| retry_after.nanoseconds))
         .bind(command.settled_at)
@@ -689,17 +693,22 @@ WHERE id = $2 AND status = 'running'
         if action.rows_affected() != 1 {
             return Err(SyncActionAttemptError::InvalidTransition);
         }
+        let invocation_context =
+            crate::observability::task_invocation_context(command.reconciliation_task_id);
         let task = sqlx::query(
             "INSERT INTO tasks (
     id, workspace_id, connection_id, kind, status, cancellation_supported,
-    created_at, updated_at
+    invocation_context, created_at, updated_at
 )
-VALUES ($1, $2, $3, 'sync_action_reconciliation', 'queued', FALSE, $4, $4)
+VALUES ($1, $2, $3, 'sync_action_reconciliation', 'queued', FALSE, $4, $5, $5)
 ",
         )
         .bind(command.reconciliation_task_id)
         .bind(claim.workspace_id)
         .bind(claim.connection_id)
+        .bind(super::task_manager::invocation_context_json(
+            &invocation_context,
+        ))
         .bind(command.settled_at)
         .execute(&mut *transaction)
         .await?;
@@ -722,10 +731,11 @@ VALUES ($1, $2, $3, $4)
         if reconciliation.rows_affected() != 1 {
             return Err(SyncActionAttemptError::InvalidTransition);
         }
-        let completion = TaskCompletion::Failed(crate::application::task_manager::TaskFailure {
-            code: "sync_action_write_indeterminate".to_owned(),
-            retryable: false,
-        });
+        let completion =
+            TaskCompletion::Failed(crate::application::task_manager::TaskFailure::coded(
+                "sync_action_write_indeterminate",
+                false,
+            ));
         terminalize_task(
             &mut transaction,
             &claim.task_status,
@@ -868,10 +878,7 @@ async fn requeue_task(
     if failure.code.is_empty() {
         return Err(SyncActionAttemptError::InvalidTransition);
     }
-    let failure = json!({
-        "code": failure.code,
-        "retryable": failure.retryable,
-    });
+    let failure = super::task_manager::failure_json(failure);
     let attempt = sqlx::query(
         "UPDATE task_attempts
 SET status = 'failed', failure = $1, finished_at = $2
@@ -928,13 +935,9 @@ async fn terminalize_task(
     } else {
         match completion {
             Some(TaskCompletion::Succeeded) => ("succeeded", None),
-            Some(TaskCompletion::Failed(failure)) if !failure.code.is_empty() => (
-                "failed",
-                Some(json!({
-                    "code": failure.code,
-                    "retryable": failure.retryable,
-                })),
-            ),
+            Some(TaskCompletion::Failed(failure)) if !failure.code.is_empty() => {
+                ("failed", Some(super::task_manager::failure_json(failure)))
+            }
             Some(TaskCompletion::Failed(_) | TaskCompletion::Cancelled) | None => {
                 return Err(SyncActionAttemptError::InvalidTransition);
             }
@@ -1241,9 +1244,11 @@ pub(crate) async fn load_attempt(
     outcome_provider_revision,
     outcome_successor_precondition,
     outcome_receipt,
+    outcome_error_category,
     outcome_error_code,
     outcome_error_retryable,
     outcome_error_safe_message,
+    outcome_error_diagnostic_id,
     outcome_error_retry_after_seconds,
     outcome_error_retry_after_nanoseconds,
     prepared_at,
@@ -1390,9 +1395,11 @@ struct SyncActionAttemptRow {
     outcome_provider_revision: Option<Vec<u8>>,
     outcome_successor_precondition: Option<Vec<u8>>,
     outcome_receipt: Option<Vec<u8>>,
+    outcome_error_category: Option<String>,
     outcome_error_code: Option<String>,
     outcome_error_retryable: Option<bool>,
     outcome_error_safe_message: Option<String>,
+    outcome_error_diagnostic_id: Option<String>,
     outcome_error_retry_after_seconds: Option<i64>,
     outcome_error_retry_after_nanoseconds: Option<i32>,
     prepared_at: time::OffsetDateTime,
@@ -1500,12 +1507,21 @@ impl SyncActionAttemptRow {
             return Err(SyncActionAttemptError::CorruptAction);
         }
         let error = match (
+            self.outcome_error_category.as_deref(),
             self.outcome_error_code.as_ref(),
             self.outcome_error_retryable,
             self.outcome_error_safe_message.as_ref(),
+            self.outcome_error_diagnostic_id.as_ref(),
         ) {
-            (None, None, None) if field_problems.is_empty() => None,
-            (Some(code), Some(retryable), Some(safe_message)) => Some(AdapterCallError {
+            (None, None, None, None, None) if field_problems.is_empty() => None,
+            (
+                Some(category),
+                Some(code),
+                Some(retryable),
+                Some(safe_message),
+                Some(diagnostic_id),
+            ) => Some(AdapterCallError {
+                category: parse_failure_category(category)?,
                 code: code.clone(),
                 safe_message: safe_message.clone(),
                 retryable,
@@ -1524,6 +1540,7 @@ impl SyncActionAttemptRow {
                     .into_iter()
                     .map(ErrorFieldProblemRow::into_problem)
                     .collect(),
+                diagnostic_id: diagnostic_id.clone(),
             }),
             _ => return Err(SyncActionAttemptError::CorruptAction),
         };
@@ -1690,6 +1707,37 @@ impl ErrorFieldProblemRow {
             code: self.code,
             message: self.message,
         }
+    }
+}
+
+fn failure_category_name(category: AdapterFailureCategory) -> &'static str {
+    match category {
+        AdapterFailureCategory::InvalidInput => "invalid_input",
+        AdapterFailureCategory::Authentication => "authentication",
+        AdapterFailureCategory::Authorization => "authorization",
+        AdapterFailureCategory::RateLimited => "rate_limited",
+        AdapterFailureCategory::Unavailable => "unavailable",
+        AdapterFailureCategory::Conflict => "conflict",
+        AdapterFailureCategory::Unsupported => "unsupported",
+        AdapterFailureCategory::InvalidRemoteData => "invalid_remote_data",
+        AdapterFailureCategory::Internal => "internal",
+    }
+}
+
+fn parse_failure_category(
+    value: &str,
+) -> Result<AdapterFailureCategory, SyncActionAttemptError<PostgresSyncActionAttemptError>> {
+    match value {
+        "invalid_input" => Ok(AdapterFailureCategory::InvalidInput),
+        "authentication" => Ok(AdapterFailureCategory::Authentication),
+        "authorization" => Ok(AdapterFailureCategory::Authorization),
+        "rate_limited" => Ok(AdapterFailureCategory::RateLimited),
+        "unavailable" => Ok(AdapterFailureCategory::Unavailable),
+        "conflict" => Ok(AdapterFailureCategory::Conflict),
+        "unsupported" => Ok(AdapterFailureCategory::Unsupported),
+        "invalid_remote_data" => Ok(AdapterFailureCategory::InvalidRemoteData),
+        "internal" => Ok(AdapterFailureCategory::Internal),
+        _ => Err(SyncActionAttemptError::CorruptAction),
     }
 }
 

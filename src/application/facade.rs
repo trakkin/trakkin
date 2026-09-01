@@ -13,8 +13,8 @@ use super::{
         BeginConnectionDeletion, CancelConnectionAuthentication, ConnectionDeletionImpact,
         ConnectionInspection, ConnectionInteraction, ConnectionRepository, ConnectionRetirement,
         ConnectionSourceSummary, ConnectionSummary, ContinueConnectionAuthentication,
-        CreateConnection, FinishConnectionDeletion, InspectConnection, RenameConnection,
-        StartConnectionAuthentication, StartedConnectionAuthentication,
+        CreateConnection, FinishConnectionDeletion, InspectConnection, ReconfigureConnection,
+        RenameConnection, StartConnectionAuthentication, StartedConnectionAuthentication,
     },
     error::{ApplicationError, ApplicationErrorCode, IntoApplicationError},
     mapping_lifecycle::{
@@ -214,6 +214,10 @@ pub trait ApplicationApi: Send + Sync {
     fn rename_connection(
         &self,
         command: RenameConnection,
+    ) -> ApplicationFuture<'_, ConnectionSummary>;
+    fn reconfigure_connection(
+        &self,
+        command: ReconfigureConnection,
     ) -> ApplicationFuture<'_, ConnectionSummary>;
     fn list_connection_sources(
         &self,
@@ -833,6 +837,22 @@ where
         Box::pin(async move {
             self.connections
                 .rename_connection(command)
+                .await
+                .map_err(IntoApplicationError::into_application_error)
+        })
+    }
+
+    fn reconfigure_connection(
+        &self,
+        command: ReconfigureConnection,
+    ) -> ApplicationFuture<'_, ConnectionSummary> {
+        Box::pin(async move {
+            self.connection_retirement
+                .retire_connection(command.connection_id)
+                .await
+                .map_err(IntoApplicationError::into_application_error)?;
+            self.connections
+                .reconfigure_connection(command)
                 .await
                 .map_err(IntoApplicationError::into_application_error)
         })

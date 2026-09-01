@@ -12,7 +12,7 @@ use std::{
 use thiserror::Error;
 use time::OffsetDateTime;
 use tokio::net::TcpListener;
-use trakkin::{host::Host, http, infrastructure::connection::ConnectionMasterKey};
+use trakkin::{host::Host, http, infrastructure::connection::ConnectionMasterKey, observability};
 
 const DEFAULT_BIND_ADDRESS: &str = "127.0.0.1:8725";
 const DEFAULT_DATA_DIRECTORY: &str = ".trakkin";
@@ -22,11 +22,15 @@ const MASTER_KEY_FILE: &str = "master.key";
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    if let Err(error) = observability::init() {
+        eprintln!("trakkin tracing initialization failed: {error}");
+        return ExitCode::FAILURE;
+    }
     if env::args_os().nth(1).as_deref() == Some(OsStr::new(HEALTHCHECK_ARGUMENT)) {
         return match run_healthcheck() {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
-                eprintln!("trakkin healthcheck failed: {error}");
+                tracing::error!(event = "healthcheck.failed", error = %error);
                 ExitCode::FAILURE
             }
         };
@@ -34,7 +38,7 @@ async fn main() -> ExitCode {
     match run().await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("trakkin failed: {error}");
+            tracing::error!(event = "host.failed", error = %error);
             ExitCode::FAILURE
         }
     }
@@ -98,13 +102,14 @@ async fn run() -> Result<(), MainError> {
         serde_json::json!({ "status": "ready", "address": address.to_string() })
     );
     io::stdout().flush()?;
+    tracing::info!(event = "host.ready", %address);
     let server = axum::serve(listener, http::router(application))
         .with_graceful_shutdown(shutdown_signal())
         .await;
     let shutdown = runtime.shutdown().await;
     server?;
     shutdown?;
-    println!("trakkin stopped");
+    tracing::info!(event = "host.stopped");
     Ok(())
 }
 

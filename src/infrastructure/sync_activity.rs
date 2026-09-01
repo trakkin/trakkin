@@ -69,11 +69,12 @@ impl PostgresSyncActivityRepository {
 FROM sync_runs AS runs
 WHERE
     runs.workspace_id = $1
-    AND ($2::TEXT [] IS NULL OR runs.status = ANY($2))
-    AND ($3::TIMESTAMPTZ IS NULL OR runs.created_at >= $3)
-    AND ($4::TIMESTAMPTZ IS NULL OR runs.created_at < $4)
+    AND ($2::UUID IS NULL OR runs.id = $2)
+    AND ($3::TEXT [] IS NULL OR runs.status = ANY($3))
+    AND ($4::TIMESTAMPTZ IS NULL OR runs.created_at >= $4)
+    AND ($5::TIMESTAMPTZ IS NULL OR runs.created_at < $5)
     AND (
-        ($5::UUID IS NULL AND $6::TEXT IS NULL)
+        ($6::UUID IS NULL AND $7::TEXT IS NULL)
         OR EXISTS (
             SELECT 1
             FROM sync_actions AS filtered_actions
@@ -85,25 +86,26 @@ WHERE
             WHERE
                 filtered_actions.run_id = runs.id
                 AND (
-                    $5::UUID IS NULL
-                    OR filtered_actions.receiver_source_id = $5
+                    $6::UUID IS NULL
+                    OR filtered_actions.receiver_source_id = $6
                 )
                 AND (
-                    $6::TEXT IS NULL
-                    OR preview_actions.semantic_field = $6
+                    $7::TEXT IS NULL
+                    OR preview_actions.semantic_field = $7
                 )
         )
     )
     AND (
-        $7::TIMESTAMPTZ IS NULL
-        OR runs.created_at < $7
-        OR (runs.created_at = $7 AND runs.id > $8::UUID)
+        $8::TIMESTAMPTZ IS NULL
+        OR runs.created_at < $8
+        OR (runs.created_at = $8 AND runs.id > $9::UUID)
     )
 ORDER BY runs.created_at DESC, runs.id
-LIMIT $9
+LIMIT $10
 ",
         )
         .bind(query.workspace_id)
+        .bind(query.run_id)
         .bind(status_filter)
         .bind(query.occurred_at_or_after)
         .bind(query.occurred_before)
@@ -371,6 +373,7 @@ impl ActionRow {
 struct ActivityCursor {
     version: i64,
     workspace_id: Uuid,
+    filter_run_id: Option<Uuid>,
     statuses: Vec<String>,
     receiver_source_id: Option<Uuid>,
     semantic_field: Option<String>,
@@ -383,6 +386,7 @@ struct ActivityCursor {
 impl ActivityCursor {
     fn matches_query(&self, query: &QuerySyncActivity, statuses: &[String]) -> bool {
         self.workspace_id == query.workspace_id
+            && self.filter_run_id == query.run_id
             && self.statuses == statuses
             && self.receiver_source_id == query.receiver_source_id
             && self.semantic_field == query.semantic_field
@@ -411,6 +415,7 @@ fn encode_cursor(
     let cursor = ActivityCursor {
         version: CURSOR_VERSION,
         workspace_id: query.workspace_id,
+        filter_run_id: query.run_id,
         statuses: statuses.to_vec(),
         receiver_source_id: query.receiver_source_id,
         semantic_field: query.semantic_field.clone(),

@@ -4,7 +4,9 @@ use utoipa::ToSchema;
 use crate::application::{
     acquisition::ReadMode,
     error::ApplicationError,
-    task_manager::{SourceStream, TaskDefinition, TaskFailure, TaskSnapshot, TaskStatus},
+    task_manager::{
+        SourceStream, TaskDefinition, TaskFailure, TaskRetryAfter, TaskSnapshot, TaskStatus,
+    },
 };
 
 use super::timestamp;
@@ -69,9 +71,20 @@ pub enum TaskStatusResponse {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct TaskFailureResponse {
+    pub id: String,
     pub code: String,
+    pub message: String,
     pub retryable: bool,
+    pub retry_after: Option<TaskRetryAfterResponse>,
+    pub diagnostic_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, ToSchema)]
+pub struct TaskRetryAfterResponse {
+    pub seconds: i64,
+    pub nanoseconds: i32,
 }
 
 impl TaskResponse {
@@ -143,8 +156,21 @@ impl TaskResponse {
 impl From<TaskFailure> for TaskFailureResponse {
     fn from(failure: TaskFailure) -> Self {
         Self {
+            id: failure.id,
             code: failure.code,
+            message: failure.message,
             retryable: failure.retryable,
+            retry_after: failure.retry_after.map(TaskRetryAfterResponse::from),
+            diagnostic_id: failure.diagnostic_id,
+        }
+    }
+}
+
+impl From<TaskRetryAfter> for TaskRetryAfterResponse {
+    fn from(after: TaskRetryAfter) -> Self {
+        Self {
+            seconds: after.seconds,
+            nanoseconds: after.nanoseconds,
         }
     }
 }

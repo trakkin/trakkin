@@ -323,7 +323,7 @@ where
             || command.task_attempt_id == Uuid::nil()
             || command.owner_id == Uuid::nil()
             || !valid_outcome(&command.outcome)
-            || command.completion != sync_action_task_completion(&command.outcome)
+            || !completion_matches_outcome(&command.completion, &command.outcome)
         {
             return Err(SyncActionAttemptError::InvalidTransition);
         }
@@ -416,14 +416,30 @@ pub fn sync_action_task_completion(outcome: &AdapterTargetedStateWriteOutcome) -
         }
         AdapterTargetedStateWriteStatus::Rejected
         | AdapterTargetedStateWriteStatus::Failed
-        | AdapterTargetedStateWriteStatus::Indeterminate => TaskCompletion::Failed(TaskFailure {
-            code: outcome
-                .error
-                .as_ref()
-                .map_or("sync_action_write_failed", |error| error.code.as_str())
-                .to_owned(),
-            retryable: outcome.error.as_ref().is_some_and(|error| error.retryable),
-        }),
+        | AdapterTargetedStateWriteStatus::Indeterminate => {
+            TaskCompletion::Failed(outcome.error.as_ref().map_or_else(
+                || TaskFailure::coded("sync_action_write_failed", false),
+                TaskFailure::from_adapter,
+            ))
+        }
+    }
+}
+
+fn completion_matches_outcome(
+    completion: &TaskCompletion,
+    outcome: &AdapterTargetedStateWriteOutcome,
+) -> bool {
+    match (completion, sync_action_task_completion(outcome)) {
+        (TaskCompletion::Succeeded, TaskCompletion::Succeeded)
+        | (TaskCompletion::Cancelled, TaskCompletion::Cancelled) => true,
+        (TaskCompletion::Failed(actual), TaskCompletion::Failed(expected)) => {
+            actual.code == expected.code
+                && actual.message == expected.message
+                && actual.retryable == expected.retryable
+                && actual.retry_after == expected.retry_after
+                && actual.diagnostic_id == expected.diagnostic_id
+        }
+        _ => false,
     }
 }
 

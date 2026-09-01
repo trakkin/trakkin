@@ -77,19 +77,21 @@ async fn external_host_bootstraps_provider_registry_and_stops_cleanly() {
         .status()
         .expect("SIGTERM command runs");
     assert!(signal.success());
-    let status = timeout(Duration::from_secs(30), child.wait())
+    let output = timeout(Duration::from_secs(30), child.wait_with_output())
         .await
         .expect("host stops before the deadline")
         .expect("host process can be reaped");
-    assert!(status.success());
+    assert!(output.status.success());
     assert_eq!(
         stdout
             .next_line()
             .await
             .expect("shutdown output can be read")
             .as_deref(),
-        Some("trakkin stopped")
+        None
     );
+    let diagnostics = String::from_utf8(output.stderr).expect("host diagnostics are UTF-8");
+    assert!(diagnostics.contains("\"event\":\"host.stopped\""));
     assert_eq!(
         std::fs::read(directory.path().join("master.key"))
             .expect("connection master key is persisted")

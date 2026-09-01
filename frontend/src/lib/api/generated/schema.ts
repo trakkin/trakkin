@@ -84,6 +84,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/connections/{connection_id}/configuration": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["reconfigure_connection"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/connections/{connection_id}/deletion": {
         parameters: {
             query?: never;
@@ -926,6 +942,10 @@ export interface components {
             displayName: string;
             value: components["schemas"]["AdapterValueResponse"];
         };
+        AdapterSecretPatchRequest: {
+            key: string;
+            value?: number[] | null;
+        };
         AdapterSecretRequest: {
             key: string;
             value: number[];
@@ -933,6 +953,10 @@ export interface components {
         AdapterSettingRequest: {
             key: string;
             value: components["schemas"]["AdapterValueRequest"];
+        };
+        AdapterSettingResponse: {
+            key: string;
+            value: components["schemas"]["AdapterValueResponse"];
         };
         /** @enum {string} */
         AdapterValueKindResponse: "text" | "integer" | "decimal" | "boolean" | "timestamp" | "bytes";
@@ -1066,8 +1090,10 @@ export interface components {
         };
         ConnectionInspectionResponse: {
             authenticationMethods: components["schemas"]["AuthenticationMethodResponse"][];
+            configuredSecretKeys: string[];
             fieldProblems: components["schemas"]["FieldProblemResponse"][];
             fields: components["schemas"]["AdapterConfigurationFieldResponse"][];
+            settings: components["schemas"]["AdapterSettingResponse"][];
         };
         ConnectionResponse: {
             /** Format: int64 */
@@ -1125,8 +1151,11 @@ export interface components {
         };
         ErrorResponse: {
             code: string;
+            diagnosticId?: string | null;
             fieldProblems: components["schemas"]["FieldProblemResponse"][];
             message: string;
+            providerCode?: string | null;
+            retry?: null | components["schemas"]["RetryAdviceResponse"];
         };
         ExactSegmentResponse: {
             coordinate: string;
@@ -1388,6 +1417,10 @@ export interface components {
         ReadModeResponse: "full" | "incremental";
         /** @enum {string} */
         ReconciliationOutcomeKindResponse: "matched" | "unsupported" | "not_found" | "ambiguous" | "indeterminate";
+        ReconfigureConnectionRequest: {
+            secretPatches: components["schemas"]["AdapterSecretPatchRequest"][];
+            settings: components["schemas"]["AdapterSettingRequest"][];
+        };
         RegisterProviderRepositoryRequest: {
             displayName: string;
             id: string;
@@ -1445,6 +1478,10 @@ export interface components {
             /** Format: int32 */
             supportCount: number;
             supportingProofs: components["schemas"]["ResolutionProofResponse"][];
+        };
+        RetryAdviceResponse: {
+            after?: null | components["schemas"]["RetryAfterResponse"];
+            retryable: boolean;
         };
         RetryAfterResponse: {
             /** Format: int32 */
@@ -1653,6 +1690,10 @@ export interface components {
         TargetedStateWriteStatusResponse: "applied" | "no_op" | "rejected" | "failed" | "indeterminate";
         TaskFailureResponse: {
             code: string;
+            diagnosticId?: string | null;
+            id: string;
+            message: string;
+            retryAfter?: null | components["schemas"]["TaskRetryAfterResponse"];
             retryable: boolean;
         };
         /** @enum {string} */
@@ -1674,6 +1715,12 @@ export interface components {
             terminal: boolean;
             updatedAt: string;
             workspaceId?: string | null;
+        };
+        TaskRetryAfterResponse: {
+            /** Format: int32 */
+            nanoseconds: number;
+            /** Format: int64 */
+            seconds: number;
         };
         /** @enum {string} */
         TaskStatusResponse: "queued" | "running" | "cancelling" | "succeeded" | "failed" | "cancelled" | "interrupted";
@@ -1969,6 +2016,55 @@ export interface operations {
                 };
             };
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    reconfigure_connection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connection_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReconfigureConnectionRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectionResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2769,6 +2865,7 @@ export interface operations {
     list_activity: {
         parameters: {
             query?: {
+                runId?: string;
                 status?: string;
                 sourceId?: string;
                 field?: string;

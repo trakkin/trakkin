@@ -43,6 +43,7 @@ pub enum SyncActivityActionStatus {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct QuerySyncActivity {
     pub workspace_id: Uuid,
+    pub run_id: Option<Uuid>,
     pub statuses: Vec<SyncActivityRunStatus>,
     pub receiver_source_id: Option<Uuid>,
     pub semantic_field: Option<String>,
@@ -251,6 +252,7 @@ where
 
 fn validate_query<E>(query: &mut QuerySyncActivity) -> Result<(), SyncActivityError<E>> {
     if query.workspace_id.is_nil()
+        || query.run_id.is_some_and(|run_id| run_id.is_nil())
         || query.limit == 0
         || query.limit > MAX_SYNC_ACTIVITY_PAGE_SIZE
         || query
@@ -287,6 +289,7 @@ fn validate_page<E>(
     for (index, run) in page.runs.iter().enumerate() {
         if !run_ids.insert(run.run_id)
             || run.workspace_id != query.workspace_id
+            || query.run_id.is_some_and(|run_id| run.run_id != run_id)
             || run.actions.is_empty()
             || (!query.statuses.is_empty() && !query.statuses.contains(&run.status))
             || query

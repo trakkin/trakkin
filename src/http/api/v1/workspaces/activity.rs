@@ -60,6 +60,7 @@ pub(in crate::http::api::v1) async fn list_activity(
         .application
         .list_sync_activity(QuerySyncActivity {
             workspace_id: path.workspace_id,
+            run_id: query.run_id,
             statuses,
             receiver_source_id: query.source_id,
             semantic_field: query.field,

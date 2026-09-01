@@ -1,6 +1,8 @@
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::{future::Future, pin::Pin};
 
 use time::OffsetDateTime;
+use trakkin_provider_sdk::InvocationContext;
 use uuid::Uuid;
 
 use super::acquisition::ReadMode;
@@ -69,10 +71,61 @@ impl TaskStatus {
     }
 }
 
+static FAILURE_ID_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TaskRetryAfter {
+    pub seconds: i64,
+    pub nanoseconds: i32,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TaskFailure {
+    pub id: String,
     pub code: String,
+    pub message: String,
     pub retryable: bool,
+    pub retry_after: Option<TaskRetryAfter>,
+    pub diagnostic_id: Option<String>,
+}
+
+impl TaskFailure {
+    pub fn coded(code: impl Into<String>, retryable: bool) -> Self {
+        let code = code.into();
+        Self {
+            id: generate_failure_id(),
+            message: code.replace('_', " "),
+            code,
+            retryable,
+            retry_after: None,
+            diagnostic_id: None,
+        }
+    }
+
+    pub fn from_adapter(error: &super::adapter_runtime::AdapterCallError) -> Self {
+        Self {
+            id: generate_failure_id(),
+            code: error.code.clone(),
+            message: error.safe_message.clone(),
+            retryable: error.retryable,
+            retry_after: error.retry_after.as_ref().map(|after| TaskRetryAfter {
+                seconds: after.seconds,
+                nanoseconds: after.nanoseconds,
+            }),
+            diagnostic_id: Some(error.diagnostic_id.clone()),
+        }
+    }
+}
+
+fn generate_failure_id() -> String {
+    let mut bytes = [0_u8; 16];
+    if getrandom::fill(&mut bytes).is_ok() {
+        return format!("task:{}", hex::encode(bytes));
+    }
+    format!(
+        "task:fallback:{}",
+        FAILURE_ID_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -114,6 +167,7 @@ pub struct ClaimedTask {
     pub attempt_id: Uuid,
     pub attempt_ordinal: i32,
     pub owner_id: Uuid,
+    pub invocation_context: InvocationContext,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -156,7 +210,11 @@ pub struct CompleteTask {
 pub trait TaskRepository: Send + Sync {
     type Error;
 
-    fn admit_task(&self, command: AdmitTask) -> TaskManagerFuture<'_, TaskSnapshot, Self::Error>;
+    fn admit_task(
+        &self,
+        command: AdmitTask,
+        invocation_context: InvocationContext,
+    ) -> TaskManagerFuture<'_, TaskSnapshot, Self::Error>;
 
     fn claim_next_task(
         &self,
@@ -197,7 +255,10 @@ where
     }
 
     pub async fn admit(&self, command: AdmitTask) -> Result<TaskSnapshot, R::Error> {
-        self.repository.admit_task(command).await
+        let invocation_context = crate::observability::task_invocation_context(command.task_id);
+        self.repository
+            .admit_task(command, invocation_context)
+            .await
     }
 
     pub async fn claim_next(

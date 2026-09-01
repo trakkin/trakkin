@@ -35,8 +35,13 @@ async fn startup_interrupts_existing_work_and_accepts_new_tasks() {
     .expect("connection is persisted before restart");
     sqlx::query(
         "INSERT INTO tasks (
-             id, connection_id, kind, status, cancellation_supported, created_at, updated_at
-         ) VALUES ($1, $2, 'source_discovery', 'queued', TRUE, $3, $3)",
+             id, connection_id, kind, status, cancellation_supported,
+             invocation_context, created_at, updated_at
+         ) VALUES (
+             $1, $2, 'source_discovery', 'queued', TRUE,
+             jsonb_build_object('correlationId', 'request:test', 'traceparent', NULL, 'tracestate', NULL),
+             $3, $3
+         )",
     )
     .bind(INTERRUPTED_TASK_ID)
     .bind(CONNECTION_ID)

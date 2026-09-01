@@ -121,10 +121,7 @@ where
                 self.attempts
                     .fail_claim(FailSyncActionClaim {
                         claimed: claimed.clone(),
-                        failure: TaskFailure {
-                            code: "connection_session_unavailable".to_owned(),
-                            retryable: true,
-                        },
+                        failure: TaskFailure::coded("connection_session_unavailable", true),
                         failed_at: completed_at,
                     })
                     .await
@@ -347,10 +344,7 @@ fn write_command(
 }
 
 fn failed_completion(code: &str, retryable: bool) -> TaskHandlerOutcome {
-    TaskHandlerOutcome::Complete(TaskCompletion::Failed(TaskFailure {
-        code: code.to_owned(),
-        retryable,
-    }))
+    TaskHandlerOutcome::Complete(TaskCompletion::Failed(TaskFailure::coded(code, retryable)))
 }
 
 fn generate_uuid() -> Result<Uuid, getrandom::Error> {

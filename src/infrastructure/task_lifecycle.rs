@@ -183,17 +183,21 @@ RETURNING sync_actions.run_id
         }
         for reconciliation in dispatched_reconciliations {
             let task_id = reconciliation_task_id(reconciliation.write_task_attempt_id);
+            let invocation_context = crate::observability::task_invocation_context(task_id);
             sqlx::query(
                 "INSERT INTO tasks (
     id, workspace_id, connection_id, kind, status, cancellation_supported,
-    created_at, updated_at
+    invocation_context, created_at, updated_at
 )
-VALUES ($1, $2, $3, 'sync_action_reconciliation', 'queued', FALSE, $4, $4)
+VALUES ($1, $2, $3, 'sync_action_reconciliation', 'queued', FALSE, $4, $5, $5)
 ",
             )
             .bind(task_id)
             .bind(reconciliation.workspace_id)
             .bind(reconciliation.connection_id)
+            .bind(super::task_manager::invocation_context_json(
+                &invocation_context,
+            ))
             .bind(command.interrupted_at)
             .execute(&mut *transaction)
             .await?;

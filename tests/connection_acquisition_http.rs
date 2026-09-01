@@ -15,6 +15,8 @@ use tempfile::tempdir;
 use tower::ServiceExt;
 use trakkin::{
     application::{
+        adapter_runtime::AdapterValue,
+        connection::ConnectionRepository,
         facade::{ApplicationFacade, ApplicationInteractions, ApplicationMappingRepositories},
         mapping_resolution::MappingResolutionService,
         sync_activity::SyncActivityService,
@@ -86,7 +88,7 @@ async fn connection_and_acquisition_routes_are_closed_bounded_and_secret_safe() 
         Request::post("/api/v1/connections")
             .header("content-type", "application/json")
             .body(Body::from(
-                r#"{"providerId":"dev.trakkin.fixture","displayName":"HTTP fixture","settings":[{"key":"scenario","value":{"kind":"text","value":"hierarchical-catalog-assets-v1"}}],"secrets":[{"key":"token","value":[104,116,116,112,45,99,111,110,110,101,99,116,105,111,110,45,115,101,99,114,101,116]}]}"#,
+                r#"{"providerId":"dev.trakkin.fixture","displayName":"HTTP fixture","settings":[{"key":"scenario","value":{"kind":"text","value":"hierarchical-catalog-assets-v1"}}],"secrets":[{"key":"token","value":[104,116,116,112,45,99,111,110,110,101,99,116,105,111,110,45,115,101,99,114,101,116]},{"key":"preserve","value":[112,114,101,115,101,114,118,101,100]},{"key":"remove","value":[114,101,109,111,118,101,100]}]}"#,
             ))
             .expect("connection request is built"),
     )
@@ -120,6 +122,63 @@ async fn connection_and_acquisition_routes_are_closed_bounded_and_secret_safe() 
     .await;
     assert_eq!(renamed_connection.0, StatusCode::OK);
     assert_eq!(renamed_connection.1["displayName"], "Renamed fixture");
+
+    let reconfigured_connection = request(
+        &router,
+        Request::put(format!(
+            "/api/v1/connections/{created_connection_id}/configuration"
+        ))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "settings": [{
+                    "key": "scenario",
+                    "value": {"kind": "text", "value": "reconfigured"},
+                }],
+                "secretPatches": [
+                    {"key": "token", "value": b"replacement-secret"},
+                    {"key": "remove", "value": Value::Null},
+                ],
+            })
+            .to_string(),
+        ))
+        .expect("reconfiguration request is built"),
+    )
+    .await;
+    assert_eq!(reconfigured_connection.0, StatusCode::OK);
+    assert_eq!(reconfigured_connection.1["status"], "pending");
+    assert!(
+        !reconfigured_connection
+            .1
+            .to_string()
+            .contains("replacement-secret")
+    );
+
+    let repository =
+        PostgresConnectionRepository::new(database.pool(), ConnectionMasterKey::new([7_u8; 32]));
+    let stored = repository
+        .load_connection(Uuid::parse_str(created_connection_id).expect("connection ID is valid"))
+        .await
+        .expect("reconfigured connection loads")
+        .expect("reconfigured connection exists");
+    assert_eq!(
+        stored.settings,
+        vec![trakkin::application::adapter_runtime::AdapterSetting {
+            key: "scenario".to_owned(),
+            value: AdapterValue::Text("reconfigured".to_owned()),
+        }]
+    );
+    assert_eq!(
+        stored
+            .secrets
+            .iter()
+            .map(|secret| (secret.key.as_str(), secret.value.as_slice()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("preserve", b"preserved".as_slice()),
+            ("token", b"replacement-secret".as_slice()),
+        ]
+    );
 
     let inspection = request(
         &router,

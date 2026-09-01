@@ -189,19 +189,18 @@ where
 }
 
 fn failed_completion(code: &str, retryable: bool) -> TaskHandlerOutcome {
-    TaskHandlerOutcome::Complete(TaskCompletion::Failed(TaskFailure {
-        code: code.to_owned(),
-        retryable,
-    }))
+    TaskHandlerOutcome::Complete(TaskCompletion::Failed(TaskFailure::coded(code, retryable)))
 }
 
 fn indeterminate_outcome(code: &str, safe_message: &str) -> AdapterTargetedStateReadOutcome {
     AdapterTargetedStateReadOutcome::Indeterminate(AdapterCallError {
+        category: crate::application::adapter_runtime::AdapterFailureCategory::Unavailable,
         code: code.to_owned(),
         safe_message: safe_message.to_owned(),
         retryable: true,
         retry_after: None,
         field_problems: Vec::new(),
+        diagnostic_id: format!("reconciliation:{code}"),
     })
 }
 

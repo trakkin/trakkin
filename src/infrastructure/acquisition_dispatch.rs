@@ -686,10 +686,7 @@ fn publish_command(
 }
 
 fn failed_completion(code: &str, retryable: bool) -> TaskHandlerOutcome {
-    TaskHandlerOutcome::Complete(TaskCompletion::Failed(TaskFailure {
-        code: code.to_owned(),
-        retryable,
-    }))
+    TaskHandlerOutcome::Complete(TaskCompletion::Failed(TaskFailure::coded(code, retryable)))
 }
 
 fn generate_uuid() -> Result<Uuid, getrandom::Error> {

@@ -4,11 +4,12 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::adapter_runtime::{
-    AdapterAuthenticationMethod, AdapterAuthenticationStep, AdapterConnectionDescription,
-    AdapterConnectionValidation, AdapterHealth, AdapterHealthStatus, AdapterIdentity,
-    AdapterLauncher, AdapterRetirement, AdapterSecret, AdapterSession, AdapterSetting,
-    ContinueAdapterAuthentication, DiscoveredAdapterSources, LaunchAdapter, OpenAdapterConnection,
-    OpenedAdapterConnection, StartAdapterAuthentication, ValidateAdapterConnection,
+    AdapterAuthenticationMethod, AdapterAuthenticationStep, AdapterCallError,
+    AdapterConnectionDescription, AdapterConnectionValidation, AdapterHealth, AdapterHealthStatus,
+    AdapterIdentity, AdapterLauncher, AdapterRetirement, AdapterSecret, AdapterSession,
+    AdapterSetting, ContinueAdapterAuthentication, DiscoveredAdapterSources, LaunchAdapter,
+    OpenAdapterConnection, OpenedAdapterConnection, StartAdapterAuthentication,
+    ValidateAdapterConnection,
 };
 use super::{
     error::{ApplicationError, ApplicationErrorCode, IntoApplicationError},
@@ -60,6 +61,14 @@ pub struct RenameConnection {
     pub connection_id: Uuid,
     pub display_name: String,
     pub renamed_at: OffsetDateTime,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReconfigureConnection {
+    pub connection_id: Uuid,
+    pub settings: Vec<AdapterSetting>,
+    pub secret_patches: Vec<super::adapter_runtime::AdapterSecretPatch>,
+    pub reconfigured_at: OffsetDateTime,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -181,6 +190,11 @@ pub trait ConnectionRepository: Send + Sync {
         command: RenameConnection,
     ) -> ConnectionFuture<'_, ConnectionSummary, Self::Error>;
 
+    fn reconfigure_connection(
+        &self,
+        command: ReconfigureConnection,
+    ) -> ConnectionFuture<'_, ConnectionSummary, Self::Error>;
+
     fn list_connection_sources(
         &self,
         connection_id: Uuid,
@@ -232,6 +246,8 @@ pub struct ConnectionInspection {
     pub description: AdapterConnectionDescription,
     pub validation: AdapterConnectionValidation,
     pub authentication_methods: Vec<AdapterAuthenticationMethod>,
+    pub settings: Vec<AdapterSetting>,
+    pub configured_secret_keys: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -341,10 +357,7 @@ where
         Box::pin(async move {
             let TaskDefinition::SourceDiscovery { connection_id } = claimed.task.definition else {
                 return Ok(TaskHandlerOutcome::Complete(TaskCompletion::Failed(
-                    TaskFailure {
-                        code: "invalid_discovery_task".to_owned(),
-                        retryable: false,
-                    },
+                    TaskFailure::coded("invalid_discovery_task", false),
                 )));
             };
             let opened_at = claimed.task.started_at.unwrap_or(claimed.task.updated_at);
@@ -358,10 +371,9 @@ where
                 .await
             {
                 Ok(_) => TaskCompletion::Succeeded,
-                Err(_) => TaskCompletion::Failed(TaskFailure {
-                    code: "connection_discovery_failed".to_owned(),
-                    retryable: false,
-                }),
+                Err(_) => {
+                    TaskCompletion::Failed(TaskFailure::coded("connection_discovery_failed", false))
+                }
             };
             Ok(TaskHandlerOutcome::Complete(completion))
         })
@@ -389,26 +401,37 @@ where
         let (stored, mut session) = self
             .launch_stored(command.connection_id, command.process_instance_id)
             .await?;
+        let settings = stored.settings.clone();
+        let configured_secret_keys = stored
+            .secrets
+            .iter()
+            .map(|secret| secret.key.clone())
+            .collect();
         let inspection = async {
             let description = session
                 .describe_connection()
                 .await
-                .map_err(ConnectionCoordinatorError::Adapter)?;
+                .map_err(ConnectionCoordinatorError::Adapter)?
+                .map_err(ConnectionCoordinatorError::Rejected)?;
             let validation = session
                 .validate_connection(ValidateAdapterConnection {
                     settings: stored.settings,
                     secrets: stored.secrets,
                 })
                 .await
-                .map_err(ConnectionCoordinatorError::Adapter)?;
+                .map_err(ConnectionCoordinatorError::Adapter)?
+                .map_err(ConnectionCoordinatorError::Rejected)?;
             let authentication_methods = session
                 .list_authentication_methods()
                 .await
-                .map_err(ConnectionCoordinatorError::Adapter)?;
+                .map_err(ConnectionCoordinatorError::Adapter)?
+                .map_err(ConnectionCoordinatorError::Rejected)?;
             Ok(ConnectionInspection {
                 description,
                 validation,
                 authentication_methods,
+                settings,
+                configured_secret_keys,
             })
         }
         .await;
@@ -435,7 +458,11 @@ where
             })
             .await
         {
-            Ok(step) => step,
+            Ok(Ok(step)) => step,
+            Ok(Err(error)) => {
+                let _ = session.retire().await;
+                return Err(ConnectionCoordinatorError::Rejected(error));
+            }
             Err(error) => {
                 let _ = session.retire().await;
                 return Err(ConnectionCoordinatorError::Adapter(error));
@@ -498,7 +525,11 @@ where
             })
             .await
         {
-            Ok(step) => step,
+            Ok(Ok(step)) => step,
+            Ok(Err(error)) => {
+                self.restore_session(stored.connection_id, session).await;
+                return Err(ConnectionCoordinatorError::Rejected(error));
+            }
             Err(error) => {
                 self.restore_session(stored.connection_id, session).await;
                 return Err(ConnectionCoordinatorError::Adapter(error));
@@ -551,12 +582,19 @@ where
             .sessions
             .remove(stored.connection_id)
             .ok_or(ConnectionCoordinatorError::AuthenticationSessionUnavailable)?;
-        if let Err(error) = session
+        let cancellation = session
             .cancel_authentication(stored.provider_authentication_id)
-            .await
-        {
-            self.restore_session(stored.connection_id, session).await;
-            return Err(ConnectionCoordinatorError::Adapter(error));
+            .await;
+        match cancellation {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                self.restore_session(stored.connection_id, session).await;
+                return Err(ConnectionCoordinatorError::Rejected(error));
+            }
+            Err(error) => {
+                self.restore_session(stored.connection_id, session).await;
+                return Err(ConnectionCoordinatorError::Adapter(error));
+            }
         }
         if let Err(error) = self
             .repository
@@ -639,7 +677,13 @@ where
             })
             .await
         {
-            Ok(opened) => opened,
+            Ok(Ok(opened)) => opened,
+            Ok(Err(error)) => {
+                let _ = session.retire().await;
+                self.mark_unavailable(command.connection_id, command.opened_at)
+                    .await?;
+                return Err(ConnectionCoordinatorError::Rejected(error));
+            }
             Err(error) => {
                 let _ = session.retire().await;
                 self.mark_unavailable(command.connection_id, command.opened_at)
@@ -648,7 +692,13 @@ where
             }
         };
         let discovered = match session.discover_sources().await {
-            Ok(discovered) => discovered,
+            Ok(Ok(discovered)) => discovered,
+            Ok(Err(error)) => {
+                let _ = session.retire().await;
+                self.mark_unavailable(command.connection_id, command.opened_at)
+                    .await?;
+                return Err(ConnectionCoordinatorError::Rejected(error));
+            }
             Err(error) => {
                 let _ = session.retire().await;
                 self.mark_unavailable(command.connection_id, command.opened_at)
@@ -793,6 +843,7 @@ pub enum ConnectionCoordinatorError<RepositoryError, AdapterError> {
     ConnectionNotFound,
     AdapterIdentityMismatch,
     AdapterNotReady(AdapterHealth),
+    Rejected(AdapterCallError),
     ConcurrentSession,
     AuthenticationNotFound,
     AuthenticationNotActive,
@@ -805,6 +856,7 @@ impl<RepositoryError, AdapterError> IntoApplicationError
     for ConnectionCoordinatorError<RepositoryError, AdapterError>
 where
     RepositoryError: IntoApplicationError,
+    AdapterError: std::fmt::Debug,
 {
     fn into_application_error(self) -> ApplicationError {
         match self {
@@ -812,6 +864,10 @@ where
                 ApplicationErrorCode::ConnectionNotFound,
                 "connection was not found",
             ),
+            Self::AdapterNotReady(AdapterHealth {
+                error: Some(error), ..
+            })
+            | Self::Rejected(error) => error.into_application_error(),
             Self::AdapterNotReady(_) => ApplicationError::new(
                 ApplicationErrorCode::ConnectionUnavailable,
                 "connection adapter is unavailable",
@@ -833,9 +889,13 @@ where
                 "authentication process is unavailable",
             ),
             Self::Repository(error) => error.into_application_error(),
-            Self::AdapterIdentityMismatch | Self::Adapter(_) => ApplicationError::new(
-                ApplicationErrorCode::Internal,
+            Self::AdapterIdentityMismatch => ApplicationError::internal(
                 "connection adapter operation failed",
+                "adapter identity did not match the selected provider",
+            ),
+            Self::Adapter(error) => ApplicationError::internal(
+                "connection adapter operation failed",
+                format_args!("{error:?}"),
             ),
         }
     }
@@ -846,7 +906,7 @@ where
     R: ConnectionRepository,
     R::Error: IntoApplicationError + Send,
     L: AdapterLauncher,
-    L::Error: Send,
+    L::Error: Send + std::fmt::Debug,
     G: ConnectionSessionRegistry<L::Session>,
 {
     fn inspect_connection(
@@ -891,5 +951,56 @@ where
                 .await
                 .map_err(IntoApplicationError::into_application_error)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::application::adapter_runtime::{
+        AdapterFailureCategory, AdapterFieldProblem, AdapterRetryAfter,
+    };
+
+    #[test]
+    fn provider_rejection_preserves_public_diagnostics() {
+        let rejection = AdapterCallError {
+            category: AdapterFailureCategory::RateLimited,
+            code: "remote_rate_limit".to_owned(),
+            safe_message: "provider request limit reached".to_owned(),
+            retryable: true,
+            retry_after: Some(AdapterRetryAfter {
+                seconds: 30,
+                nanoseconds: 0,
+            }),
+            field_problems: vec![AdapterFieldProblem {
+                path: "account".to_owned(),
+                code: "temporarily_limited".to_owned(),
+                message: "account is temporarily limited".to_owned(),
+            }],
+            diagnostic_id: "provider:rate-limit:1".to_owned(),
+        };
+
+        let error = ConnectionCoordinatorError::<ApplicationError, String>::Rejected(rejection)
+            .into_application_error();
+
+        assert_eq!(error.code, ApplicationErrorCode::ProviderRateLimited);
+        assert_eq!(error.provider_code(), Some("remote_rate_limit"));
+        assert_eq!(error.field_problems.len(), 1);
+        assert!(error.retry().is_some_and(|retry| retry.retryable));
+        assert_eq!(error.diagnostic_id(), Some("provider:rate-limit:1"));
+        assert!(error.internal_message().is_none());
+    }
+
+    #[test]
+    fn transport_failure_keeps_cause_private() {
+        let error = ConnectionCoordinatorError::<ApplicationError, String>::Adapter(
+            "socket closed".to_owned(),
+        )
+        .into_application_error();
+
+        assert_eq!(error.code, ApplicationErrorCode::Internal);
+        assert_eq!(error.message, "connection adapter operation failed");
+        assert_eq!(error.internal_message(), Some("\"socket closed\""));
+        assert!(error.diagnostic_id().is_some());
     }
 }

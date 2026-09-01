@@ -1264,6 +1264,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "lazy_static"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
+
+[[package]]
 name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1325,6 +1331,15 @@ name = "log"
 version = "0.4.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
+
+[[package]]
+name = "matchers"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1525a2a28c7f4fa0fc98bb91ae755d1e2d1505079e05539e35bc876b5d65ae9"
+dependencies = [
+ "regex-automata",
+]
 
 [[package]]
 name = "matchit"
@@ -1400,6 +1415,15 @@ name = "multimap"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
+
+[[package]]
+name = "nu-ansi-term"
+version = "0.50.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
+dependencies = [
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "num-conv"
@@ -2343,6 +2367,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sharded-slab"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
+dependencies = [
+ "lazy_static",
+]
+
+[[package]]
 name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2743,6 +2776,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "thread_local"
+version = "1.1.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1ad99c4c6d32803332c548b1af0540b357b3f5fc0be8f6c6bfe8b2e6ae784070"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "time"
 version = "0.3.55"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2998,7 +3040,9 @@ dependencies = [
  "tower",
  "tower-layer",
  "tower-service",
+ "tracing",
  "url",
+ "uuid",
 ]
 
 [[package]]
@@ -3043,6 +3087,49 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
 dependencies = [
  "once_cell",
+ "valuable",
+]
+
+[[package]]
+name = "tracing-log"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee855f1f400bd0e5c02d150ae5de3840039a3f54b025156404e34c23c03f47c3"
+dependencies = [
+ "log",
+ "once_cell",
+ "tracing-core",
+]
+
+[[package]]
+name = "tracing-serde"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "704b1aeb7be0d0a84fc9828cae51dab5970fee5088f83d1dd7ee6f6246fc6ff1"
+dependencies = [
+ "serde",
+ "tracing-core",
+]
+
+[[package]]
+name = "tracing-subscriber"
+version = "0.3.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb7f578e5945fb242538965c2d0b04418d38ec25c79d160cd279bf0731c8d319"
+dependencies = [
+ "matchers",
+ "nu-ansi-term",
+ "once_cell",
+ "regex-automata",
+ "serde",
+ "serde_json",
+ "sharded-slab",
+ "smallvec",
+ "thread_local",
+ "tracing",
+ "tracing-core",
+ "tracing-log",
+ "tracing-serde",
 ]
 
 [[package]]
@@ -3068,9 +3155,13 @@ dependencies = [
  "thiserror",
  "time",
  "tokio",
+ "tokio-util",
  "tonic",
  "tough",
  "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
  "trakkin-mapping",
  "trakkin-provider-release",
  "trakkin-provider-sdk",
@@ -3083,7 +3174,7 @@ dependencies = [
 [[package]]
 name = "trakkin-mapping"
 version = "0.0.0"
-source = "git+https://github.com/trakkin/trakkin-contracts.git?rev=90afcd32fea7a072e00737d57853ba4c1ee28724#90afcd32fea7a072e00737d57853ba4c1ee28724"
+source = "git+https://github.com/trakkin/trakkin-contracts.git?rev=9ee9d9f4805ffffb8f86af419a70245bb18b8930#9ee9d9f4805ffffb8f86af419a70245bb18b8930"
 dependencies = [
  "semver",
  "serde",
@@ -3097,7 +3188,7 @@ dependencies = [
 [[package]]
 name = "trakkin-provider-release"
 version = "0.0.0"
-source = "git+https://github.com/trakkin/trakkin-contracts.git?rev=90afcd32fea7a072e00737d57853ba4c1ee28724#90afcd32fea7a072e00737d57853ba4c1ee28724"
+source = "git+https://github.com/trakkin/trakkin-contracts.git?rev=9ee9d9f4805ffffb8f86af419a70245bb18b8930#9ee9d9f4805ffffb8f86af419a70245bb18b8930"
 dependencies = [
  "semver",
  "serde",
@@ -3107,7 +3198,7 @@ dependencies = [
 [[package]]
 name = "trakkin-provider-sdk"
 version = "0.0.0"
-source = "git+https://github.com/trakkin/trakkin-contracts.git?rev=90afcd32fea7a072e00737d57853ba4c1ee28724#90afcd32fea7a072e00737d57853ba4c1ee28724"
+source = "git+https://github.com/trakkin/trakkin-contracts.git?rev=9ee9d9f4805ffffb8f86af419a70245bb18b8930#9ee9d9f4805ffffb8f86af419a70245bb18b8930"
 dependencies = [
  "prost",
  "prost-types",
@@ -3121,6 +3212,8 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
+ "tracing",
+ "tracing-subscriber",
  "trakkin-mapping",
 ]
 
@@ -3257,10 +3350,17 @@ version = "1.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bf3923a6f5c4c6382e0b653c4117f48d631ea17f38ed86e2a828e6f7412f5239"
 dependencies = [
+ "getrandom 0.4.3",
  "js-sys",
  "serde_core",
  "wasm-bindgen",
 ]
+
+[[package]]
+name = "valuable"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "vcpkg"

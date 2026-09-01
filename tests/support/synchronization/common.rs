@@ -296,11 +296,13 @@ fn failed_outcome(
         successor_precondition: None,
         receipt: Vec::new(),
         error: Some(AdapterCallError {
+            category: trakkin::application::adapter_runtime::AdapterFailureCategory::Unavailable,
             code: "temporary_provider_failure".to_owned(),
             safe_message: "provider temporarily unavailable".to_owned(),
             retryable,
             retry_after: None,
             field_problems: Vec::new(),
+            diagnostic_id: "fixture:temporary_provider_failure".to_owned(),
         }),
     }
 }

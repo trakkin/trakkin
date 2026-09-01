@@ -45,6 +45,19 @@ pub struct AdapterSecretRequest {
 }
 
 #[derive(Clone, Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ReconfigureConnectionRequest {
+    pub settings: Vec<AdapterSettingRequest>,
+    pub secret_patches: Vec<AdapterSecretPatchRequest>,
+}
+
+#[derive(Clone, Debug, Deserialize, ToSchema)]
+pub struct AdapterSecretPatchRequest {
+    pub key: String,
+    pub value: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, Deserialize, ToSchema)]
 #[serde(tag = "kind", content = "value", rename_all = "camelCase")]
 pub enum AdapterValueRequest {
     Boolean(bool),
@@ -120,6 +133,14 @@ pub struct ConnectionInspectionResponse {
     pub fields: Vec<AdapterConfigurationFieldResponse>,
     pub field_problems: Vec<FieldProblemResponse>,
     pub authentication_methods: Vec<AuthenticationMethodResponse>,
+    pub settings: Vec<AdapterSettingResponse>,
+    pub configured_secret_keys: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, ToSchema)]
+pub struct AdapterSettingResponse {
+    pub key: String,
+    pub value: AdapterValueResponse,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, ToSchema)]
@@ -247,6 +268,15 @@ impl ConnectionInspectionResponse {
                 .into_iter()
                 .map(AuthenticationMethodResponse::from)
                 .collect(),
+            settings: inspection
+                .settings
+                .into_iter()
+                .map(|setting| AdapterSettingResponse {
+                    key: setting.key,
+                    value: AdapterValueResponse::from(setting.value),
+                })
+                .collect(),
+            configured_secret_keys: inspection.configured_secret_keys,
         }
     }
 }

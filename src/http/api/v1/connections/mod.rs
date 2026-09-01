@@ -5,7 +5,7 @@ use axum::{
         rejection::{JsonRejection, PathRejection},
     },
     http::StatusCode,
-    routing::{get, patch, post},
+    routing::{get, patch, post, put},
 };
 use serde::Deserialize;
 use time::{Duration, OffsetDateTime};
@@ -13,11 +13,11 @@ use uuid::Uuid;
 
 use crate::{
     application::{
-        adapter_runtime::{AdapterSecret, AdapterSetting},
+        adapter_runtime::{AdapterSecret, AdapterSecretPatch, AdapterSetting},
         connection::{
             BeginConnectionDeletion, CancelConnectionAuthentication,
             ContinueConnectionAuthentication, CreateConnection, InspectConnection,
-            RenameConnection, StartConnectionAuthentication,
+            ReconfigureConnection, RenameConnection, StartConnectionAuthentication,
         },
         task_manager::{AdmitTask, RequestTaskCancellation, TaskDefinition},
     },
@@ -27,7 +27,8 @@ use crate::{
                 AdapterSettingRequest, AuthenticationStepResponse,
                 ConnectionDeletionImpactResponse, ConnectionInspectionResponse, ConnectionResponse,
                 ConnectionSourceResponse, ContinueAuthenticationRequest, CreateConnectionRequest,
-                DeleteConnectionRequest, RenameConnectionRequest, StartAuthenticationRequest,
+                DeleteConnectionRequest, ReconfigureConnectionRequest, RenameConnectionRequest,
+                StartAuthenticationRequest,
             },
             tasks::TaskResponse,
         },
@@ -48,6 +49,10 @@ pub(super) fn router() -> Router<HttpState> {
         .route(
             "/api/v1/connections/{connection_id}",
             patch(rename_connection),
+        )
+        .route(
+            "/api/v1/connections/{connection_id}/configuration",
+            put(reconfigure_connection),
         )
         .route(
             "/api/v1/connections/{connection_id}/sources",
@@ -175,6 +180,41 @@ pub(super) async fn rename_connection(
             connection_id: path.connection_id,
             display_name: payload.display_name,
             renamed_at: OffsetDateTime::now_utc(),
+        })
+        .await?;
+    Ok(Json(ConnectionResponse::from_summary(connection)?))
+}
+
+#[utoipa::path(
+    put,
+    path = "/api/v1/connections/{connection_id}/configuration",
+    params(("connection_id" = Uuid, Path)),
+    request_body = ReconfigureConnectionRequest,
+    responses((status = 200, body = ConnectionResponse), (status = 400, body = ErrorResponse), (status = 404, body = ErrorResponse), (status = 500, body = ErrorResponse)),
+    tag = "connections"
+)]
+pub(super) async fn reconfigure_connection(
+    State(state): State<HttpState>,
+    path: Result<Path<ConnectionPath>, PathRejection>,
+    payload: Result<Json<ReconfigureConnectionRequest>, JsonRejection>,
+) -> Result<Json<ConnectionResponse>, HttpError> {
+    let Path(path) = path.map_err(|_| HttpError::invalid_request("path parameters are invalid"))?;
+    let Json(payload) =
+        payload.map_err(|_| HttpError::invalid_request("request body is invalid"))?;
+    let connection = state
+        .application
+        .reconfigure_connection(ReconfigureConnection {
+            connection_id: path.connection_id,
+            settings: adapter_settings(payload.settings),
+            secret_patches: payload
+                .secret_patches
+                .into_iter()
+                .map(|patch| AdapterSecretPatch {
+                    key: patch.key,
+                    value: patch.value,
+                })
+                .collect(),
+            reconfigured_at: OffsetDateTime::now_utc(),
         })
         .await?;
     Ok(Json(ConnectionResponse::from_summary(connection)?))
