@@ -10,10 +10,75 @@ import {
   sourceId,
   task,
   taskId,
+  timestamp,
   workspace,
   workspaceId,
 } from "./support/api.ts";
 import { rootCatalog } from "./support/catalog.ts";
+
+test("loads and polls a focused run with structured failure evidence", async ({ page }) => {
+  const runId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const actionId = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
+  const requestedRunIds: Array<string | null> = [];
+  let activityRequests = 0;
+  await mockApi(page, async (route) => {
+    const url = new URL(route.request().url());
+    const method = route.request().method();
+    if (url.pathname === "/api/v1/workspaces" && method === "GET") return json(route, [workspace]);
+    if (url.pathname === `/api/v1/workspaces/${workspaceId}` && method === "GET") return json(route, workspace);
+    if (url.pathname === "/api/v1/connections" && method === "GET") return json(route, [connection]);
+    if (url.pathname === `/api/v1/connections/${connectionId}/sources` && method === "GET") {
+      return json(route, [source]);
+    }
+    if (url.pathname === `/api/v1/workspaces/${workspaceId}/activity` && method === "GET") {
+      activityRequests += 1;
+      requestedRunIds.push(url.searchParams.get("runId"));
+      const terminal = activityRequests > 1;
+      return json(route, {
+        runs: [focusedActivityRun(runId, actionId, terminal ? "failed" : "running")],
+        nextCursor: null,
+      });
+    }
+    if (url.pathname === `/api/v1/workspaces/${workspaceId}/activity/actions/${actionId}` && method === "GET") {
+      return json(route, {
+        action: focusedActivityRun(runId, actionId, "failed").actions[0],
+        reconciliationGuidance: "not_required",
+        provenance: null,
+      });
+    }
+    if (url.pathname === `/api/v1/workspaces/${workspaceId}/tasks/${taskId}` && method === "GET") {
+      return json(route, {
+        ...task("failed", true),
+        kind: "syncAction",
+        mode: null,
+        stream: null,
+        failure: {
+          id: "provider-failure-1",
+          code: "provider_rate_limited",
+          message: "Provider rate limit reached",
+          retryable: true,
+          retryAfter: { seconds: 30, nanoseconds: 0 },
+          diagnosticId: "diagnostic-1",
+        },
+      });
+    }
+    if (url.pathname === `/api/v1/workspaces/${workspaceId}/tasks` && method === "GET") return json(route, []);
+    return fallback(route);
+  });
+
+  await page.goto(`/w/${workspaceId}/activity?runId=${runId}`);
+  await expect.poll(() => requestedRunIds[0]).toBe(runId);
+  const focusedRun = page.getByRole("article", { name: `Synchronization run ${runId}` });
+  await expect(focusedRun).toHaveAttribute("aria-current", "true");
+  await expect.poll(() => activityRequests).toBeGreaterThan(1);
+  await expect(focusedRun.getByText("failed", { exact: true }).first()).toBeVisible();
+  await page.getByLabel(`Inspect Progress action ${actionId}`).click();
+  await expect(page.getByRole("alert")).toContainText("Provider rate limit reached");
+  await expect(page.getByRole("alert")).toContainText("provider_rate_limited");
+  await expect(page.getByRole("alert")).toContainText("Retryable after 30s");
+  await expect(page.getByRole("alert")).toContainText("diagnostic-1");
+  await expectNoHorizontalOverflow(page);
+});
 
 test("workspace task cancellation cannot mutate a later workspace", async ({ page }) => {
   const secondWorkspaceId = "11111111-1111-1111-1111-222222222222";
@@ -131,3 +196,41 @@ test("workspace task cancellation cannot mutate a later workspace", async ({ pag
   await expect(page.getByRole("alert")).not.toBeVisible();
   await expectNoHorizontalOverflow(page);
 });
+
+function focusedActivityRun(runId: string, actionId: string, status: "running" | "failed") {
+  const terminal = status === "failed";
+  return {
+    runId,
+    workspaceId,
+    previewId: "88888888-8888-4888-8888-888888888888",
+    status,
+    actions: [
+      {
+        actionId,
+        runId,
+        workspaceId,
+        actionHash: `sha256:${"b".repeat(64)}`,
+        receiverSourceId: sourceId,
+        semanticField: "trakkin.state:progress",
+        status,
+        writeTask: {
+          taskId,
+          status,
+          createdAt: timestamp,
+          startedAt: timestamp,
+          finishedAt: terminal ? timestamp : null,
+          updatedAt: timestamp,
+        },
+        reconciliationTask: null,
+        createdAt: timestamp,
+        startedAt: timestamp,
+        finishedAt: terminal ? timestamp : null,
+        updatedAt: timestamp,
+      },
+    ],
+    createdAt: timestamp,
+    startedAt: timestamp,
+    finishedAt: terminal ? timestamp : null,
+    updatedAt: timestamp,
+  };
+}

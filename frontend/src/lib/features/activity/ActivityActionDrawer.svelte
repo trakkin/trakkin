@@ -143,6 +143,13 @@ function statusTone(status: string): "neutral" | "accent" | "success" | "warning
 function guidanceLabel(value: string): string {
   return value.replaceAll("_", " ");
 }
+
+function retryLabel(failure: NonNullable<TaskRun["failure"]>): string {
+  if (!failure.retryable) return "Not retryable";
+  if (!failure.retryAfter) return "Retryable";
+  const milliseconds = failure.retryAfter.seconds * 1_000 + Math.ceil(failure.retryAfter.nanoseconds / 1_000_000);
+  return milliseconds % 1_000 === 0 ? `Retryable after ${milliseconds / 1_000}s` : `Retryable after ${milliseconds}ms`;
+}
 </script>
 
 <Dialog.Root
@@ -243,35 +250,53 @@ function guidanceLabel(value: string): string {
           <h2 class="text-label font-semibold text-text-primary">Tasks</h2>
           <div class="mt-3 divide-y divide-border-subtle border-y border-border-subtle">
             {#each tasks as task (task.id)}
-              <div class="flex min-h-12 items-center justify-between gap-3 py-2.5">
-                <div class="min-w-0">
-                  <div class="flex items-center gap-2">
-                    <span class="truncate text-label font-medium text-text-primary">{task.kind}</span>
-                    <Chip
-                      dot
-                      tone={statusTone(task.status)}
-                      >{task.status}</Chip
-                    >
+              <div class="py-2.5">
+                <div class="flex min-h-8 items-center justify-between gap-3">
+                  <div class="min-w-0">
+                    <div class="flex items-center gap-2">
+                      <span class="truncate text-label font-medium text-text-primary">{task.kind}</span>
+                      <Chip
+                        dot
+                        tone={statusTone(task.status)}
+                        >{task.status}</Chip
+                      >
+                    </div>
+                    <p class="mt-1 truncate font-mono text-meta text-text-muted">{task.id}</p>
                   </div>
-                  <p class="mt-1 truncate font-mono text-meta text-text-muted">{task.id}</p>
+                  {#if task.cancellationSupported}
+                    <Button
+                      disabled={Boolean(cancellingTaskId)}
+                      onclick={() => cancel(task.id)}
+                      size="sm"
+                      variant="danger"
+                    >
+                      {#if cancellingTaskId === task.id}
+                        <Spinner size={14} />
+                      {:else}
+                        <Ban
+                          aria-hidden="true"
+                          size={14}
+                        />
+                      {/if}
+                      Cancel
+                    </Button>
+                  {/if}
                 </div>
-                {#if task.cancellationSupported}
-                  <Button
-                    disabled={Boolean(cancellingTaskId)}
-                    onclick={() => cancel(task.id)}
-                    size="sm"
-                    variant="danger"
+                {#if task.failure}
+                  <Panel
+                    class="mt-3 px-3 py-2.5 text-label text-danger"
+                    role="alert"
+                    tone="danger"
                   >
-                    {#if cancellingTaskId === task.id}
-                      <Spinner size={14} />
-                    {:else}
-                      <Ban
-                        aria-hidden="true"
-                        size={14}
-                      />
+                    <p>{task.failure.message}</p>
+                    <p class="mt-1 font-mono text-meta text-text-muted">
+                      {task.failure.code}
+                      · {retryLabel(task.failure)}
+                    </p>
+                    {#if task.failure.diagnosticId}
+                      <p class="mt-1 font-mono text-meta text-text-muted">Diagnostic {task.failure.diagnosticId}</p>
                     {/if}
-                    Cancel
-                  </Button>
+                  </Panel>
                 {/if}
               </div>
             {:else}

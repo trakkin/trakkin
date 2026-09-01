@@ -43,22 +43,29 @@ let activeQuery = $state<ActivityQuery>({ limit: 25 });
 let selectedAction = $state<ActivityAction | null>(null);
 let detailOpen = $state(false);
 let requestSequence = 0;
+let pollTimer: ReturnType<typeof setTimeout> | undefined;
 let workspaceId = $derived(page.params.workspaceId ?? "");
 let focusedRunId = $derived(page.url.searchParams.get("runId") ?? "");
 
 $effect(() => {
   const activeWorkspaceId = workspaceId;
+  const activeFocusedRunId = focusedRunId;
+  const initialQuery: ActivityQuery = { limit: 25, runId: activeFocusedRunId || undefined };
   const sequence = ++requestSequence;
   const controller = new AbortController();
+  clearPoll();
   runs = [];
   nextCursor = null;
   cursors = [undefined];
   pageIndex = 0;
-  activeQuery = { limit: 25 };
+  activeQuery = initialQuery;
   selectedAction = null;
   detailOpen = false;
   untrack(() => void loadPage(activeWorkspaceId, activeQuery, undefined, 0, sequence, controller.signal));
-  return () => controller.abort();
+  return () => {
+    controller.abort();
+    clearPoll();
+  };
 });
 
 async function loadPage(
@@ -69,6 +76,7 @@ async function loadPage(
   sequence = ++requestSequence,
   signal?: AbortSignal,
 ) {
+  clearPoll();
   const replacing = targetPage !== pageIndex || runs.length === 0;
   if (replacing) loading = true;
   else reloading = true;
@@ -79,6 +87,12 @@ async function loadPage(
     runs = result.runs;
     nextCursor = result.nextCursor ?? null;
     pageIndex = targetPage;
+    if (query.runId && result.runs.some((run) => run.status === "queued" || run.status === "running")) {
+      pollTimer = setTimeout(() => {
+        pollTimer = undefined;
+        void loadPage(activeWorkspaceId, query, cursor, targetPage, sequence, signal);
+      }, 1_000);
+    }
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") return;
     if (sequence === requestSequence) {
@@ -90,6 +104,12 @@ async function loadPage(
       reloading = false;
     }
   }
+}
+
+function clearPoll() {
+  if (!pollTimer) return;
+  clearTimeout(pollTimer);
+  pollTimer = undefined;
 }
 
 function applyFilters() {
