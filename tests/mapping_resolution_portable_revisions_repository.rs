@@ -23,16 +23,14 @@ use trakkin::{
         mapping_resolution::PostgresMappingResolutionRepository,
     },
 };
-use trakkin_mapping_contract::{MappingDocument, PortableEndpoint};
+use trakkin_mapping::{
+    MappingDocument, PortableEndpoint, fixtures::TWO_INSTANCES_PORTABILITY_VECTOR,
+};
 use uuid::Uuid;
-
-const PORTABILITY_VECTOR: &str = include_str!(
-    "../crates/trakkin-mapping-contract/tests/fixtures.mapping/v1/portability/two-instances.json"
-);
 
 #[tokio::test]
 async fn postgres_resolution_is_portable_across_independent_instances() {
-    let vector = serde_json::from_str::<serde_json::Value>(PORTABILITY_VECTOR)
+    let vector = serde_json::from_str::<serde_json::Value>(TWO_INSTANCES_PORTABILITY_VECTOR)
         .expect("portability vector is valid JSON");
     let document = MappingDocument::from_json(&vector["document"].to_string())
         .expect("portable mapping document is valid");

@@ -1,6 +1,6 @@
 #![cfg(all(feature = "embedded-database", unix))]
 
-use std::{path::PathBuf, process::Stdio, time::Duration};
+use std::{process::Stdio, time::Duration};
 
 use serde_json::{Value, json};
 use tempfile::tempdir;
@@ -8,22 +8,20 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::TcpStream,
     process::Command,
-    time::{sleep, timeout},
+    time::timeout,
 };
 
 #[tokio::test(flavor = "multi_thread")]
-async fn external_host_dispatches_fixture_and_stops_cleanly() {
+async fn external_host_bootstraps_provider_registry_and_stops_cleanly() {
     let directory = tempdir().expect("temporary data directory is created");
-    let fixture_adapter = fixture_adapter_path();
-    assert!(
-        fixture_adapter.is_file(),
-        "fixture adapter must be built beside the host binary"
-    );
     let mut command = Command::new(env!("CARGO_BIN_EXE_trakkin"));
     command
         .env("TRAKKIN_BIND", "127.0.0.1:0")
         .env("TRAKKIN_DATA_DIR", directory.path())
-        .env("TRAKKIN_FIXTURE_ADAPTER", fixture_adapter)
+        .env(
+            "TRAKKIN_PROVIDER_RUNTIME_DIR",
+            directory.path().join("provider-runtime"),
+        )
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -42,57 +40,36 @@ async fn external_host_dispatches_fixture_and_stops_cleanly() {
         .as_str()
         .expect("readiness includes the bound address");
 
-    let connection = request(
+    let repositories = request(address, "GET", "/api/v1/provider-repositories", None).await;
+    assert_eq!(repositories.0, 200);
+    let official = repositories
+        .1
+        .as_array()
+        .and_then(|repositories| {
+            repositories
+                .iter()
+                .find(|repository| repository["id"] == "dev.trakkin.official")
+        })
+        .expect("official provider repository is bootstrapped");
+    assert_eq!(official["official"], true);
+    assert_eq!(official["enabled"], true);
+
+    let installations = request(address, "GET", "/api/v1/provider-installations", None).await;
+    assert_eq!(installations, (200, json!([])));
+
+    let unavailable_connection = request(
         address,
         "POST",
         "/api/v1/connections",
         Some(json!({
-            "adapterKey": "fixture",
-            "displayName": "Fresh fixture",
-            "settings": [
-                { "key": "scenario", "value": { "kind": "text", "value": "hierarchical-catalog-assets-v1" } },
-                { "key": "revision", "value": { "kind": "text", "value": "v1" } },
-                { "key": "fault", "value": { "kind": "text", "value": "none" } },
-                { "key": "instance", "value": { "kind": "text", "value": "alpha" } }
-            ],
-            "secrets": [{ "key": "fixture_token", "value": bytes("fixture-secret") }]
+            "providerId": "dev.trakkin.fixture",
+            "displayName": "Unavailable fixture",
+            "settings": [],
+            "secrets": []
         })),
     )
     .await;
-    assert_eq!(connection.0, 201);
-    let connection_id = connection.1["id"]
-        .as_str()
-        .expect("created connection has an ID");
-    assert!(connection.1.get("secrets").is_none());
-
-    let discovery = request(
-        address,
-        "POST",
-        &format!("/api/v1/connections/{connection_id}/discovery-tasks"),
-        None,
-    )
-    .await;
-    assert_eq!(discovery.0, 202);
-    let task_id = discovery.1["id"]
-        .as_str()
-        .expect("discovery task has an ID");
-    let task = wait_for_task(address, connection_id, task_id).await;
-    assert_eq!(task["status"], "succeeded");
-
-    let sources = request(
-        address,
-        "GET",
-        &format!("/api/v1/connections/{connection_id}/sources"),
-        None,
-    )
-    .await;
-    assert_eq!(sources.0, 200);
-    assert!(
-        sources
-            .1
-            .as_array()
-            .is_some_and(|sources| !sources.is_empty())
-    );
+    assert_eq!(unavailable_connection.0, 404);
 
     let process_id = child.id().expect("running host has a process ID");
     let signal = std::process::Command::new("kill")
@@ -119,19 +96,6 @@ async fn external_host_dispatches_fixture_and_stops_cleanly() {
             .len(),
         32
     );
-}
-
-async fn wait_for_task(address: &str, connection_id: &str, task_id: &str) -> Value {
-    let path = format!("/api/v1/connections/{connection_id}/tasks/{task_id}");
-    for _ in 0..100 {
-        let response = request(address, "GET", &path, None).await;
-        assert_eq!(response.0, 200);
-        if response.1["terminal"] == true {
-            return response.1;
-        }
-        sleep(Duration::from_millis(100)).await;
-    }
-    panic!("discovery task did not become terminal");
 }
 
 async fn request(address: &str, method: &str, path: &str, body: Option<Value>) -> (u16, Value) {
@@ -165,18 +129,4 @@ async fn request(address: &str, method: &str, path: &str, body: Option<Value>) -
         .expect("HTTP status is valid");
     let body = serde_json::from_slice(&response[separator + 4..]).expect("HTTP body is JSON");
     (status, body)
-}
-
-fn fixture_adapter_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_trakkin"))
-        .parent()
-        .expect("host binary has a directory")
-        .join(format!(
-            "trakkin-fixture-adapter{}",
-            std::env::consts::EXE_SUFFIX
-        ))
-}
-
-fn bytes(value: &str) -> Vec<u8> {
-    value.as_bytes().to_vec()
 }

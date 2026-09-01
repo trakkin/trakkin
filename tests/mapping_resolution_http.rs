@@ -41,7 +41,7 @@ pub mod support;
 
 use support::{
     StaticBinaryAssetInteraction, StaticConnectionInteraction, StaticReferenceLookupInteraction,
-    assert_closed_error, mapping_activation_request, request,
+    assert_closed_error, mapping_activation_request, request, static_provider_registry,
 };
 
 #[tokio::test]
@@ -75,6 +75,7 @@ async fn mapping_resolution_previews_exact_revisions_with_bounded_closed_results
                 Arc::new(SyncActivityService::new(
                     PostgresSyncActivityRepository::new(database.pool()),
                 )),
+                static_provider_registry(),
             ),
         );
         http::router(Arc::new(application))

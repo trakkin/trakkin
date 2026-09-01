@@ -34,6 +34,10 @@ use crate::http::{
             ResolutionProofResponse, ResolutionSemanticWorkResponse,
             ResolvedCorrespondenceResponse, UpdateMappingDocumentRequest,
         },
+        providers::{
+            ActivateProviderRequest, InstallProviderRequest, ProviderInstallationResponse,
+            ProviderReleaseResponse, ProviderRepositoryResponse, RegisterProviderRepositoryRequest,
+        },
         sources::{
             BinaryAssetReferenceResponse, CatalogEntryResponse, CatalogItemResponse,
             CatalogPageResponse, CatalogRelationResponse, KeyResponse,
@@ -61,7 +65,7 @@ use crate::http::{
     error::{ErrorResponse, FieldProblemResponse},
 };
 
-use super::{connections, workspaces};
+use super::{connections, providers, workspaces};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -79,6 +83,14 @@ use super::{connections, workspaces};
         connections::start_source_discovery,
         connections::get_connection_task,
         connections::cancel_connection_task,
+        providers::list_repositories,
+        providers::register_repository,
+        providers::refresh_repository,
+        providers::list_providers,
+        providers::list_installations,
+        providers::install_provider,
+        providers::remove_provider_installation,
+        providers::activate_provider,
         workspaces::list_workspaces,
         workspaces::create_workspace,
         workspaces::get_workspace,
@@ -139,6 +151,12 @@ use super::{connections, workspaces};
         AuthenticationAccountResponse,
         RetryAfterResponse,
         AdapterCallErrorResponse,
+        RegisterProviderRepositoryRequest,
+        ProviderRepositoryResponse,
+        ProviderReleaseResponse,
+        InstallProviderRequest,
+        ActivateProviderRequest,
+        ProviderInstallationResponse,
         CreateWorkspaceRequest,
         WorkspaceResponse,
         WorkspaceSourceResponse,
@@ -238,6 +256,7 @@ use super::{connections, workspaces};
     )),
     tags(
         (name = "connections"),
+        (name = "providers"),
         (name = "workspaces"),
         (name = "synchronization"),
         (name = "mappings"),

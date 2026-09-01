@@ -1,7 +1,7 @@
 use tempfile::{TempDir, tempdir};
 use time::OffsetDateTime;
 use trakkin::database::DatabaseRuntime;
-use trakkin_mapping_contract::PortableEndpoint;
+use trakkin_mapping::PortableEndpoint;
 use uuid::Uuid;
 
 pub struct MappingResolutionDatabase {

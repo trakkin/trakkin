@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use time::{OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339};
-use trakkin_mapping_contract::PortableEndpoint;
+use trakkin_mapping::PortableEndpoint;
 use uuid::Uuid;
 
 use crate::domain::{

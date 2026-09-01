@@ -350,7 +350,7 @@ async fn seed_connection(pool: &PgPool, connection_id: Uuid, display_name: &str)
     let now = timestamp(-10);
     sqlx::query(
         "INSERT INTO connections (
-             id, adapter_key, display_name, status, created_at, updated_at
+             id, provider_id, display_name, status, created_at, updated_at
          ) VALUES ($1, 'fixture', $2, 'ready', $3, $3)",
     )
     .bind(connection_id)

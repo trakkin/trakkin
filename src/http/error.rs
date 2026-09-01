@@ -112,6 +112,9 @@ fn status(code: ApplicationErrorCode) -> StatusCode {
         ApplicationErrorCode::WorkspaceNotFound
         | ApplicationErrorCode::WorkspaceOrSourceNotFound
         | ApplicationErrorCode::ConnectionNotFound
+        | ApplicationErrorCode::ProviderRepositoryNotFound
+        | ApplicationErrorCode::ProviderNotFound
+        | ApplicationErrorCode::ProviderInstallationNotFound
         | ApplicationErrorCode::AuthenticationNotFound
         | ApplicationErrorCode::BinaryAssetNotFound
         | ApplicationErrorCode::SourceNotAttached
@@ -130,6 +133,8 @@ fn status(code: ApplicationErrorCode) -> StatusCode {
         | ApplicationErrorCode::AuthenticationSessionUnavailable
         | ApplicationErrorCode::CatalogPublicationExpired
         | ApplicationErrorCode::ProviderCapabilityUnavailable
+        | ApplicationErrorCode::ProviderInstallationActive
+        | ApplicationErrorCode::ProviderAlreadyInstalled
         | ApplicationErrorCode::CatalogCursorExpired
         | ApplicationErrorCode::StreamUnavailable
         | ApplicationErrorCode::TaskResourceUnavailable

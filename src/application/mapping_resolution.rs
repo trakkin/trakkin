@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use time::OffsetDateTime;
 use tokio::time::timeout;
-use trakkin_mapping_contract::{PortableEndpoint, PortableSelector, Selection};
+use trakkin_mapping::{PortableEndpoint, PortableSelector, Selection};
 use uuid::Uuid;
 
 use crate::domain::acquisition::CoordinateBacking as ProviderCoordinateBacking;

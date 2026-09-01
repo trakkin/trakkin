@@ -1,5 +1,6 @@
 mod connections;
 mod openapi;
+mod providers;
 pub(super) mod support;
 mod workspaces;
 
@@ -12,6 +13,7 @@ pub use openapi::openapi;
 pub(super) fn router() -> Router<HttpState> {
     Router::new()
         .merge(connections::router())
+        .merge(providers::router())
         .merge(workspaces::router())
         .route("/api/v1/openapi.json", get(openapi::get_openapi))
 }

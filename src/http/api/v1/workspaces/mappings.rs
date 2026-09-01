@@ -14,7 +14,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
-use trakkin_mapping_contract::{PortableEndpoint, PortableSelector};
+use trakkin_mapping::{PortableEndpoint, PortableSelector};
 use uuid::Uuid;
 
 use crate::{

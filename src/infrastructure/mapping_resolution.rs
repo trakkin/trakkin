@@ -1,7 +1,7 @@
 use serde_json::Value;
 use sqlx::{FromRow, PgPool, Postgres, Transaction};
 use thiserror::Error;
-use trakkin_mapping_contract::{MappingError, PortableEndpoint};
+use trakkin_mapping::{MappingError, PortableEndpoint};
 use uuid::Uuid;
 
 use crate::application::error::{ApplicationError, ApplicationErrorCode, IntoApplicationError};

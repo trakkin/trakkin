@@ -2,7 +2,7 @@ use serde_json::{Value, json};
 use sqlx::{FromRow, PgPool};
 use thiserror::Error;
 use time::{Duration, OffsetDateTime};
-use trakkin_mapping_contract::validate_content_hash;
+use trakkin_mapping::validate_content_hash;
 use uuid::Uuid;
 
 use crate::application::{

@@ -48,6 +48,7 @@ use crate::{
         mapping_queries::PostgresMappingQueryRepository,
         mapping_resolution::PostgresMappingResolutionRepository,
         provider_access::PostgresProviderAccessRepository,
+        provider_registry::{PostgresProviderRegistry, ProbedProviderRegistry},
         sync_action_attempt::PostgresSyncActionAttemptRepository,
         sync_action_dispatch::SyncActionTaskHandler,
         sync_action_reconciliation::PostgresSyncActionReconciliationRepository,
@@ -104,17 +105,33 @@ impl Host {
         &self.task_manager
     }
 
-    pub fn into_runtime(
+    pub async fn into_runtime(
         self,
-        adapter_executable: impl Into<PathBuf>,
+        data_directory: impl Into<PathBuf>,
+        provider_runtime_directory: impl Into<PathBuf>,
         connection_master_key: ConnectionMasterKey,
     ) -> Result<RunningHost, HostError> {
         let pool = self.database.pool();
-        let adapter_executable = adapter_executable.into();
+        let provider_registry = PostgresProviderRegistry::new(
+            pool.clone(),
+            data_directory.into().join("providers"),
+            provider_runtime_directory,
+        );
+        provider_registry
+            .bootstrap_official_repository(OffsetDateTime::now_utc())
+            .await
+            .map_err(|error| HostError::ProviderRegistry(error.message))?;
+        provider_registry
+            .reconcile(OffsetDateTime::now_utc())
+            .await
+            .map_err(|error| HostError::ProviderRegistry(error.message))?;
         let connection_repository =
             PostgresConnectionRepository::new(pool.clone(), connection_master_key);
         let sessions = ProcessSessionRegistry::<AdapterProcess>::default();
-        let launcher = AdapterProcessLauncher::new(adapter_executable, env!("CARGO_PKG_VERSION"));
+        let launcher =
+            AdapterProcessLauncher::new(provider_registry.clone(), env!("CARGO_PKG_VERSION"));
+        let provider_management =
+            ProbedProviderRegistry::new(provider_registry.clone(), env!("CARGO_PKG_VERSION"));
         let provider_access = PostgresProviderAccessRepository::new(pool.clone());
         let sync_preview_collector = Arc::new(ProductionSyncPreviewInputCollector::new(
             PostgresSyncStateEvidenceRepository::new(pool.clone()),
@@ -190,6 +207,7 @@ impl Host {
                 Arc::new(SyncActivityService::new(
                     PostgresSyncActivityRepository::new(pool.clone()),
                 )),
+                Arc::new(provider_management),
             )
             .with_sync_preview_mutation(sync_workflow)
             .with_sync_run_mutation(sync_run_workflow)
@@ -462,6 +480,8 @@ pub enum HostError {
     TaskLifecycle(#[from] TaskLifecycleError),
     #[error(transparent)]
     Random(#[from] getrandom::Error),
+    #[error("provider registry startup failed: {0}")]
+    ProviderRegistry(String),
     #[error("one or more adapter processes could not be retired")]
     ConnectionRetirement(#[from] ConnectionSessionRetirementError),
 }

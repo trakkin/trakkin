@@ -21,7 +21,7 @@ pub type ConnectionFuture<'a, T, E> = Pin<Box<dyn Future<Output = Result<T, E>> 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CreateConnection {
     pub connection_id: Uuid,
-    pub adapter_key: String,
+    pub provider_id: String,
     pub display_name: String,
     pub settings: Vec<AdapterSetting>,
     pub secrets: Vec<AdapterSecret>,
@@ -31,7 +31,7 @@ pub struct CreateConnection {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StoredConnection {
     pub connection_id: Uuid,
-    pub adapter_key: String,
+    pub provider_id: String,
     pub settings: Vec<AdapterSetting>,
     pub secrets: Vec<AdapterSecret>,
 }
@@ -47,7 +47,7 @@ pub enum ConnectionStatus {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConnectionSummary {
     pub connection_id: Uuid,
-    pub adapter_key: String,
+    pub provider_id: String,
     pub display_name: String,
     pub status: ConnectionStatus,
     pub capability_revision: i64,
@@ -599,6 +599,7 @@ where
         let mut session = match self
             .launcher
             .launch(LaunchAdapter {
+                provider_id: stored.provider_id.clone(),
                 process_instance_id: command.process_instance_id,
             })
             .await
@@ -610,7 +611,7 @@ where
                 return Err(ConnectionCoordinatorError::Adapter(error));
             }
         };
-        if session.identity().adapter_key != stored.adapter_key {
+        if session.identity().adapter_key != stored.provider_id {
             let _ = session.retire().await;
             self.mark_unavailable(command.connection_id, command.opened_at)
                 .await?;
@@ -739,11 +740,12 @@ where
         let mut session = self
             .launcher
             .launch(LaunchAdapter {
+                provider_id: stored.provider_id.clone(),
                 process_instance_id,
             })
             .await
             .map_err(ConnectionCoordinatorError::Adapter)?;
-        if session.identity().adapter_key != stored.adapter_key {
+        if session.identity().adapter_key != stored.provider_id {
             let _ = session.retire().await;
             return Err(ConnectionCoordinatorError::AdapterIdentityMismatch);
         }

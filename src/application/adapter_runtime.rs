@@ -1,7 +1,7 @@
 use std::{future::Future, pin::Pin};
 
 use time::OffsetDateTime;
-use trakkin_mapping_contract::PortableEndpoint;
+use trakkin_mapping::PortableEndpoint;
 
 use crate::domain::acquisition::{
     CatalogBatch, CoordinateBinding, PortableReference, ProviderItem, StateBatch, StateField,
@@ -19,6 +19,7 @@ pub type AdapterRetirementFuture<T, E> = Pin<Box<dyn Future<Output = Result<T, E
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LaunchAdapter {
+    pub provider_id: String,
     pub process_instance_id: String,
 }
 
@@ -800,7 +801,7 @@ mod tests {
         AdapterConnectionCapabilities, AdapterEndpointLookupCapability,
         AdapterEndpointResolutionOperation, AdapterLookupCapability, endpoint_resolution_operation,
     };
-    use trakkin_mapping_contract::PortableEndpoint;
+    use trakkin_mapping::PortableEndpoint;
 
     #[test]
     fn endpoint_resolution_uses_selector_compatible_capability() {

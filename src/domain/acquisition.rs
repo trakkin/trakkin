@@ -1,7 +1,7 @@
 use serde_json::Value;
 use thiserror::Error;
 use time::OffsetDateTime;
-use trakkin_mapping_contract::PortableEndpoint;
+use trakkin_mapping::PortableEndpoint;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct ProviderItemKey {

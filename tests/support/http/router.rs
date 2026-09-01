@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use axum::{
     body::Body,
     http::{Request, StatusCode},
@@ -22,7 +24,13 @@ use trakkin::{
             ConnectionInteraction, ContinueConnectionAuthentication, InspectConnection,
             StartConnectionAuthentication, StartedConnectionAuthentication,
         },
-        error::ApplicationError,
+        error::{ApplicationError, ApplicationErrorCode},
+        providers::{
+            ActivateProviderInstallation, InstallProvider, ProviderApiFuture,
+            ProviderInstallationSnapshot, ProviderRegistryApi, ProviderReleaseSnapshot,
+            ProviderRepositorySnapshot, RefreshProviderRepository, RegisterProviderRepository,
+            RemoveProviderInstallation, SharedProviderRegistry,
+        },
         reference_lookup::{
             LookupPortableReferences, ReferenceLookupFuture, ReferenceLookupInteraction,
         },
@@ -39,6 +47,76 @@ const ACCOUNT_ID: Uuid = Uuid::from_u128(2);
 pub const SOURCE_ID: Uuid = Uuid::from_u128(3);
 pub const CATALOG_PUBLICATION_ID: Uuid = Uuid::from_u128(4);
 pub const STATE_PUBLICATION_ID: Uuid = Uuid::from_u128(5);
+
+pub fn static_provider_registry() -> SharedProviderRegistry {
+    Arc::new(StaticProviderRegistry)
+}
+
+struct StaticProviderRegistry;
+
+impl ProviderRegistryApi for StaticProviderRegistry {
+    fn ensure_provider_active(&self, _provider_id: &str) -> ProviderApiFuture<'_, ()> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn list_provider_repositories(&self) -> ProviderApiFuture<'_, Vec<ProviderRepositorySnapshot>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
+    fn register_provider_repository(
+        &self,
+        _command: RegisterProviderRepository,
+    ) -> ProviderApiFuture<'_, ProviderRepositorySnapshot> {
+        unsupported_provider_operation()
+    }
+
+    fn refresh_provider_repository(
+        &self,
+        _command: RefreshProviderRepository,
+    ) -> ProviderApiFuture<'_, ProviderRepositorySnapshot> {
+        unsupported_provider_operation()
+    }
+
+    fn list_provider_releases(&self) -> ProviderApiFuture<'_, Vec<ProviderReleaseSnapshot>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
+    fn list_provider_installations(
+        &self,
+    ) -> ProviderApiFuture<'_, Vec<ProviderInstallationSnapshot>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
+    fn install_provider(
+        &self,
+        _command: InstallProvider,
+    ) -> ProviderApiFuture<'_, ProviderInstallationSnapshot> {
+        unsupported_provider_operation()
+    }
+
+    fn activate_provider_installation(
+        &self,
+        _command: ActivateProviderInstallation,
+    ) -> ProviderApiFuture<'_, ProviderInstallationSnapshot> {
+        unsupported_provider_operation()
+    }
+
+    fn remove_provider_installation(
+        &self,
+        _command: RemoveProviderInstallation,
+    ) -> ProviderApiFuture<'_, ()> {
+        unsupported_provider_operation()
+    }
+}
+
+fn unsupported_provider_operation<T>() -> ProviderApiFuture<'static, T> {
+    Box::pin(async {
+        Err(ApplicationError::new(
+            ApplicationErrorCode::InvalidRequest,
+            "provider operation is unavailable in this test",
+        ))
+    })
+}
 
 pub struct StaticConnectionInteraction;
 
@@ -290,7 +368,7 @@ pub async fn seed_source(pool: &sqlx::PgPool) {
     let now = timestamp(0);
     sqlx::query(
         "INSERT INTO connections (
-    id, adapter_key, display_name, status, capabilities,
+    id, provider_id, display_name, status, capabilities,
     capability_revision, created_at, updated_at
 )
 VALUES ($1, 'fixture', 'Fixture', 'ready', $2, 1, $3, $3)

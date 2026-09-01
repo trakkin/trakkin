@@ -1,7 +1,7 @@
 use std::{collections::BTreeSet, future::Future, pin::Pin};
 
 use time::OffsetDateTime;
-use trakkin_mapping_contract::validate_content_hash;
+use trakkin_mapping::validate_content_hash;
 use uuid::Uuid;
 
 use super::{

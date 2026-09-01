@@ -168,7 +168,7 @@ impl TestSessionRegistry {
             connection_id,
             session: Arc::new(Mutex::new(Some(session))),
             identity: AdapterIdentity {
-                adapter_key: "fixture".to_owned(),
+                adapter_key: "dev.trakkin.fixture".to_owned(),
                 adapter_version: "1.0.0".to_owned(),
                 process_instance_id: "fixture-process-1".to_owned(),
                 protocol_major: 1,
@@ -217,7 +217,7 @@ VALUES ($1, 'Preview Collection', $2, $2)",
     .expect("workspace seeded");
     sqlx::query(
         "INSERT INTO connections (
-    id, adapter_key, display_name, status, capabilities,
+    id, provider_id, display_name, status, capabilities,
     capability_revision, created_at, updated_at
 ) VALUES ($1, 'fixture', 'Fixture', 'ready', '{}'::jsonb, 1, $2, $2)",
     )

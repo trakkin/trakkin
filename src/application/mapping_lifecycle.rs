@@ -5,7 +5,7 @@ use std::{
 };
 
 use time::OffsetDateTime;
-use trakkin_mapping_contract::{
+use trakkin_mapping::{
     MappingDocument, MappingError, MappingPackage, PackageCompatibility, validate_content_hash,
 };
 use uuid::Uuid;

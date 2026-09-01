@@ -31,15 +31,11 @@ use trakkin::{
         mapping_resolution::PostgresMappingResolutionRepository,
     },
 };
-use trakkin_mapping_contract::PortableEndpoint;
+use trakkin_mapping::{
+    PortableEndpoint,
+    fixtures::{CORRESPONDENCE_VECTORS, EVIDENCE_VECTORS},
+};
 use uuid::Uuid;
-
-const CORRESPONDENCE_VECTORS: &str = include_str!(
-    "../crates/trakkin-mapping-contract/tests/fixtures.mapping/v1/correspondence/vectors.json"
-);
-const EVIDENCE_VECTORS: &str = include_str!(
-    "../crates/trakkin-mapping-contract/tests/fixtures.mapping/v1/evidence/vectors.json"
-);
 
 fn fixture_vector(document: &str, id: &str) -> serde_json::Value {
     serde_json::from_str::<serde_json::Value>(document)

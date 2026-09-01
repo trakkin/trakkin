@@ -31,6 +31,11 @@ use super::{
     mapping_resolution::{
         ExactMappingRevision, MappingResolution, MappingResolutionInteraction, ResolutionRequest,
     },
+    providers::{
+        ActivateProviderInstallation, InstallProvider, ProviderInstallationSnapshot,
+        ProviderReleaseSnapshot, ProviderRepositorySnapshot, RefreshProviderRepository,
+        RegisterProviderRepository, RemoveProviderInstallation, SharedProviderRegistry,
+    },
     reference_lookup::{LookupPortableReferences, ReferenceLookupInteraction},
     sync_activity::{
         QuerySyncActivity, SyncActivityActionDetail, SyncActivityApi, SyncActivityPage,
@@ -80,6 +85,7 @@ pub struct ApplicationInteractions {
     pub sync_run_mutation: Option<Arc<dyn SyncRunMutationApi>>,
     pub sync_schedule: Option<Arc<dyn SyncScheduleApi>>,
     pub sync_activity: Arc<dyn SyncActivityApi>,
+    pub providers: SharedProviderRegistry,
 }
 
 impl ApplicationInteractions {
@@ -90,6 +96,7 @@ impl ApplicationInteractions {
         mapping_resolution: Arc<dyn MappingResolutionInteraction>,
         sync_policy: Arc<dyn SyncPolicyApi>,
         sync_activity: Arc<dyn SyncActivityApi>,
+        providers: SharedProviderRegistry,
     ) -> Self {
         Self {
             connections,
@@ -101,6 +108,7 @@ impl ApplicationInteractions {
             sync_run_mutation: None,
             sync_schedule: None,
             sync_activity,
+            providers,
         }
     }
 
@@ -298,6 +306,31 @@ pub trait ApplicationApi: Send + Sync {
         workspace_id: Uuid,
         action_id: Uuid,
     ) -> ApplicationFuture<'_, SyncActivityActionDetail>;
+    fn list_provider_repositories(&self) -> ApplicationFuture<'_, Vec<ProviderRepositorySnapshot>>;
+    fn register_provider_repository(
+        &self,
+        command: RegisterProviderRepository,
+    ) -> ApplicationFuture<'_, ProviderRepositorySnapshot>;
+    fn refresh_provider_repository(
+        &self,
+        command: RefreshProviderRepository,
+    ) -> ApplicationFuture<'_, ProviderRepositorySnapshot>;
+    fn list_provider_releases(&self) -> ApplicationFuture<'_, Vec<ProviderReleaseSnapshot>>;
+    fn list_provider_installations(
+        &self,
+    ) -> ApplicationFuture<'_, Vec<ProviderInstallationSnapshot>>;
+    fn install_provider(
+        &self,
+        command: InstallProvider,
+    ) -> ApplicationFuture<'_, ProviderInstallationSnapshot>;
+    fn activate_provider_installation(
+        &self,
+        command: ActivateProviderInstallation,
+    ) -> ApplicationFuture<'_, ProviderInstallationSnapshot>;
+    fn remove_provider_installation(
+        &self,
+        command: RemoveProviderInstallation,
+    ) -> ApplicationFuture<'_, ()>;
 }
 
 #[derive(Clone)]
@@ -318,6 +351,7 @@ pub struct ApplicationFacade<W, C, M, L, T, R, D> {
     sync_run_mutation: Option<Arc<dyn SyncRunMutationApi>>,
     sync_schedule: Option<Arc<dyn SyncScheduleApi>>,
     sync_activity: Arc<dyn SyncActivityApi>,
+    providers: SharedProviderRegistry,
 }
 
 impl<W, C, M, L, T, R, D> ApplicationFacade<W, C, M, L, T, R, D>
@@ -362,6 +396,7 @@ where
             sync_run_mutation: interactions.sync_run_mutation,
             sync_schedule: interactions.sync_schedule,
             sync_activity: interactions.sync_activity,
+            providers: interactions.providers,
         }
     }
 
@@ -762,6 +797,9 @@ where
     ) -> ApplicationFuture<'_, ConnectionSummary> {
         Box::pin(async move {
             let connection_id = command.connection_id;
+            self.providers
+                .ensure_provider_active(&command.provider_id)
+                .await?;
             self.connections
                 .store_connection(command)
                 .await
@@ -1034,6 +1072,55 @@ where
     ) -> ApplicationFuture<'_, SyncActivityActionDetail> {
         self.sync_activity
             .get_activity_action(workspace_id, action_id)
+    }
+
+    fn list_provider_repositories(&self) -> ApplicationFuture<'_, Vec<ProviderRepositorySnapshot>> {
+        self.providers.list_provider_repositories()
+    }
+
+    fn register_provider_repository(
+        &self,
+        command: RegisterProviderRepository,
+    ) -> ApplicationFuture<'_, ProviderRepositorySnapshot> {
+        self.providers.register_provider_repository(command)
+    }
+
+    fn refresh_provider_repository(
+        &self,
+        command: RefreshProviderRepository,
+    ) -> ApplicationFuture<'_, ProviderRepositorySnapshot> {
+        self.providers.refresh_provider_repository(command)
+    }
+
+    fn list_provider_releases(&self) -> ApplicationFuture<'_, Vec<ProviderReleaseSnapshot>> {
+        self.providers.list_provider_releases()
+    }
+
+    fn list_provider_installations(
+        &self,
+    ) -> ApplicationFuture<'_, Vec<ProviderInstallationSnapshot>> {
+        self.providers.list_provider_installations()
+    }
+
+    fn install_provider(
+        &self,
+        command: InstallProvider,
+    ) -> ApplicationFuture<'_, ProviderInstallationSnapshot> {
+        self.providers.install_provider(command)
+    }
+
+    fn activate_provider_installation(
+        &self,
+        command: ActivateProviderInstallation,
+    ) -> ApplicationFuture<'_, ProviderInstallationSnapshot> {
+        self.providers.activate_provider_installation(command)
+    }
+
+    fn remove_provider_installation(
+        &self,
+        command: RemoveProviderInstallation,
+    ) -> ApplicationFuture<'_, ()> {
+        self.providers.remove_provider_installation(command)
     }
 }
 

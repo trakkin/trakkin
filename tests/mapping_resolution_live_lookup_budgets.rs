@@ -12,7 +12,7 @@ use trakkin::application::mapping_resolution::{
     ProcessInstancePin, ResolutionCompleteness, ResolutionMode, ResolutionRequest,
     ResolutionRevisionPin, ResolutionSemanticLimits,
 };
-use trakkin_mapping_contract::PortableEndpoint;
+use trakkin_mapping::PortableEndpoint;
 use uuid::Uuid;
 
 #[tokio::test]

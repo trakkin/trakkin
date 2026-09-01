@@ -1,10 +1,4 @@
-use std::{
-    collections::HashSet,
-    net::SocketAddr,
-    path::{Path, PathBuf},
-    process::Stdio,
-    time::Duration,
-};
+use std::{collections::HashSet, net::SocketAddr, path::Path, process::Stdio, time::Duration};
 
 use serde_json::json;
 use time::OffsetDateTime;
@@ -14,7 +8,10 @@ use tokio::{
     time::timeout,
 };
 use tonic::{Request, transport::Channel};
-use trakkin_adapter_contract::{
+use trakkin_provider_sdk::{
+    BOOTSTRAP_VERSION, LaunchRequest, LaunchToken, ReadyMessage, supported_protocol_range,
+};
+use trakkin_provider_sdk::{
     current_protocol_version,
     v1::{
         AccountSnapshot as ProtoAccountSnapshot, AdapterError,
@@ -53,9 +50,6 @@ use trakkin_adapter_contract::{
     },
     validation,
 };
-use trakkin_adapter_sdk::{
-    BOOTSTRAP_VERSION, LaunchRequest, LaunchToken, ReadyMessage, supported_protocol_range,
-};
 
 use crate::application::adapter_runtime::{
     AdapterAccount, AdapterAssetCapability, AdapterAuthenticationMethod,
@@ -86,6 +80,9 @@ use crate::application::adapter_runtime::{
     StartAdapterAuthentication, ValidateAdapterConnection, WriteAdapterTargetedState,
     endpoint_resolution_operation,
 };
+use crate::application::providers::{
+    ProviderLaunchError, ProviderLaunchResolver, ProviderLaunchTarget,
+};
 use crate::domain::synchronization::Quantizer;
 use crate::{
     application::acquisition::ReadMode,
@@ -100,18 +97,21 @@ use crate::{
 const MAXIMUM_READY_MESSAGE_BYTES: u64 = 16 * 1024;
 
 #[derive(Clone)]
-pub struct AdapterProcessLauncher {
-    executable: PathBuf,
+pub struct AdapterProcessLauncher<R> {
+    resolver: R,
     host_version: String,
     ready_timeout: Duration,
     rpc_timeout: Duration,
     shutdown_timeout: Duration,
 }
 
-impl AdapterProcessLauncher {
-    pub fn new(executable: impl Into<PathBuf>, host_version: impl Into<String>) -> Self {
+impl<R> AdapterProcessLauncher<R>
+where
+    R: ProviderLaunchResolver,
+{
+    pub fn new(resolver: R, host_version: impl Into<String>) -> Self {
         Self {
-            executable: executable.into(),
+            resolver,
             host_version: host_version.into(),
             ready_timeout: Duration::from_secs(5),
             rpc_timeout: Duration::from_secs(5),
@@ -136,17 +136,29 @@ impl AdapterProcessLauncher {
         command: LaunchAdapter,
     ) -> Result<AdapterProcess, AdapterProcessError> {
         validate_process_instance_id(&command.process_instance_id)?;
+        let target = self.resolver.resolve_provider(&command.provider_id).await?;
+        self.launch_target(target, command.process_instance_id)
+            .await
+    }
+
+    async fn launch_target(
+        &self,
+        target: ProviderLaunchTarget,
+        process_instance_id: String,
+    ) -> Result<AdapterProcess, AdapterProcessError> {
+        validate_process_instance_id(&process_instance_id)?;
         let launch_token = generate_launch_token()?;
         let launch = LaunchRequest {
             bootstrap_version: BOOTSTRAP_VERSION,
-            process_instance_id: command.process_instance_id.clone(),
+            process_instance_id,
             bind_address: "127.0.0.1:0".to_owned(),
             launch_token: launch_token.clone(),
         };
-        let mut child = spawn_child(&self.executable)?;
+        let mut child = spawn_child(&target.executable, &target.working_directory)?;
         let initialization = initialize_child(
             &mut child,
             &launch,
+            &target,
             &self.host_version,
             self.ready_timeout,
             self.rpc_timeout,
@@ -170,9 +182,28 @@ impl AdapterProcessLauncher {
             shutdown_timeout: self.shutdown_timeout,
         })
     }
+
+    pub(crate) async fn probe_target(
+        &self,
+        target: ProviderLaunchTarget,
+        process_instance_id: String,
+    ) -> Result<(), AdapterProcessError> {
+        let mut process = self.launch_target(target, process_instance_id).await?;
+        if process.health().await?.status != AdapterHealthStatus::Ready {
+            let _ = process.retire().await;
+            return Err(AdapterProcessError::ProbeNotReady);
+        }
+        if process.retire().await? != AdapterRetirement::Graceful {
+            return Err(AdapterProcessError::ProbeShutdown);
+        }
+        Ok(())
+    }
 }
 
-impl AdapterLauncher for AdapterProcessLauncher {
+impl<R> AdapterLauncher for AdapterProcessLauncher<R>
+where
+    R: ProviderLaunchResolver,
+{
     type Session = AdapterProcess;
     type Error = AdapterProcessError;
 
@@ -916,7 +947,7 @@ impl AdapterSession for AdapterProcess {
                 return Err(AdapterProcessError::InvalidOperationId);
             }
             let request =
-                self.signed(trakkin_adapter_contract::v1::CancelOperationRequest { operation_id });
+                self.signed(trakkin_provider_sdk::v1::CancelOperationRequest { operation_id });
             let response = timeout(self.rpc_timeout, self.client.cancel_operation(request))
                 .await
                 .map_err(|_| AdapterProcessError::RpcTimeout("cancel operation"))??
@@ -967,6 +998,7 @@ impl AdapterProcess {
 async fn initialize_child(
     child: &mut Child,
     launch: &LaunchRequest,
+    target: &ProviderLaunchTarget,
     host_version: &str,
     ready_timeout: Duration,
     rpc_timeout: Duration,
@@ -1004,7 +1036,7 @@ async fn initialize_child(
         .map_err(|_| AdapterProcessError::RpcTimeout("connect"))??;
     let token = LaunchToken::new(&launch.launch_token)
         .map_err(|_| AdapterProcessError::InvalidLaunchToken)?;
-    let mut handshake_request = Request::new(trakkin_adapter_contract::v1::HandshakeRequest {
+    let mut handshake_request = Request::new(trakkin_provider_sdk::v1::HandshakeRequest {
         supported_protocol: Some(supported_protocol_range()),
         host_version: host_version.to_owned(),
         process_instance_id: launch.process_instance_id.clone(),
@@ -1020,7 +1052,12 @@ async fn initialize_child(
             .ok_or(AdapterProcessError::InvalidResponse(
                 "selected protocol is missing",
             ))?;
-    validate_handshake(&handshake, &selected_protocol, &launch.process_instance_id)?;
+    validate_handshake(
+        &handshake,
+        &selected_protocol,
+        &launch.process_instance_id,
+        target,
+    )?;
     Ok((
         client,
         token,
@@ -1034,8 +1071,10 @@ async fn initialize_child(
     ))
 }
 
-fn spawn_child(executable: &Path) -> Result<Child, AdapterProcessError> {
+fn spawn_child(executable: &Path, working_directory: &Path) -> Result<Child, AdapterProcessError> {
     Ok(Command::new(executable)
+        .current_dir(working_directory)
+        .env_clear()
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -1077,12 +1116,13 @@ fn validate_ready_message(
 }
 
 fn validate_handshake(
-    handshake: &trakkin_adapter_contract::v1::HandshakeResponse,
+    handshake: &trakkin_provider_sdk::v1::HandshakeResponse,
     selected_protocol: &ProtocolVersion,
     process_instance_id: &str,
+    target: &ProviderLaunchTarget,
 ) -> Result<(), AdapterProcessError> {
-    if handshake.adapter_key.is_empty()
-        || handshake.adapter_version.is_empty()
+    if handshake.adapter_key != target.provider_id
+        || handshake.adapter_version != target.version
         || handshake.process_instance_id != process_instance_id
         || selected_protocol.major != current_protocol_version().major
         || selected_protocol.minor != current_protocol_version().minor
@@ -1211,7 +1251,7 @@ fn map_state_event(
 }
 
 fn map_read_completion(
-    completed: trakkin_adapter_contract::v1::ReadCompleted,
+    completed: trakkin_provider_sdk::v1::ReadCompleted,
 ) -> Result<AdapterReadCompletion, AdapterProcessError> {
     let observed_at = OffsetDateTime::from_unix_timestamp_nanos(
         i128::from(completed.observed_time_milliseconds) * 1_000_000,
@@ -1233,7 +1273,7 @@ fn map_read_failure(error: Option<AdapterError>) -> Result<AdapterCallError, Ada
 }
 
 fn map_catalog_batch(
-    batch: trakkin_adapter_contract::v1::CatalogBatch,
+    batch: trakkin_provider_sdk::v1::CatalogBatch,
 ) -> Result<CatalogBatch, AdapterProcessError> {
     let coordinate_binding_upserts = batch
         .coordinate_binding_upserts
@@ -1272,7 +1312,7 @@ fn map_catalog_batch(
 }
 
 fn map_coordinate_binding(
-    binding: trakkin_adapter_contract::v1::CoordinateBinding,
+    binding: trakkin_provider_sdk::v1::CoordinateBinding,
 ) -> Result<CoordinateBinding, AdapterProcessError> {
     let backing = match ProtoCoordinateBacking::try_from(binding.backing)
         .map_err(|_| AdapterProcessError::InvalidResponse("invalid coordinate backing"))?
@@ -1295,14 +1335,14 @@ fn map_coordinate_binding(
 }
 
 fn map_coordinate_binding_key(
-    binding: trakkin_adapter_contract::v1::CoordinateBindingKey,
+    binding: trakkin_provider_sdk::v1::CoordinateBindingKey,
 ) -> Result<CoordinateBindingKey, AdapterProcessError> {
     map_coordinate_binding_parts(binding.endpoint, binding.subject)
 }
 
 fn map_coordinate_binding_parts(
-    endpoint: Option<trakkin_adapter_contract::v1::PortableEndpoint>,
-    subject: Option<trakkin_adapter_contract::v1::SubjectReference>,
+    endpoint: Option<trakkin_provider_sdk::v1::PortableEndpoint>,
+    subject: Option<trakkin_provider_sdk::v1::SubjectReference>,
 ) -> Result<CoordinateBindingKey, AdapterProcessError> {
     let endpoint = map_domain_portable_endpoint(endpoint)?;
     let subject = match subject.and_then(|subject| subject.subject).ok_or(
@@ -1319,7 +1359,7 @@ fn map_coordinate_binding_parts(
 }
 
 fn map_state_batch(
-    batch: trakkin_adapter_contract::v1::StateBatch,
+    batch: trakkin_provider_sdk::v1::StateBatch,
 ) -> Result<StateBatch, AdapterProcessError> {
     Ok(StateBatch::new(
         batch.sequence,
@@ -1332,13 +1372,13 @@ fn map_state_batch(
 }
 
 fn map_catalog_item(
-    item: trakkin_adapter_contract::v1::ProviderItem,
+    item: trakkin_provider_sdk::v1::ProviderItem,
 ) -> Result<CatalogItem, AdapterProcessError> {
     map_provider_item(item).map(CatalogItem::from)
 }
 
 fn map_provider_item(
-    item: trakkin_adapter_contract::v1::ProviderItem,
+    item: trakkin_provider_sdk::v1::ProviderItem,
 ) -> Result<ProviderItem, AdapterProcessError> {
     ProviderItem::new(
         map_provider_item_key(item.key)?,
@@ -1366,7 +1406,7 @@ fn map_provider_item(
 }
 
 fn map_lookup_result(
-    result: trakkin_adapter_contract::v1::PortableReferenceLookupResult,
+    result: trakkin_provider_sdk::v1::PortableReferenceLookupResult,
 ) -> Result<AdapterPortableReferenceLookup, AdapterProcessError> {
     let requested = map_domain_portable_reference(result.requested)?;
     let outcome = match result.outcome.ok_or(AdapterProcessError::InvalidResponse(
@@ -1393,7 +1433,7 @@ fn map_lookup_result(
 }
 
 fn map_lookup_candidate(
-    candidate: Option<trakkin_adapter_contract::v1::LookupCandidate>,
+    candidate: Option<trakkin_provider_sdk::v1::LookupCandidate>,
 ) -> Result<AdapterLookupCandidate, AdapterProcessError> {
     let candidate = candidate.ok_or(AdapterProcessError::InvalidResponse(
         "lookup candidate is missing",
@@ -1407,7 +1447,7 @@ fn map_lookup_candidate(
 }
 
 fn map_reference_endpoint_result(
-    requested: trakkin_mapping_contract::PortableEndpoint,
+    requested: trakkin_mapping::PortableEndpoint,
     lookup: AdapterPortableReferenceLookup,
 ) -> Result<AdapterPortableEndpointResolution, AdapterProcessError> {
     if requested.namespace() != lookup.requested.namespace()
@@ -1442,7 +1482,7 @@ fn map_reference_endpoint_result(
 }
 
 fn map_endpoint_result(
-    result: trakkin_adapter_contract::v1::PortableEndpointResolution,
+    result: trakkin_provider_sdk::v1::PortableEndpointResolution,
 ) -> Result<AdapterPortableEndpointResolution, AdapterProcessError> {
     let requested = map_domain_portable_endpoint(result.requested)?;
     let outcome = match result.outcome.ok_or(AdapterProcessError::InvalidResponse(
@@ -1473,7 +1513,7 @@ fn map_endpoint_result(
 }
 
 fn map_endpoint_candidate(
-    candidate: Option<trakkin_adapter_contract::v1::EndpointLookupCandidate>,
+    candidate: Option<trakkin_provider_sdk::v1::EndpointLookupCandidate>,
 ) -> Result<AdapterEndpointLookupCandidate, AdapterProcessError> {
     let candidate = candidate.ok_or(AdapterProcessError::InvalidResponse(
         "endpoint lookup candidate is missing",
@@ -1490,7 +1530,7 @@ fn map_endpoint_candidate(
 }
 
 fn map_lookup_evidence(
-    evidence: Option<trakkin_adapter_contract::v1::LookupEvidence>,
+    evidence: Option<trakkin_provider_sdk::v1::LookupEvidence>,
 ) -> Result<AdapterLookupEvidence, AdapterProcessError> {
     let evidence = evidence.ok_or(AdapterProcessError::InvalidResponse(
         "lookup evidence is missing",
@@ -1512,18 +1552,16 @@ fn map_lookup_evidence(
 
 fn map_portable_reference(
     reference: &PortableReference,
-) -> trakkin_adapter_contract::v1::PortableReference {
-    trakkin_adapter_contract::v1::PortableReference {
+) -> trakkin_provider_sdk::v1::PortableReference {
+    trakkin_provider_sdk::v1::PortableReference {
         namespace: reference.namespace().to_owned(),
         value: reference.value().to_vec(),
     }
 }
 
-fn map_portable_endpoint(
-    endpoint: &trakkin_mapping_contract::PortableEndpoint,
-) -> ProtoPortableEndpoint {
+fn map_portable_endpoint(endpoint: &trakkin_mapping::PortableEndpoint) -> ProtoPortableEndpoint {
     ProtoPortableEndpoint {
-        reference: Some(trakkin_adapter_contract::v1::PortableReference {
+        reference: Some(trakkin_provider_sdk::v1::PortableReference {
             namespace: endpoint.namespace().to_owned(),
             value: endpoint.value().to_vec(),
         }),
@@ -1535,7 +1573,7 @@ fn map_portable_endpoint(
 }
 
 fn map_domain_portable_reference(
-    reference: Option<trakkin_adapter_contract::v1::PortableReference>,
+    reference: Option<trakkin_provider_sdk::v1::PortableReference>,
 ) -> Result<PortableReference, AdapterProcessError> {
     let reference = reference.ok_or(AdapterProcessError::InvalidResponse(
         "portable reference is missing",
@@ -1545,8 +1583,8 @@ fn map_domain_portable_reference(
 }
 
 fn map_domain_portable_endpoint(
-    endpoint: Option<trakkin_adapter_contract::v1::PortableEndpoint>,
-) -> Result<trakkin_mapping_contract::PortableEndpoint, AdapterProcessError> {
+    endpoint: Option<trakkin_provider_sdk::v1::PortableEndpoint>,
+) -> Result<trakkin_mapping::PortableEndpoint, AdapterProcessError> {
     let endpoint = endpoint.ok_or(AdapterProcessError::InvalidResponse(
         "portable endpoint is missing",
     ))?;
@@ -1555,7 +1593,7 @@ fn map_domain_portable_endpoint(
         .ok_or(AdapterProcessError::InvalidResponse(
             "portable endpoint reference is missing",
         ))?;
-    trakkin_mapping_contract::PortableEndpoint::from_parts(
+    trakkin_mapping::PortableEndpoint::from_parts(
         &reference.namespace,
         &reference.value,
         Some(&endpoint.selector),
@@ -1582,7 +1620,7 @@ fn map_milliseconds(
 }
 
 fn map_catalog_relation(
-    relation: trakkin_adapter_contract::v1::CatalogRelation,
+    relation: trakkin_provider_sdk::v1::CatalogRelation,
 ) -> Result<CatalogRelation, AdapterProcessError> {
     CatalogRelation::new(
         map_catalog_relation_key(relation.key)?,
@@ -1602,7 +1640,7 @@ fn map_catalog_relation(
 }
 
 fn map_state_observation(
-    observation: trakkin_adapter_contract::v1::StateObservation,
+    observation: trakkin_provider_sdk::v1::StateObservation,
 ) -> Result<StateObservation, AdapterProcessError> {
     let subject = match observation
         .subject
@@ -1646,7 +1684,7 @@ fn map_state_observation(
     .map_err(|_| AdapterProcessError::InvalidResponse("invalid state observation"))
 }
 
-fn map_state_subject(subject: StateSubject) -> trakkin_adapter_contract::v1::SubjectReference {
+fn map_state_subject(subject: StateSubject) -> trakkin_provider_sdk::v1::SubjectReference {
     let subject = match subject {
         StateSubject::ProviderItem(key) => subject_reference::Subject::ProviderItemKey(Key {
             namespace: key.namespace().to_owned(),
@@ -1657,13 +1695,13 @@ fn map_state_subject(subject: StateSubject) -> trakkin_adapter_contract::v1::Sub
             value: key.value().to_vec(),
         }),
     };
-    trakkin_adapter_contract::v1::SubjectReference {
+    trakkin_provider_sdk::v1::SubjectReference {
         subject: Some(subject),
     }
 }
 
 fn map_domain_state_subject(
-    subject: trakkin_adapter_contract::v1::SubjectReference,
+    subject: trakkin_provider_sdk::v1::SubjectReference,
 ) -> Result<StateSubject, AdapterProcessError> {
     match subject.subject.ok_or(AdapterProcessError::InvalidResponse(
         "targeted state subject is missing",
@@ -1679,11 +1717,11 @@ fn map_domain_state_subject(
 
 fn map_state_field(field: StateField) -> ProtoStateField {
     ProtoStateField {
-        field: Some(trakkin_adapter_contract::v1::Term {
+        field: Some(trakkin_provider_sdk::v1::Term {
             namespace: field.field().namespace().to_owned(),
             name: field.field().name().to_owned(),
         }),
-        unit: field.unit().map(|unit| trakkin_adapter_contract::v1::Term {
+        unit: field.unit().map(|unit| trakkin_provider_sdk::v1::Term {
             namespace: unit.namespace().to_owned(),
             name: unit.name().to_owned(),
         }),
@@ -1720,7 +1758,7 @@ fn map_domain_state_field(field: ProtoStateField) -> Result<StateField, AdapterP
 }
 
 fn map_targeted_state_outcome(
-    response: trakkin_adapter_contract::v1::ReadTargetedStateResponse,
+    response: trakkin_provider_sdk::v1::ReadTargetedStateResponse,
 ) -> Result<AdapterTargetedStateReadOutcome, AdapterProcessError> {
     match response
         .outcome
@@ -1826,7 +1864,7 @@ fn map_targeted_state_outcome(
 }
 
 fn map_targeted_state_write_outcome(
-    response: trakkin_adapter_contract::v1::WriteTargetedStateResponse,
+    response: trakkin_provider_sdk::v1::WriteTargetedStateResponse,
 ) -> Result<AdapterTargetedStateWriteOutcome, AdapterProcessError> {
     let status = match ProtoTargetedStateWriteStatus::try_from(response.status)
         .map_err(|_| AdapterProcessError::InvalidResponse("unknown targeted state write status"))?
@@ -1957,7 +1995,7 @@ fn map_targeted_state_write_outcome(
 }
 
 fn map_attributes(
-    attributes: Vec<trakkin_adapter_contract::v1::Attribute>,
+    attributes: Vec<trakkin_provider_sdk::v1::Attribute>,
 ) -> Result<serde_json::Value, AdapterProcessError> {
     let entries = attributes
         .into_iter()
@@ -2013,7 +2051,7 @@ fn map_binary_asset_key(key: Option<Key>) -> Result<BinaryAssetKey, AdapterProce
 }
 
 fn map_domain_term(
-    term: Option<trakkin_adapter_contract::v1::Term>,
+    term: Option<trakkin_provider_sdk::v1::Term>,
 ) -> Result<Term, AdapterProcessError> {
     let term = term.ok_or(AdapterProcessError::InvalidResponse("term is missing"))?;
     Term::new(term.namespace, term.name)
@@ -2212,7 +2250,7 @@ fn validate_adapter_error(error: &AdapterError) -> Result<(), AdapterProcessErro
         .map_err(|_| AdapterProcessError::InvalidResponse("invalid adapter error"))
 }
 
-fn map_field_problem(problem: trakkin_adapter_contract::v1::FieldProblem) -> AdapterFieldProblem {
+fn map_field_problem(problem: trakkin_provider_sdk::v1::FieldProblem) -> AdapterFieldProblem {
     AdapterFieldProblem {
         path: problem.path,
         code: problem.code,
@@ -2250,7 +2288,7 @@ fn map_key(key: Option<Key>) -> Result<AdapterKey, AdapterProcessError> {
 }
 
 fn map_term(
-    term: Option<trakkin_adapter_contract::v1::Term>,
+    term: Option<trakkin_provider_sdk::v1::Term>,
 ) -> Result<AdapterTerm, AdapterProcessError> {
     let term = term.ok_or(AdapterProcessError::InvalidResponse("term is missing"))?;
     Ok(AdapterTerm {
@@ -2260,7 +2298,7 @@ fn map_term(
 }
 
 fn map_connection_capabilities(
-    capabilities: Option<trakkin_adapter_contract::v1::ConnectionCapabilities>,
+    capabilities: Option<trakkin_provider_sdk::v1::ConnectionCapabilities>,
 ) -> AdapterConnectionCapabilities {
     let capabilities = capabilities.unwrap_or_default();
     AdapterConnectionCapabilities {
@@ -2282,7 +2320,7 @@ fn map_connection_capabilities(
 }
 
 fn map_source(
-    source: trakkin_adapter_contract::v1::SourceSnapshot,
+    source: trakkin_provider_sdk::v1::SourceSnapshot,
 ) -> Result<AdapterSource, AdapterProcessError> {
     let availability = match SourceAvailability::try_from(source.availability)
         .map_err(|_| AdapterProcessError::InvalidResponse("unknown source availability"))?
@@ -2436,7 +2474,7 @@ fn map_targeted_state_write_capability_to_proto(
             .fields
             .iter()
             .map(
-                |field| trakkin_adapter_contract::v1::TargetedStateFieldWriteCapability {
+                |field| trakkin_provider_sdk::v1::TargetedStateFieldWriteCapability {
                     field: Some(map_state_field(field.field.clone())),
                     set_supported: field.set_supported,
                     clear_supported: field.clear_supported,
@@ -2470,7 +2508,7 @@ fn map_targeted_state_write_capability_to_proto(
 }
 
 fn map_read_capability(
-    capability: trakkin_adapter_contract::v1::ReadCapability,
+    capability: trakkin_provider_sdk::v1::ReadCapability,
 ) -> AdapterReadCapability {
     AdapterReadCapability {
         full: capability.full,
@@ -2479,24 +2517,18 @@ fn map_read_capability(
 }
 
 fn map_value_kind(value: i32) -> Result<AdapterValueKind, AdapterProcessError> {
-    match trakkin_adapter_contract::v1::ConfigurationValueKind::try_from(value)
+    match trakkin_provider_sdk::v1::ConfigurationValueKind::try_from(value)
         .map_err(|_| AdapterProcessError::InvalidResponse("unknown value kind"))?
     {
-        trakkin_adapter_contract::v1::ConfigurationValueKind::Text => Ok(AdapterValueKind::Text),
-        trakkin_adapter_contract::v1::ConfigurationValueKind::Integer => {
-            Ok(AdapterValueKind::Integer)
-        }
-        trakkin_adapter_contract::v1::ConfigurationValueKind::Decimal => {
-            Ok(AdapterValueKind::Decimal)
-        }
-        trakkin_adapter_contract::v1::ConfigurationValueKind::Boolean => {
-            Ok(AdapterValueKind::Boolean)
-        }
-        trakkin_adapter_contract::v1::ConfigurationValueKind::Timestamp => {
+        trakkin_provider_sdk::v1::ConfigurationValueKind::Text => Ok(AdapterValueKind::Text),
+        trakkin_provider_sdk::v1::ConfigurationValueKind::Integer => Ok(AdapterValueKind::Integer),
+        trakkin_provider_sdk::v1::ConfigurationValueKind::Decimal => Ok(AdapterValueKind::Decimal),
+        trakkin_provider_sdk::v1::ConfigurationValueKind::Boolean => Ok(AdapterValueKind::Boolean),
+        trakkin_provider_sdk::v1::ConfigurationValueKind::Timestamp => {
             Ok(AdapterValueKind::Timestamp)
         }
-        trakkin_adapter_contract::v1::ConfigurationValueKind::Bytes => Ok(AdapterValueKind::Bytes),
-        trakkin_adapter_contract::v1::ConfigurationValueKind::Unspecified => Err(
+        trakkin_provider_sdk::v1::ConfigurationValueKind::Bytes => Ok(AdapterValueKind::Bytes),
+        trakkin_provider_sdk::v1::ConfigurationValueKind::Unspecified => Err(
             AdapterProcessError::InvalidResponse("value kind is unspecified"),
         ),
     }
@@ -2534,6 +2566,8 @@ async fn force_stop(child: &mut Child) {
 
 #[derive(Debug, thiserror::Error)]
 pub enum AdapterProcessError {
+    #[error(transparent)]
+    Provider(#[from] ProviderLaunchError),
     #[error("adapter executable could not be started: {0}")]
     Io(#[from] std::io::Error),
     #[error("adapter bootstrap message is invalid: {0}")]
@@ -2562,6 +2596,10 @@ pub enum AdapterProcessError {
     Rpc(tonic::Code),
     #[error("adapter handshake failed validation")]
     InvalidHandshake,
+    #[error("adapter activation probe did not report ready health")]
+    ProbeNotReady,
+    #[error("adapter activation probe did not shut down gracefully")]
+    ProbeShutdown,
     #[error("adapter response failed validation: {0}")]
     InvalidResponse(&'static str),
     #[error("adapter rejected the request: {0:?}")]
@@ -2591,5 +2629,38 @@ pub enum AdapterProcessError {
 impl From<tonic::Status> for AdapterProcessError {
     fn from(status: tonic::Status) -> Self {
         Self::Rpc(status.code())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    #[test]
+    fn handshake_identity_matches_resolved_installation() {
+        let target = ProviderLaunchTarget {
+            provider_id: "dev.trakkin.fixture".to_owned(),
+            version: "0.1.0".to_owned(),
+            installation_id: uuid::Uuid::nil(),
+            generation: uuid::Uuid::nil(),
+            executable: PathBuf::from("bin/provider"),
+            working_directory: PathBuf::from("."),
+        };
+        let selected_protocol = current_protocol_version();
+        let mut handshake = trakkin_provider_sdk::v1::HandshakeResponse {
+            selected_protocol: Some(selected_protocol),
+            adapter_key: target.provider_id.clone(),
+            adapter_version: target.version.clone(),
+            process_instance_id: "process-1".to_owned(),
+        };
+
+        assert!(validate_handshake(&handshake, &selected_protocol, "process-1", &target).is_ok());
+        handshake.adapter_version = "0.2.0".to_owned();
+        assert!(matches!(
+            validate_handshake(&handshake, &selected_protocol, "process-1", &target),
+            Err(AdapterProcessError::InvalidHandshake)
+        ));
     }
 }

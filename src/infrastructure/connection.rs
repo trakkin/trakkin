@@ -57,10 +57,10 @@ impl PostgresConnectionRepository {
         let mut transaction = self.pool.begin().await?;
         sqlx::query(
             "INSERT INTO connections (
-    id, adapter_key, display_name, status, created_at, updated_at
+    id, provider_id, display_name, status, created_at, updated_at
 ) VALUES ($1, $2, $3, 'pending', $4, $4)
 ON CONFLICT (id) DO UPDATE SET
-adapter_key = excluded.adapter_key,
+provider_id = excluded.provider_id,
 display_name = excluded.display_name,
 status = 'pending',
 capabilities = '{}'::JSONB,
@@ -68,7 +68,7 @@ updated_at = excluded.updated_at
 ",
         )
         .bind(command.connection_id)
-        .bind(&command.adapter_key)
+        .bind(&command.provider_id)
         .bind(&command.display_name)
         .bind(command.created_at)
         .execute(&mut *transaction)
@@ -116,7 +116,7 @@ updated_at = excluded.updated_at
     ) -> Result<Option<StoredConnection>, ConnectionPersistenceError> {
         let mut transaction = self.pool.begin().await?;
         let Some(connection) = sqlx::query_as::<_, StoredConnectionRow>(
-            "SELECT adapter_key
+            "SELECT provider_id
 FROM connections
 WHERE id = $1 AND deleted_at IS NULL AND status <> 'disabled'
 FOR SHARE
@@ -181,7 +181,7 @@ ORDER BY bindings.setting_key
         .collect::<Result<_, ConnectionPersistenceError>>()?;
         let stored = StoredConnection {
             connection_id,
-            adapter_key: connection.adapter_key,
+            provider_id: connection.provider_id,
             settings,
             secrets,
         };
@@ -540,7 +540,7 @@ WHERE id = $2 AND status IN ('waiting', 'input_required')
     async fn list_summaries(&self) -> Result<Vec<ConnectionSummary>, ConnectionPersistenceError> {
         sqlx::query_as::<_, ConnectionSummaryRow>(
             "SELECT
-    id, adapter_key, display_name, status, capability_revision,
+            id, provider_id, display_name, status, capability_revision,
     created_at, updated_at
 FROM connections
 WHERE deleted_at IS NULL
@@ -560,7 +560,7 @@ ORDER BY created_at, id
     ) -> Result<Option<ConnectionSummary>, ConnectionPersistenceError> {
         sqlx::query_as::<_, ConnectionSummaryRow>(
             "SELECT
-    id, adapter_key, display_name, status, capability_revision,
+            id, provider_id, display_name, status, capability_revision,
     created_at, updated_at
 FROM connections
 WHERE id = $1 AND deleted_at IS NULL
@@ -586,7 +586,7 @@ WHERE id = $1 AND deleted_at IS NULL
 SET display_name = $1, updated_at = $2
 WHERE id = $3 AND deleted_at IS NULL
 RETURNING
-    id, adapter_key, display_name, status, capability_revision,
+    id, provider_id, display_name, status, capability_revision,
     created_at, updated_at
 ",
         )
@@ -982,7 +982,7 @@ impl IntoApplicationError for ConnectionSessionRetirementError {
 }
 
 fn validate_connection_input(command: &CreateConnection) -> Result<(), ConnectionPersistenceError> {
-    if command.adapter_key.is_empty() || command.display_name.is_empty() {
+    if command.provider_id.is_empty() || command.display_name.is_empty() {
         return Err(ConnectionPersistenceError::InvalidConnection);
     }
     validate_named_values(
@@ -1463,7 +1463,7 @@ fn encode_configuration_field(field: &AdapterConfigurationField) -> Value {
 
 #[derive(FromRow)]
 struct StoredConnectionRow {
-    adapter_key: String,
+    provider_id: String,
 }
 
 #[derive(FromRow)]
@@ -1500,7 +1500,7 @@ struct AuthenticationSessionRow {
 #[derive(FromRow)]
 struct ConnectionSummaryRow {
     id: Uuid,
-    adapter_key: String,
+    provider_id: String,
     display_name: String,
     status: String,
     capability_revision: i64,
@@ -1512,7 +1512,7 @@ impl ConnectionSummaryRow {
     fn into_summary(self) -> Result<ConnectionSummary, ConnectionPersistenceError> {
         Ok(ConnectionSummary {
             connection_id: self.id,
-            adapter_key: self.adapter_key,
+            provider_id: self.provider_id,
             display_name: self.display_name,
             status: parse_connection_status(&self.status)?,
             capability_revision: self.capability_revision,

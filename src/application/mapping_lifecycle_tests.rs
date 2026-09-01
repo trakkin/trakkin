@@ -1,4 +1,4 @@
-use trakkin_mapping_contract::MappingDocument;
+use trakkin_mapping::MappingDocument;
 
 use super::{MappingLifecycleError, canonical_row_set_diff};
 

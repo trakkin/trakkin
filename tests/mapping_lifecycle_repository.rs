@@ -14,7 +14,7 @@ use trakkin::{
     database::DatabaseRuntime,
     infrastructure::mapping_lifecycle::PostgresMappingLifecycleRepository,
 };
-use trakkin_mapping_contract::{MappingDocument, MappingPackage, PackageCompatibility};
+use trakkin_mapping::{MappingDocument, MappingPackage, PackageCompatibility};
 use uuid::Uuid;
 
 const REGISTRY_DIGEST: &str =

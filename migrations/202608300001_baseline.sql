@@ -1,6 +1,60 @@
+CREATE TABLE provider_repositories (
+    id TEXT PRIMARY KEY CHECK (id <> ''),
+    display_name TEXT NOT NULL CHECK (display_name <> ''),
+    metadata_base_url TEXT NOT NULL CHECK (metadata_base_url <> ''),
+    targets_base_url TEXT NOT NULL CHECK (targets_base_url <> ''),
+    trusted_root BYTEA NOT NULL CHECK (octet_length(trusted_root) > 0),
+    official BOOLEAN NOT NULL DEFAULT FALSE,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    catalog_sequence BIGINT CHECK (catalog_sequence >= 0),
+    catalog JSONB,
+    refreshed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    CHECK ((catalog_sequence IS NULL) = (catalog IS NULL)),
+    CHECK ((catalog IS NULL) = (refreshed_at IS NULL))
+);
+
+CREATE UNIQUE INDEX provider_repositories_one_official_idx
+ON provider_repositories (official) WHERE official;
+
+CREATE TABLE provider_installations (
+    id UUID PRIMARY KEY,
+    repository_id TEXT NOT NULL
+    REFERENCES provider_repositories(id) ON DELETE RESTRICT,
+    provider_id TEXT NOT NULL CHECK (provider_id <> ''),
+    version TEXT NOT NULL CHECK (version <> ''),
+    target TEXT NOT NULL CHECK (target <> ''),
+    package_sha256 TEXT NOT NULL CHECK (
+        package_sha256 ~ '^[0-9a-f]{64}$'
+    ),
+    manifest JSONB NOT NULL,
+    status TEXT NOT NULL CHECK (
+        status IN ('installing', 'installed', 'failed')
+    ),
+    installed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    UNIQUE (id, provider_id),
+    CHECK ((status = 'installed') = (installed_at IS NOT NULL))
+);
+
+CREATE UNIQUE INDEX provider_installations_live_release_idx
+ON provider_installations (repository_id, provider_id, version, target)
+WHERE status IN ('installing', 'installed');
+
+CREATE TABLE active_provider_installations (
+    provider_id TEXT PRIMARY KEY CHECK (provider_id <> ''),
+    installation_id UUID NOT NULL,
+    generation UUID NOT NULL UNIQUE,
+    activated_at TIMESTAMPTZ NOT NULL,
+    FOREIGN KEY (installation_id, provider_id)
+    REFERENCES provider_installations(id, provider_id) ON DELETE RESTRICT
+);
+
 CREATE TABLE connections (
     id UUID PRIMARY KEY,
-    adapter_key TEXT NOT NULL CHECK (adapter_key <> ''),
+    provider_id TEXT NOT NULL CHECK (provider_id <> ''),
     display_name TEXT NOT NULL CHECK (display_name <> ''),
     status TEXT NOT NULL CHECK (
         status IN ('pending', 'ready', 'unavailable', 'disabled')

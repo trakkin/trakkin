@@ -1,4 +1,3 @@
-
 use std::{
     collections::{HashMap, VecDeque},
     sync::{
@@ -93,7 +92,7 @@ use trakkin::{
         task_manager::PostgresTaskRepository,
     },
 };
-use trakkin_mapping_contract::PortableEndpoint;
+use trakkin_mapping::PortableEndpoint;
 use uuid::Uuid;
 
 const WORKSPACE_ID: Uuid = Uuid::from_u128(1);
@@ -949,7 +948,7 @@ VALUES
     .expect("workspaces are seeded");
     sqlx::query(
         "INSERT INTO connections (
-    id, adapter_key, display_name, status, capabilities,
+    id, provider_id, display_name, status, capabilities,
     capability_revision, created_at, updated_at
 ) VALUES ($1, 'fixture', 'Fixture', 'ready', '{}'::JSONB, 1, $2, $2)
 ",
@@ -1037,7 +1036,7 @@ VALUES ($1, $2, $3)
 async fn seed_secondary_receiver_connection(pool: &sqlx::PgPool, receiver_id: Uuid) {
     sqlx::query(
         "INSERT INTO connections (
-    id, adapter_key, display_name, status, capabilities,
+    id, provider_id, display_name, status, capabilities,
     capability_revision, created_at, updated_at
 ) VALUES ($1, 'fixture', 'Second fixture', 'ready', '{}'::JSONB, 1, $2, $2)
 ",

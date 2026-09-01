@@ -13,7 +13,6 @@
       "extensions": [
         "biomejs.biome",
         "bradlc.vscode-tailwindcss",
-        "bufbuild.vscode-buf",
         "github.vscode-github-actions",
         "hverlin.mise-vscode",
         "redhat.vscode-yaml",

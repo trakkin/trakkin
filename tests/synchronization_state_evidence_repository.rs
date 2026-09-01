@@ -172,7 +172,7 @@ async fn seed_state_evidence(pool: &sqlx::PgPool) {
     let timestamp = timestamp(0);
     sqlx::query(
         "INSERT INTO connections (
-    id, adapter_key, display_name, status, capabilities,
+    id, provider_id, display_name, status, capabilities,
     capability_revision, created_at, updated_at
 ) VALUES ($1, 'fixture', 'Fixture', 'ready', '{}'::JSONB, 1, $2, $2)",
     )

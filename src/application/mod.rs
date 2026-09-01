@@ -8,6 +8,7 @@ pub mod facade;
 pub mod mapping_lifecycle;
 pub mod mapping_queries;
 pub mod mapping_resolution;
+pub mod providers;
 pub mod reference_lookup;
 pub mod sync_action_attempt;
 pub mod sync_action_reconciliation;

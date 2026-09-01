@@ -25,7 +25,7 @@ async fn startup_interrupts_existing_work_and_accepts_new_tasks() {
     let queued_at = timestamp(0);
     sqlx::query(
         "INSERT INTO connections (
-             id, adapter_key, display_name, status, created_at, updated_at
+             id, provider_id, display_name, status, created_at, updated_at
          ) VALUES ($1, 'fixture', 'Fixture', 'ready', $2, $2)",
     )
     .bind(CONNECTION_ID)

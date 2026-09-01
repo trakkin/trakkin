@@ -26,7 +26,7 @@ use super::{
 #[derive(Clone, Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateConnectionRequest {
-    pub adapter_key: String,
+    pub provider_id: String,
     pub display_name: String,
     pub settings: Vec<AdapterSettingRequest>,
     pub secrets: Vec<AdapterSecretRequest>,
@@ -434,7 +434,7 @@ impl From<AdapterValueKind> for AdapterValueKindResponse {
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionResponse {
     pub id: String,
-    pub adapter_key: String,
+    pub provider_id: String,
     pub display_name: String,
     pub status: ConnectionStatusResponse,
     pub capability_revision: i64,
@@ -455,7 +455,7 @@ impl ConnectionResponse {
     pub fn from_summary(summary: ConnectionSummary) -> Result<Self, ApplicationError> {
         Ok(Self {
             id: summary.connection_id.to_string(),
-            adapter_key: summary.adapter_key,
+            provider_id: summary.provider_id,
             display_name: summary.display_name,
             status: ConnectionStatusResponse::from(summary.status),
             capability_revision: summary.capability_revision,

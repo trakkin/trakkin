@@ -36,7 +36,7 @@ pub mod support;
 
 use support::{
     StaticBinaryAssetInteraction, StaticConnectionInteraction, StaticReferenceLookupInteraction,
-    assert_closed_error, mapping_activation_request, request,
+    assert_closed_error, mapping_activation_request, request, static_provider_registry,
 };
 
 #[tokio::test]
@@ -68,6 +68,7 @@ async fn mapping_authoring_uses_hash_native_revisions_and_activation() {
             Arc::new(SyncActivityService::new(
                 PostgresSyncActivityRepository::new(database.pool()),
             )),
+            static_provider_registry(),
         ),
     );
     let router = http::router(Arc::new(application));

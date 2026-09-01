@@ -1,6 +1,6 @@
 use serde_json::json;
 use time::OffsetDateTime;
-use trakkin_mapping_contract::{PortableEndpoint, PortableSelector};
+use trakkin_mapping::{PortableEndpoint, PortableSelector};
 use uuid::Uuid;
 
 #[derive(Clone, Copy)]
@@ -22,7 +22,7 @@ pub async fn seed_published_reference(
 ) {
     sqlx::query(
         "INSERT INTO connections (
-    id, adapter_key, display_name, status, capabilities,
+    id, provider_id, display_name, status, capabilities,
     capability_revision, created_at, updated_at
 ) VALUES ($1, 'fixture', 'Fixture', 'ready', $2, 1, $3, $3)
 ",

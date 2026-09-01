@@ -1,7 +1,7 @@
 use std::{future::Future, pin::Pin};
 
 use time::OffsetDateTime;
-use trakkin_mapping_contract::PortableEndpoint;
+use trakkin_mapping::PortableEndpoint;
 use uuid::Uuid;
 
 use crate::domain::acquisition::{StateField, StateSubject, StateValue, Term};

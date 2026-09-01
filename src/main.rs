@@ -36,10 +36,13 @@ async fn run() -> Result<(), MainError> {
         Some(database_url) => Host::connect(database_url, started_at).await?,
         None => start_embedded_host(&configuration.data_directory, started_at).await?,
     };
-    let runtime = host.into_runtime(
-        configuration.fixture_adapter,
-        configuration.connection_master_key,
-    )?;
+    let runtime = host
+        .into_runtime(
+            &configuration.data_directory,
+            &configuration.provider_runtime_directory,
+            configuration.connection_master_key,
+        )
+        .await?;
     let application = runtime.application();
     println!(
         "{}",
@@ -98,7 +101,7 @@ struct Configuration {
     bind_address: SocketAddr,
     data_directory: PathBuf,
     database_url: Option<String>,
-    fixture_adapter: PathBuf,
+    provider_runtime_directory: PathBuf,
     connection_master_key: ConnectionMasterKey,
 }
 
@@ -114,9 +117,10 @@ impl Configuration {
         let database_url = env::var("TRAKKIN_DATABASE_URL")
             .ok()
             .filter(|value| !value.trim().is_empty());
-        let fixture_adapter = env::var_os("TRAKKIN_FIXTURE_ADAPTER")
-            .map(PathBuf::from)
-            .map_or_else(default_fixture_adapter, Ok)?;
+        let provider_runtime_directory = match env::var_os("TRAKKIN_PROVIDER_RUNTIME_DIR") {
+            Some(path) => PathBuf::from(path),
+            None => create_default_provider_runtime_directory()?,
+        };
         let connection_master_key = env::var("TRAKKIN_MASTER_KEY")
             .ok()
             .filter(|value| !value.trim().is_empty())
@@ -128,21 +132,35 @@ impl Configuration {
             bind_address,
             data_directory,
             database_url,
-            fixture_adapter,
+            provider_runtime_directory,
             connection_master_key,
         })
     }
 }
 
-fn default_fixture_adapter() -> Result<PathBuf, ConfigurationError> {
-    let executable = env::current_exe()?;
-    let directory = executable
-        .parent()
-        .ok_or(ConfigurationError::ExecutableDirectory)?;
-    Ok(directory.join(format!(
-        "trakkin-fixture-adapter{}",
-        env::consts::EXE_SUFFIX
-    )))
+fn create_default_provider_runtime_directory() -> Result<PathBuf, ConfigurationError> {
+    for _ in 0..16 {
+        let mut random = [0_u8; 16];
+        getrandom::fill(&mut random)?;
+        let path = env::temp_dir().join(format!("trakkin-provider-{}", hex::encode(random)));
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+
+            builder.mode(0o700);
+        }
+        match builder.create(&path) {
+            Ok(()) => return Ok(path),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not allocate a private provider runtime directory",
+    )
+    .into())
 }
 
 fn decode_master_key(value: &str) -> Result<ConnectionMasterKey, ConfigurationError> {
@@ -195,8 +213,6 @@ enum MainError {
 enum ConfigurationError {
     #[error("TRAKKIN_BIND is not a valid socket address: {0}")]
     BindAddress(#[source] std::net::AddrParseError),
-    #[error("could not determine the fixture adapter directory")]
-    ExecutableDirectory,
     #[error("configuration I/O failed: {0}")]
     Io(#[from] io::Error),
     #[error("TRAKKIN_MASTER_KEY must be hexadecimal: {0}")]
@@ -207,4 +223,30 @@ enum ConfigurationError {
     MasterKeyFileLength,
     #[error("connection master-key generation failed: {0}")]
     Random(#[from] getrandom::Error),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_provider_runtime_directory_is_private_and_unique() {
+        let first = create_default_provider_runtime_directory().expect("first runtime directory");
+        let second = create_default_provider_runtime_directory().expect("second runtime directory");
+        assert_ne!(first, second);
+        assert_eq!(first.parent(), Some(env::temp_dir().as_path()));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mode = fs::metadata(&first)
+                .expect("runtime directory metadata")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o700);
+        }
+        fs::remove_dir(first).expect("first runtime directory is removed");
+        fs::remove_dir(second).expect("second runtime directory is removed");
+    }
+
 }

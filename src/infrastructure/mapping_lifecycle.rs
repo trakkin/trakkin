@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 use sqlx::{FromRow, PgPool, Postgres, Transaction};
 use thiserror::Error;
 use time::OffsetDateTime;
-use trakkin_mapping_contract::{MappingDocument, Selection};
+use trakkin_mapping::{MappingDocument, Selection};
 use uuid::Uuid;
 
 use crate::application::mapping_lifecycle::{

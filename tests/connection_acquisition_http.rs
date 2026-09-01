@@ -42,7 +42,8 @@ pub mod support;
 
 use support::{
     CONNECTION_ID, SOURCE_ID, StaticBinaryAssetInteraction, StaticConnectionInteraction,
-    StaticReferenceLookupInteraction, assert_closed_error, request, seed_source, timestamp,
+    StaticReferenceLookupInteraction, assert_closed_error, request, seed_source,
+    static_provider_registry, timestamp,
 };
 
 #[tokio::test]
@@ -75,6 +76,7 @@ async fn connection_and_acquisition_routes_are_closed_bounded_and_secret_safe() 
             Arc::new(SyncActivityService::new(
                 PostgresSyncActivityRepository::new(database.pool()),
             )),
+            static_provider_registry(),
         ),
     );
     let router = http::router(Arc::new(application));
@@ -84,7 +86,7 @@ async fn connection_and_acquisition_routes_are_closed_bounded_and_secret_safe() 
         Request::post("/api/v1/connections")
             .header("content-type", "application/json")
             .body(Body::from(
-                r#"{"adapterKey":"fixture","displayName":"HTTP fixture","settings":[{"key":"scenario","value":{"kind":"text","value":"hierarchical-catalog-assets-v1"}}],"secrets":[{"key":"token","value":[104,116,116,112,45,99,111,110,110,101,99,116,105,111,110,45,115,101,99,114,101,116]}]}"#,
+                r#"{"providerId":"dev.trakkin.fixture","displayName":"HTTP fixture","settings":[{"key":"scenario","value":{"kind":"text","value":"hierarchical-catalog-assets-v1"}}],"secrets":[{"key":"token","value":[104,116,116,112,45,99,111,110,110,101,99,116,105,111,110,45,115,101,99,114,101,116]}]}"#,
             ))
             .expect("connection request is built"),
     )

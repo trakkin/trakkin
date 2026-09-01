@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use time::{OffsetDateTime, macros::datetime};
-use trakkin_mapping_contract::PortableEndpoint;
+use trakkin_mapping::PortableEndpoint;
 use uuid::Uuid;
 
 use crate::{

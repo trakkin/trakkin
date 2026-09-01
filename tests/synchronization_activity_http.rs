@@ -43,7 +43,7 @@ pub mod support;
 use support::{
     CATALOG_PUBLICATION_ID, CONNECTION_ID, SOURCE_ID, STATE_PUBLICATION_ID,
     StaticBinaryAssetInteraction, StaticConnectionInteraction, StaticReferenceLookupInteraction,
-    assert_closed_error, request, seed_source, timestamp,
+    assert_closed_error, request, seed_source, static_provider_registry, timestamp,
 };
 
 #[tokio::test]
@@ -76,6 +76,7 @@ async fn activity_routes_page_runs_and_expose_bounded_provenance() {
             Arc::new(SyncActivityService::new(
                 PostgresSyncActivityRepository::new(database.pool()),
             )),
+            static_provider_registry(),
         ),
     );
     let router = http::router(Arc::new(application));

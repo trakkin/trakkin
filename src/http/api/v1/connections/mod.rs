@@ -126,7 +126,7 @@ pub(super) async fn create_connection(
         .application
         .create_connection(CreateConnection {
             connection_id: generate_uuid()?,
-            adapter_key: payload.adapter_key,
+            provider_id: payload.provider_id,
             display_name: payload.display_name,
             settings: payload
                 .settings

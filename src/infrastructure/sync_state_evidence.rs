@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 use sqlx::{FromRow, PgPool, Postgres, Transaction};
 use thiserror::Error;
-use trakkin_mapping_contract::PortableEndpoint;
+use trakkin_mapping::PortableEndpoint;
 use uuid::Uuid;
 
 use crate::{
