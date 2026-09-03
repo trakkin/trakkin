@@ -1,7 +1,12 @@
 [package]
+authors = ["Elias Benbourenane"]
 autobins = false
 edition = "2024"
+homepage = "https://trakkin.dev"
+license = "AGPL-3.0-only"
 name = "trakkin"
+publish = false
+repository = "https://github.com/trakkin/trakkin"
 rust-version = "1.97.1"
 version = "0.0.0"
 
