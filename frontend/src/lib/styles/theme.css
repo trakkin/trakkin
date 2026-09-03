@@ -1,6 +1,6 @@
 @theme {
-  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "Monaspace Neon", ui-monospace, monospace;
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono Variable", ui-monospace, monospace;
 
   --color-ink-950: #050605;
   --color-ink-925: #060908;

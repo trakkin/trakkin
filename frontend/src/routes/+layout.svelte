@@ -1,8 +1,6 @@
 <script lang="ts">
-import "@fontsource-variable/inter/standard.css";
-import "@fontsource/monaspace-neon/400.css";
-import "@fontsource/monaspace-neon/500.css";
-import "@fontsource/monaspace-neon/600.css";
+import "@fontsource-variable/geist/index.css";
+import "@fontsource-variable/geist-mono/index.css";
 import "./layout.css";
 import { browser } from "$app/environment";
 import { AppShell, Tooltip } from "$lib";
