@@ -18,14 +18,20 @@ const year = new Date().getFullYear();
 let workspaces = $state<Workspace[]>([]);
 let workspaceError = $state("");
 let workspaceRequestSequence = 0;
-let activeWorkspaceId = $derived(
+let rememberedWorkspaceId = $state("");
+let routeWorkspaceId = $derived(
   (page.params as Record<string, string | undefined>).workspaceId ?? page.url.searchParams.get("workspace") ?? "",
 );
+let activeWorkspaceId = $derived(routeWorkspaceId || rememberedWorkspaceId);
 let appNavigation = $derived(navigationFor(activeWorkspaceId));
 let workspaceItems = $derived(workspaces.map((workspace) => ({ value: workspace.id, label: workspace.name })));
 let workspacePlaceholder = $derived(
   workspaceError ? "Workspaces unavailable" : workspaceItems.length === 0 ? "No active workspaces" : "Select workspace",
 );
+
+$effect(() => {
+  if (routeWorkspaceId) rememberedWorkspaceId = routeWorkspaceId;
+});
 
 onMount(() => {
   async function refreshWorkspaces() {

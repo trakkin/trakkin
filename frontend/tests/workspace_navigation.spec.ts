@@ -9,6 +9,37 @@ import {
   workspaceId,
 } from "./support/api.ts";
 
+test("global pages preserve the selected workspace", async ({ page }) => {
+  await mockApi(page, async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname === "/api/v1/workspaces") return json(route, [workspace]);
+    if (url.pathname === "/api/v1/connections") return json(route, []);
+    if (
+      [
+        "/api/v1/provider-installations",
+        "/api/v1/provider-releases",
+        "/api/v1/provider-repositories",
+        "/api/v1/providers",
+      ].includes(url.pathname)
+    )
+      return json(route, []);
+    return fallback(route);
+  });
+
+  await page.goto(`/connections?workspace=${workspaceId}`);
+  const workspaceSelector = page.getByLabel("Active workspace").filter({ visible: true });
+  await expect(workspaceSelector).toHaveText(workspace.name);
+  if ((page.viewportSize()?.width ?? 0) < 1024) {
+    await page.getByRole("button", { name: "Open navigation" }).click();
+    await page.getByRole("menuitem", { name: "Providers" }).click();
+  } else {
+    await page.getByRole("link", { name: "Providers" }).click();
+  }
+
+  await expect(page).toHaveURL(/\/providers$/);
+  await expect(workspaceSelector).toHaveText(workspace.name);
+});
+
 test("root workspace lookup cannot replace later navigation", async ({ page }) => {
   let workspaceRequests = 0;
   let releaseLookup: () => void = () => {};
