@@ -17,6 +17,26 @@ import {
   workspaceId,
 } from "./support/api.ts";
 
+test("shows connected status before expanding a connection", async ({ page }) => {
+  let inspectionRequests = 0;
+  await mockApi(page, async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname === "/api/v1/workspaces") return json(route, [workspace]);
+    if (url.pathname === "/api/v1/connections") return json(route, [connection]);
+    if (url.pathname === `/api/v1/connections/${connectionId}/sources`) return json(route, [source]);
+    if (url.pathname === `/api/v1/connections/${connectionId}/inspection`) {
+      inspectionRequests += 1;
+      return json(route, authenticationInspection());
+    }
+    return fallback(route);
+  });
+
+  await page.goto(`/connections?workspace=${workspaceId}`);
+  await expect(page.getByText("Connected", { exact: true })).toBeVisible();
+  await expect(page.getByText("Setup required", { exact: true })).toHaveCount(0);
+  expect(inspectionRequests).toBe(0);
+});
+
 test("creates and edits active provider connections without stale command state", async ({ page }) => {
   const archiveConnectionId = "22222222-2222-2222-2222-333333333333";
   const archiveConnection = { ...connection, id: archiveConnectionId, displayName: "Archive fixture" };
@@ -43,7 +63,7 @@ test("creates and edits active provider connections without stale command state"
     const url = new URL(route.request().url());
     const method = route.request().method();
     if (url.pathname === "/api/v1/workspaces" && method === "GET") return json(route, [workspace]);
-    if (url.pathname === "/api/v1/providers" && method === "GET") {
+    if (url.pathname === "/api/v1/provider-releases" && method === "GET") {
       return json(route, [
         {
           repositoryId: "org.example.providers",
@@ -213,7 +233,7 @@ test("requires an active provider before creating a connection", async ({ page }
     const url = new URL(route.request().url());
     if (url.pathname === "/api/v1/workspaces") return json(route, [workspace]);
     if (url.pathname === "/api/v1/connections") return json(route, []);
-    if (url.pathname === "/api/v1/providers") return json(route, []);
+    if (url.pathname === "/api/v1/provider-releases") return json(route, []);
     if (url.pathname === "/api/v1/provider-installations") return json(route, []);
     return fallback(route);
   });
@@ -231,7 +251,7 @@ test("keeps retained active providers selectable after catalog removal", async (
     const url = new URL(route.request().url());
     if (url.pathname === "/api/v1/workspaces") return json(route, [workspace]);
     if (url.pathname === "/api/v1/connections") return json(route, []);
-    if (url.pathname === "/api/v1/providers") return json(route, []);
+    if (url.pathname === "/api/v1/provider-releases") return json(route, []);
     if (url.pathname === "/api/v1/provider-installations") {
       return json(route, [
         {
@@ -287,7 +307,8 @@ test("reconfigures provider settings without exposing stored secrets", async ({ 
   await page.getByRole("button", { name: "Expand Fixture account" }).first().click();
   await expect(page.getByLabel("Catalog revision")).toHaveText("Revision v2");
   await expect(page.getByLabel("API token")).toHaveValue("");
-  await expect(page.getByLabel("API token")).toHaveAttribute("placeholder", "Configured; enter a replacement");
+  await expect(page.getByText("Secret saved", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("API token")).toHaveAttribute("placeholder", "Enter replacement");
   await page.getByLabel("Catalog revision").click();
   await page.getByRole("option", { name: "Revision v1", exact: true }).click();
   await page.getByLabel("API token").fill("replacement-secret");
@@ -360,7 +381,11 @@ test("authenticates, discovers, and attaches a source", async ({ page }) => {
 
   await page.goto(`/connections?workspace=${workspaceId}`);
   await page.getByRole("button", { name: "Expand Fixture account" }).first().click();
+  await page.getByRole("button", { name: "Connect", exact: true }).click();
+  await expect(page.getByLabel("Account name")).toHaveAttribute("aria-invalid", "true");
+  await expect(page.getByRole("alert")).toHaveCount(0);
   await page.getByLabel("Account name").fill("Alex");
+  await expect(page.getByLabel("Account name")).toHaveAttribute("aria-invalid", "false");
   await page.getByRole("button", { name: "Connect", exact: true }).click();
   await page.getByLabel("Verification code").fill("123456");
   await page.getByRole("button", { name: "Continue" }).click();

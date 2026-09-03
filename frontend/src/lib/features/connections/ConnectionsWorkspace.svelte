@@ -96,6 +96,7 @@ let selectedMethods = $state<Record<string, string>>({});
 let drafts = $state<Record<string, Record<string, string>>>({});
 let configurationDrafts = $state<Record<string, Record<string, string>>>({});
 let secretReplacementDrafts = $state<Record<string, Record<string, string>>>({});
+let invalidFields = $state<Record<string, true>>({});
 let pending = $state<Record<string, boolean>>({});
 let copiedCodeConnectionId = $state("");
 let errorMessage = $state("");
@@ -140,7 +141,17 @@ async function loadDirectory(signal?: AbortSignal) {
       listProviderInstallations(signal),
     ]);
     if (sequence !== directorySequence) return;
+    const sourceResults = await Promise.allSettled(
+      nextConnections.map(
+        async (connection) => [connection.id, await listConnectionSources(connection.id, signal)] as const,
+      ),
+    );
+    if (sequence !== directorySequence) return;
     connections = nextConnections;
+    sources = {
+      ...sources,
+      ...Object.fromEntries(sourceResults.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []))),
+    };
     workspaces = nextWorkspaces.filter((workspace) => workspace.status === "active");
     providerItems = activeProviderItems(providerReleases, providerInstallations);
     if (!providerItems.some((provider) => provider.value === selectedProviderId)) {
@@ -526,11 +537,15 @@ async function scanCatalog(source: ConnectionSource) {
 }
 
 function inputsFor(connectionId: string, fields: AdapterField[]): AdapterSetting[] | undefined {
-  const missing = fields.find((field) => field.required && !fieldValue(connectionId, field, "authentication").trim());
-  if (missing) {
-    errorMessage = `${missing.displayName} is required`;
+  if (
+    markMissingFields(
+      connectionId,
+      fields,
+      "authentication",
+      (field) => field.required && !fieldValue(connectionId, field, "authentication").trim(),
+    )
+  )
     return;
-  }
   try {
     return fields.flatMap((field) => {
       const raw = fieldValue(connectionId, field);
@@ -543,15 +558,14 @@ function inputsFor(connectionId: string, fields: AdapterField[]): AdapterSetting
 
 function configurationInput(connectionId: string, inspection: ConnectionInspection) {
   const configuredSecrets = new Set(inspection.configuredSecretKeys);
-  const missing = inspection.fields.find((field) => {
-    if (!field.required) return false;
-    const raw = fieldValue(connectionId, field, "configuration").trim();
-    return field.secret ? !raw && !configuredSecrets.has(field.key) : !raw;
-  });
-  if (missing) {
-    errorMessage = `${missing.displayName} is required`;
+  if (
+    markMissingFields(connectionId, inspection.fields, "configuration", (field) => {
+      if (!field.required) return false;
+      const raw = fieldValue(connectionId, field, "configuration").trim();
+      return field.secret ? !raw && !configuredSecrets.has(field.key) : !raw;
+    })
+  )
     return;
-  }
   try {
     return {
       settings: inspection.fields.flatMap((field) => {
@@ -600,6 +614,12 @@ function textSetting(key: string, value: string): AdapterSetting {
 type DraftScope = "authentication" | "configuration";
 
 function updateDraft(connectionId: string, key: string, value: string, scope: DraftScope) {
+  const invalidKey = fieldValidationKey(connectionId, key, scope);
+  if (invalidFields[invalidKey]) {
+    const nextInvalidFields = { ...invalidFields };
+    delete nextInvalidFields[invalidKey];
+    invalidFields = nextInvalidFields;
+  }
   if (scope === "authentication") {
     drafts = { ...drafts, [connectionId]: { ...drafts[connectionId], [key]: value } };
   } else if (inspections[connectionId]?.fields.find((field) => field.key === key)?.secret) {
@@ -613,6 +633,30 @@ function updateDraft(connectionId: string, key: string, value: string, scope: Dr
       [connectionId]: { ...configurationDrafts[connectionId], [key]: value },
     };
   }
+}
+
+function markMissingFields(
+  connectionId: string,
+  fields: AdapterField[],
+  scope: DraftScope,
+  isMissing: (field: AdapterField) => boolean,
+): boolean {
+  const scopePrefix = `${connectionId}:${scope}:`;
+  const retainedFields = Object.entries(invalidFields).filter(([key]) => !key.startsWith(scopePrefix));
+  const missingFields = fields.filter(isMissing);
+  invalidFields = Object.fromEntries([
+    ...retainedFields,
+    ...missingFields.map((field) => [fieldValidationKey(connectionId, field.key, scope), true] as const),
+  ]);
+  return missingFields.length > 0;
+}
+
+function fieldValidationKey(connectionId: string, fieldKey: string, scope: DraftScope): string {
+  return `${connectionId}:${scope}:${fieldKey}`;
+}
+
+function fieldInvalid(connectionId: string, fieldKey: string, scope: DraftScope): boolean {
+  return invalidFields[fieldValidationKey(connectionId, fieldKey, scope)] ?? false;
 }
 
 function fieldValue(connectionId: string, field: AdapterField, scope: DraftScope = "authentication"): string {
@@ -630,14 +674,16 @@ function valueToDraft(value: AdapterValue | AdapterValueDisplay | null | undefin
 }
 
 function fieldPlaceholder(connectionId: string, field: AdapterField, scope: DraftScope): string | undefined {
-  if (
+  if (fieldSecretSaved(connectionId, field, scope)) return "Enter replacement";
+  return field.placeholder || undefined;
+}
+
+function fieldSecretSaved(connectionId: string, field: AdapterField, scope: DraftScope): boolean {
+  return (
     scope === "configuration" &&
     field.secret &&
-    inspections[connectionId]?.configuredSecretKeys.includes(field.key)
-  ) {
-    return "Configured; enter a replacement";
-  }
-  return field.placeholder || undefined;
+    (inspections[connectionId]?.configuredSecretKeys.includes(field.key) ?? false)
+  );
 }
 
 function fieldItems(field: AdapterField) {
@@ -725,14 +771,25 @@ function messageFor(error: unknown, fallback: string): string {
           class="grid min-w-0 gap-1.5 text-label text-text-secondary"
           for={`${connectionId}-${field.key}`}
         >
-          <span
-            >{field.displayName}
-            {#if field.required}
-              <span class="text-danger"> *</span>
-            {/if}</span
-          >
+          <span class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+            <span
+              >{field.displayName}
+              {#if field.required}
+                <span class="text-danger"> *</span>
+              {/if}</span
+            >
+            {#if fieldSecretSaved(connectionId, field, scope)}
+              <span class="inline-flex items-center gap-1 text-meta font-[520] text-success">
+                <KeyRound
+                  aria-hidden="true"
+                  size={11}
+                />Secret saved
+              </span>
+            {/if}
+          </span>
           {#if fieldItems(field).length > 0}
             <Select
+              ariaInvalid={fieldInvalid(connectionId, field.key, scope)}
               ariaLabel={field.displayName}
               items={fieldItems(field)}
               onValueChange={(value) => updateDraft(connectionId, field.key, value, scope)}
@@ -742,6 +799,7 @@ function messageFor(error: unknown, fallback: string): string {
             />
           {:else}
             <TextInput
+              aria-invalid={fieldInvalid(connectionId, field.key, scope)}
               aria-label={field.displayName}
               autocomplete={field.secret ? "off" : undefined}
               class="w-full"

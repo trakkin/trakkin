@@ -9,6 +9,7 @@ export type SelectItem = {
 
 export type SelectProps = {
   allowDeselect?: boolean;
+  ariaInvalid?: boolean;
   ariaLabel: string;
   autocomplete?: HTMLInputAttributes["autocomplete"];
   class?: string;
