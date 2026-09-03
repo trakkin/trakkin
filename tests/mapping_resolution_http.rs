@@ -180,7 +180,12 @@ async fn mapping_resolution_previews_exact_revisions_with_bounded_closed_results
         historical_preview.1["correspondences"][0]["endpoints"],
         json!(["example.media://a", "example.media://b"])
     );
-    assert!(!historical_preview.1.to_string().contains("example.media://c"));
+    assert!(
+        !historical_preview
+            .1
+            .to_string()
+            .contains("example.media://c")
+    );
     assert!(
         !historical_preview
             .1
