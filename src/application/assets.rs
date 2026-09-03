@@ -1,5 +1,12 @@
-use std::{future::Future, marker::PhantomData, pin::Pin};
+use std::{
+    collections::HashMap,
+    future::Future,
+    marker::PhantomData,
+    pin::Pin,
+    sync::{Arc, Mutex, Weak},
+};
 
+use tokio::{sync::Mutex as AsyncMutex, time::timeout};
 use uuid::Uuid;
 
 use crate::domain::acquisition::{BinaryAssetKey, ProviderItemKey};
@@ -8,11 +15,13 @@ use super::{
     adapter_runtime::{
         AdapterBinaryAsset, AdapterCallError, AdapterKey, AdapterSession, ReadAdapterAsset,
     },
-    connection::ConnectionSessionRegistry,
+    connection::{ConnectionSessionRegistry, WaitForConnectionSession},
     error::{ApplicationError, ApplicationErrorCode, IntoApplicationError},
 };
 
 pub type AssetFuture<'a, T, E> = Pin<Box<dyn Future<Output = Result<T, E>> + Send + 'a>>;
+
+const SESSION_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResolveBinaryAsset {
@@ -63,6 +72,7 @@ pub struct BinaryAssetService<R, G> {
     repository: R,
     sessions: G,
     host_maximum_bytes: u64,
+    connection_locks: Mutex<HashMap<Uuid, Weak<AsyncMutex<()>>>>,
 }
 
 pub trait BinaryAssetInteraction: Send + Sync {
@@ -90,7 +100,7 @@ impl<R, G, S> BinaryAssetInteraction for BinaryAssetInteractionService<R, G, S>
 where
     R: BinaryAssetRepository,
     R::Error: IntoApplicationError + Send,
-    G: ConnectionSessionRegistry<S>,
+    G: WaitForConnectionSession<S>,
     S: AdapterSession + 'static,
     S::Error: Send + std::fmt::Debug,
 {
@@ -113,6 +123,7 @@ impl<R, G> BinaryAssetService<R, G> {
             repository,
             sessions,
             host_maximum_bytes,
+            connection_locks: Mutex::new(HashMap::new()),
         }
     }
 
@@ -122,7 +133,7 @@ impl<R, G> BinaryAssetService<R, G> {
     ) -> Result<AdapterBinaryAsset, BinaryAssetServiceError<R::Error, S::Error>>
     where
         R: BinaryAssetRepository,
-        G: ConnectionSessionRegistry<S>,
+        G: WaitForConnectionSession<S>,
         S: AdapterSession,
     {
         if command.operation_id.is_empty() || self.host_maximum_bytes == 0 {
@@ -146,10 +157,14 @@ impl<R, G> BinaryAssetService<R, G> {
         if maximum_bytes == 0 || target.content_types.is_empty() {
             return Err(BinaryAssetServiceError::InvalidTarget);
         }
-        let mut session = self
-            .sessions
-            .remove(target.connection_id)
-            .ok_or(BinaryAssetServiceError::SessionUnavailable)?;
+        let connection_lock = self.connection_lock(target.connection_id);
+        let _connection_guard = connection_lock.lock().await;
+        let mut session = timeout(
+            SESSION_WAIT_TIMEOUT,
+            self.sessions.wait_for_session(target.connection_id),
+        )
+        .await
+        .map_err(|_| BinaryAssetServiceError::SessionUnavailable)?;
         let result = session
             .read_asset(ReadAdapterAsset {
                 operation_id: command.operation_id,
@@ -175,6 +190,20 @@ impl<R, G> BinaryAssetService<R, G> {
                 Err(BinaryAssetServiceError::Adapter(error))
             }
         }
+    }
+
+    fn connection_lock(&self, connection_id: Uuid) -> Arc<AsyncMutex<()>> {
+        let mut connection_locks = self
+            .connection_locks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        connection_locks.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(lock) = connection_locks.get(&connection_id).and_then(Weak::upgrade) {
+            return lock;
+        }
+        let lock = Arc::new(AsyncMutex::new(()));
+        connection_locks.insert(connection_id, Arc::downgrade(&lock));
+        lock
     }
 }
 
@@ -239,5 +268,27 @@ where
                 format_args!("{error:?}"),
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use uuid::Uuid;
+
+    use super::BinaryAssetService;
+
+    #[tokio::test]
+    async fn binary_asset_reads_are_serialized_per_connection() {
+        let service = BinaryAssetService::new((), (), 1);
+        let connection_id = Uuid::new_v4();
+        let first_lock = service.connection_lock(connection_id);
+        let first_guard = first_lock.lock().await;
+        let second_lock = service.connection_lock(connection_id);
+
+        assert!(second_lock.try_lock().is_err());
+        assert!(service.connection_lock(Uuid::new_v4()).try_lock().is_ok());
+
+        drop(first_guard);
+        assert!(second_lock.try_lock().is_ok());
     }
 }

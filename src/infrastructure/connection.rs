@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 use sqlx::{FromRow, PgPool, Postgres, Transaction};
 use thiserror::Error;
 use time::OffsetDateTime;
+use tokio::sync::Notify;
 use uuid::Uuid;
 
 use crate::application::{
@@ -26,6 +27,7 @@ use crate::application::{
         ConnectionSummary, CreateConnection, FinishConnectionDeletion, MarkAuthenticationCancelled,
         MarkConnectionUnavailable, PublishConnectionSnapshot, ReconfigureConnection,
         RenameConnection, SaveAuthenticationStep, StoredAuthenticationSession, StoredConnection,
+        WaitForConnectionSession,
     },
     error::{ApplicationError, ApplicationErrorCode, IntoApplicationError},
 };
@@ -941,12 +943,14 @@ impl ConnectionRepository for PostgresConnectionRepository {
 
 pub struct ProcessSessionRegistry<S> {
     sessions: Arc<Mutex<HashMap<Uuid, S>>>,
+    session_available: Arc<Notify>,
 }
 
 impl<S> Clone for ProcessSessionRegistry<S> {
     fn clone(&self) -> Self {
         Self {
             sessions: Arc::clone(&self.sessions),
+            session_available: Arc::clone(&self.session_available),
         }
     }
 }
@@ -955,6 +959,7 @@ impl<S> Default for ProcessSessionRegistry<S> {
     fn default() -> Self {
         Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
+            session_available: Arc::new(Notify::new()),
         }
     }
 }
@@ -1013,10 +1018,15 @@ where
     S: AdapterSession + Send,
 {
     fn replace(&self, connection_id: Uuid, session: S) -> Option<S> {
-        self.sessions
+        let previous = self
+            .sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(connection_id, session)
+            .insert(connection_id, session);
+        if previous.is_none() {
+            self.session_available.notify_waiters();
+        }
+        previous
     }
 
     fn remove(&self, connection_id: Uuid) -> Option<S> {
@@ -1032,6 +1042,28 @@ where
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&connection_id)
             .map(|session| session.identity().clone())
+    }
+}
+
+impl<S> WaitForConnectionSession<S> for ProcessSessionRegistry<S>
+where
+    S: AdapterSession + Send,
+{
+    fn wait_for_session(
+        &self,
+        connection_id: Uuid,
+    ) -> crate::application::connection::ConnectionSessionFuture<'_, S> {
+        Box::pin(async move {
+            loop {
+                let notification = self.session_available.notified();
+                tokio::pin!(notification);
+                notification.as_mut().enable();
+                if let Some(session) = self.remove(connection_id) {
+                    return session;
+                }
+                notification.await;
+            }
+        })
     }
 }
 

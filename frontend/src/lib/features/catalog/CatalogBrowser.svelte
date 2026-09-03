@@ -20,6 +20,7 @@ import {
   CATALOG_PAGE_LIMIT,
   type CatalogAsset,
   type CatalogEntry,
+  type CatalogPage,
   formatPortableReference,
   formatProviderKey,
   formatTerm,
@@ -46,8 +47,10 @@ let browsePath = $state<BrowsePart[]>([]);
 let entries = $state<CatalogEntry[]>([]);
 let publicationId = $state("");
 let nextCursor = $state<string | null>(null);
+let catalogPages = $state<CatalogPage[]>([]);
+let pageIndex = $state(0);
 let loading = $state(false);
-let loadingMore = $state(false);
+let loadingPage = $state(false);
 let operationBusy = $state(false);
 let errorMessage = $state("");
 let focusedRelationId = $state("");
@@ -117,8 +120,10 @@ $effect(() => {
     entries = [];
     publicationId = "";
     nextCursor = null;
+    catalogPages = [];
+    pageIndex = 0;
     loading = false;
-    loadingMore = false;
+    loadingPage = false;
     return;
   }
   const controller = new AbortController();
@@ -134,7 +139,7 @@ async function loadFirstPage(
 ) {
   const requestId = ++requestSequence;
   loading = true;
-  loadingMore = false;
+  loadingPage = false;
   errorMessage = "";
   entries = [];
   focusedRelationId = "";
@@ -154,6 +159,8 @@ async function loadFirstPage(
     entries = page.entries;
     publicationId = page.publicationId;
     nextCursor = page.nextCursor ?? null;
+    catalogPages = [page];
+    pageIndex = 0;
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") return;
     if (requestId !== requestSequence) return;
@@ -163,17 +170,23 @@ async function loadFirstPage(
   }
 }
 
-async function loadMore() {
+async function showNextPage() {
   const source = selectedSource;
   const cursor = nextCursor;
-  if (!source || !cursor || loadingMore) return;
+  if (!source || loadingPage) return;
+  const cachedPage = catalogPages[pageIndex + 1];
+  if (cachedPage) {
+    showCatalogPage(cachedPage, pageIndex + 1);
+    return;
+  }
+  if (!cursor) return;
   const requestId = requestSequence;
   const workspaceId = data.workspace.id;
   const sourceId = source.source.id;
   const parent = currentParent;
   const search = catalogSearch;
   const currentPublicationId = publicationId;
-  loadingMore = true;
+  loadingPage = true;
   errorMessage = "";
   try {
     const page = await getCatalog(workspaceId, sourceId, {
@@ -187,15 +200,30 @@ async function loadMore() {
       reloadSequence += 1;
       return;
     }
-    entries = [...entries, ...page.entries];
-    nextCursor = page.nextCursor ?? null;
+    catalogPages = [...catalogPages.slice(0, pageIndex + 1), page];
+    showCatalogPage(page, pageIndex + 1);
   } catch (error) {
     if (requestId === requestSequence) {
-      errorMessage = error instanceof Error ? error.message : "More catalog entries could not be loaded";
+      errorMessage = error instanceof Error ? error.message : "Catalog page could not be loaded";
     }
   } finally {
-    if (requestId === requestSequence) loadingMore = false;
+    if (requestId === requestSequence) loadingPage = false;
   }
+}
+
+function showPreviousPage() {
+  if (loadingPage || pageIndex === 0) return;
+  const previousIndex = pageIndex - 1;
+  showCatalogPage(catalogPages[previousIndex], previousIndex);
+}
+
+function showCatalogPage(page: CatalogPage, nextPageIndex: number) {
+  entries = page.entries;
+  publicationId = page.publicationId;
+  nextCursor = page.nextCursor ?? null;
+  pageIndex = nextPageIndex;
+  focusedRelationId = "";
+  kindFilter = "all";
 }
 
 function changeSource(value: string) {
@@ -436,38 +464,34 @@ async function copyPortableReference(referenceId: string, value: string): Promis
               {@const referenceId = `${relationId(entry)}:${index}`}
 
               <div
-                class="grid min-h-10 grid-cols-[minmax(6.5rem,2fr)_minmax(0,3fr)] items-center gap-4 rounded-md border border-border-subtle bg-black/10 px-3 py-2"
+                class="flex min-h-10 items-center gap-2 rounded-md border border-border-subtle bg-black/10 px-3 py-2"
               >
-                <div class="truncate text-label leading-5 text-text-muted">Reference {index + 1}</div>
-
-                <div class="flex min-w-0 items-center gap-2">
-                  <div
-                    class="min-w-0 flex-1 truncate font-mono text-label leading-5 text-text-secondary"
-                    title={referenceValue}
-                  >
-                    {referenceValue}
-                  </div>
-
-                  <IconButton
-                    class="shrink-0 border-border-subtle bg-surface-raised/90"
-                    label={`Copy portable reference ${index + 1}`}
-                    onclick={() => void copyPortableReference(referenceId, referenceValue)}
-                    size="sm"
-                    title="Copy portable reference"
-                  >
-                    {#if copiedReferenceId === referenceId}
-                      <CircleCheck
-                        aria-hidden="true"
-                        size={13}
-                      />
-                    {:else}
-                      <Copy
-                        aria-hidden="true"
-                        size={13}
-                      />
-                    {/if}
-                  </IconButton>
+                <div
+                  class="min-w-0 flex-1 truncate font-mono text-label leading-5 text-text-secondary"
+                  title={referenceValue}
+                >
+                  {referenceValue}
                 </div>
+
+                <IconButton
+                  class="shrink-0 border-border-subtle bg-surface-raised/90"
+                  label={`Copy portable reference ${referenceValue}`}
+                  onclick={() => void copyPortableReference(referenceId, referenceValue)}
+                  size="sm"
+                  title="Copy portable reference"
+                >
+                  {#if copiedReferenceId === referenceId}
+                    <CircleCheck
+                      aria-hidden="true"
+                      size={13}
+                    />
+                  {:else}
+                    <Copy
+                      aria-hidden="true"
+                      size={13}
+                    />
+                  {/if}
+                </IconButton>
               </div>
             {/each}
           </div>
@@ -709,7 +733,7 @@ async function copyPortableReference(referenceId: string, value: string): Promis
               {/each}
             </nav>
             <p class="ml-2 shrink-0 border-l border-border-subtle px-2 text-meta tabular-nums text-text-muted">
-              {visibleEntries.length}{nextCursor ? "+" : ""} {visibleEntries.length === 1 ? "item" : "items"}
+              Page {pageIndex + 1}
             </p>
           </div>
 
@@ -788,19 +812,40 @@ async function copyPortableReference(referenceId: string, value: string): Promis
                 </li>
               {/each}
             </ul>
-            {#if nextCursor}
-              <div class="mt-4 flex justify-center">
+            {#if pageIndex > 0 || nextCursor}
+              <nav
+                aria-label="Catalog pages"
+                class="mt-5 flex items-center justify-center gap-2"
+              >
                 <Button
-                  disabled={loadingMore}
-                  onclick={loadMore}
+                  disabled={loadingPage || pageIndex === 0}
+                  onclick={showPreviousPage}
                   size="sm"
                   variant="ghost"
-                  >{#if loadingMore}
-                    <Spinner size={14} />
-                  {/if}
-                  Load more</Button
                 >
-              </div>
+                  <ArrowLeft
+                    aria-hidden="true"
+                    size={14}
+                  />Previous
+                </Button>
+                <span class="min-w-16 text-center text-meta tabular-nums text-text-muted">Page {pageIndex + 1}</span>
+                <Button
+                  disabled={loadingPage || !nextCursor}
+                  onclick={showNextPage}
+                  size="sm"
+                  variant="ghost"
+                >
+                  {#if loadingPage}
+                    <Spinner size={14} />
+                  {:else}
+                    <ArrowRight
+                      aria-hidden="true"
+                      size={14}
+                    />
+                  {/if}
+                  Next
+                </Button>
+              </nav>
             {/if}
           {/if}
         </section>

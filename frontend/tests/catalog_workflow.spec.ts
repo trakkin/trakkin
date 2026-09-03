@@ -58,6 +58,8 @@ test("preserves healthy sources and keeps mobile inspection in a persistent lowe
   await page.getByRole("button", { name: "Inspect First entry" }).click();
   const details = page.getByRole("region", { name: "Catalog details for First entry" });
   await expect(details).toBeVisible();
+  await expect(details.getByText("example.media:media/first", { exact: true })).toBeVisible();
+  await expect(details.getByText("Reference 1", { exact: true })).toHaveCount(0);
   if ((page.viewportSize()?.width ?? 0) < 1024) {
     const detailsBox = await details.boundingBox();
     const secondEntryBox = await page.getByRole("button", { name: "Inspect Second entry" }).boundingBox();
@@ -262,7 +264,7 @@ test("catalog pagination cannot replace a newer normalized search", async ({ pag
   });
 
   await page.goto(`/w/${workspaceId}/catalog`);
-  await page.getByRole("button", { name: "Load more" }).click();
+  await page.getByRole("button", { name: "Next" }).click();
   await expect.poll(() => staleCatalogPageRequested).toBe(true);
   await page.getByLabel("Search catalog").fill("  Quiet   Signal  ");
   await expect(page.getByRole("button", { name: "Inspect Quiet signal" })).toBeVisible();
@@ -270,6 +272,12 @@ test("catalog pagination cannot replace a newer normalized search", async ({ pag
   await expect(page.getByRole("button", { name: "Inspect Second entry" })).not.toBeVisible();
   await expect(page.getByRole("button", { name: "Inspect Quiet signal" })).toBeVisible();
   await page.getByLabel("Search catalog").fill("");
+  await expect(page.getByRole("button", { name: "Inspect First entry" })).toBeVisible();
+  await page.getByRole("button", { name: "Next" }).click();
+  await expect(page.getByText("Page 2", { exact: true }).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "Inspect Second entry" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Inspect First entry" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Previous" }).click();
   await expect(page.getByRole("button", { name: "Inspect First entry" })).toBeVisible();
 
   await page.getByRole("button", { name: "Reset Fixture Catalog" }).click();

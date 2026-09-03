@@ -18,6 +18,7 @@ use super::{
 };
 
 pub type ConnectionFuture<'a, T, E> = Pin<Box<dyn Future<Output = Result<T, E>> + Send + 'a>>;
+pub type ConnectionSessionFuture<'a, S> = Pin<Box<dyn Future<Output = S> + Send + 'a>>;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CreateConnection {
@@ -226,6 +227,10 @@ pub trait ConnectionSessionRegistry<S>: Send + Sync {
     fn replace(&self, connection_id: Uuid, session: S) -> Option<S>;
     fn remove(&self, connection_id: Uuid) -> Option<S>;
     fn identity(&self, connection_id: Uuid) -> Option<AdapterIdentity>;
+}
+
+pub trait WaitForConnectionSession<S>: ConnectionSessionRegistry<S> {
+    fn wait_for_session(&self, connection_id: Uuid) -> ConnectionSessionFuture<'_, S>;
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
