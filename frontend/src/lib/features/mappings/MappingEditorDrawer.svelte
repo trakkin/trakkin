@@ -1,6 +1,6 @@
 <script lang="ts">
-import { GitBranch, Plus, Save, Trash2, X } from "@lucide/svelte";
-import { Button, Dialog, IconButton, Panel, Spinner, Textarea } from "$lib";
+import { GitBranch, LibraryBig, Plus, Save, Trash2, X } from "@lucide/svelte";
+import { Button, Dialog, IconButton, Panel, Spinner, TextInput } from "$lib";
 import type { MappingHeadMoved } from "$lib/api/mappings";
 import CatalogReferencePicker from "./CatalogReferencePicker.svelte";
 
@@ -32,16 +32,18 @@ let {
   onrebase,
 }: Props = $props();
 
-let rowDrafts = $state<string[]>([""]);
-let validationMessage = $state("");
+let rowDrafts = $state<string[][]>([["", ""]]);
+let invalidRowIndex = $state<number | null>(null);
 let targetRowIndex = $state(0);
+let catalogPickerOpen = $state(false);
 let wasOpen = false;
 
 $effect(() => {
   if (open && !wasOpen) {
-    rowDrafts = initialMappings.length > 0 ? initialMappings.map((row) => row.join("\n")) : [""];
-    validationMessage = "";
+    rowDrafts = initialMappings.length > 0 ? initialMappings.map(editableRow) : [["", ""]];
+    invalidRowIndex = null;
     targetRowIndex = 0;
+    catalogPickerOpen = false;
   }
   wasOpen = open;
 });
@@ -52,40 +54,66 @@ function changeOpen(nextOpen: boolean): void {
 }
 
 function addRow(): void {
-  rowDrafts = [...rowDrafts, ""];
+  rowDrafts = [...rowDrafts, ["", ""]];
+  targetRowIndex = rowDrafts.length - 1;
+  invalidRowIndex = null;
 }
 
 function removeRow(index: number): void {
   if (rowDrafts.length === 1) return;
   rowDrafts = rowDrafts.filter((_, rowIndex) => rowIndex !== index);
   targetRowIndex = Math.min(targetRowIndex, rowDrafts.length - 1);
+  invalidRowIndex = null;
+}
+
+function addReferenceField(rowIndex: number): void {
+  rowDrafts = rowDrafts.map((row, index) => (index === rowIndex ? [...row, ""] : row));
+  targetRowIndex = rowIndex;
+}
+
+function removeReference(rowIndex: number, referenceIndex: number): void {
+  const references = rowDrafts[rowIndex].filter((_, index) => index !== referenceIndex);
+  while (references.length < 2) references.push("");
+  rowDrafts = rowDrafts.map((row, index) => (index === rowIndex ? references : row));
+  clearRowValidation(rowIndex);
+}
+
+function selectCatalogRow(rowIndex: number): void {
+  targetRowIndex = rowIndex;
+  catalogPickerOpen = true;
 }
 
 function addCatalogReference(reference: string): void {
-  const references = rowDrafts[targetRowIndex]
-    .split(/\r?\n/)
-    .map((value) => value.trim())
-    .filter(Boolean);
+  const references = rowDrafts[targetRowIndex].map((value) => value.trim());
   if (references.includes(reference)) return;
-  rowDrafts = rowDrafts.map((draft, index) =>
-    index === targetRowIndex ? [...references, reference].join("\n") : draft,
-  );
+  const emptyIndex = references.findIndex((value) => !value);
+  const nextReferences = [...rowDrafts[targetRowIndex]];
+  if (emptyIndex === -1) nextReferences.push(reference);
+  else nextReferences[emptyIndex] = reference;
+  rowDrafts = rowDrafts.map((row, index) => (index === targetRowIndex ? nextReferences : row));
+  clearRowValidation(targetRowIndex);
 }
 
 function submit(): void {
-  const mappings = rowDrafts.map((draft) =>
-    draft
-      .split(/\r?\n/)
-      .map((reference) => reference.trim())
-      .filter(Boolean),
-  );
+  const mappings = rowDrafts.map((row) => row.map((reference) => reference.trim()).filter(Boolean));
   const invalidIndex = mappings.findIndex((row) => row.length < 2);
   if (invalidIndex !== -1) {
-    validationMessage = `Row ${invalidIndex + 1} needs at least two portable references.`;
+    invalidRowIndex = invalidIndex;
+    targetRowIndex = invalidIndex;
     return;
   }
-  validationMessage = "";
+  invalidRowIndex = null;
   onsubmit(mappings);
+}
+
+function editableRow(references: string[]): string[] {
+  const row = [...references];
+  while (row.length < 2) row.push("");
+  return row;
+}
+
+function clearRowValidation(rowIndex: number): void {
+  if (invalidRowIndex === rowIndex) invalidRowIndex = null;
 }
 
 function shortHash(value: string | null): string {
@@ -105,8 +133,8 @@ function shortHash(value: string | null): string {
         <Dialog.Title class="text-title font-semibold text-text-primary">
           {mode === "create" ? "New mapping" : "New revision"}
         </Dialog.Title>
-        <Dialog.Description class="mt-1 truncate font-mono text-meta text-text-muted">
-          {mode === "create" ? "trakkin.mapping/v1" : `${mappingId} · ${shortHash(baseContentHash)}`}
+        <Dialog.Description class="mt-1 truncate text-label text-text-muted">
+          {mode === "create" ? "Define portable reference correspondences." : `${mappingId} · ${shortHash(baseContentHash)}`}
         </Dialog.Description>
       </div>
       <IconButton
@@ -124,7 +152,7 @@ function shortHash(value: string | null): string {
 
     <div class="min-h-0 flex-1 overflow-y-auto">
       {#if conflict}
-        <div class="border-b border-border-strong p-4 sm:p-5">
+        <div class="px-4 pt-4 sm:px-5">
           <Panel
             class="px-3 py-3"
             role="alert"
@@ -161,34 +189,24 @@ function shortHash(value: string | null): string {
         </div>
       {/if}
 
-      {#if validationMessage}
-        <div class="border-b border-border-strong p-4 sm:p-5">
-          <Panel
-            class="px-3 py-2.5 text-label text-danger"
-            role="alert"
-            tone="danger"
-          >
-            {validationMessage}
-          </Panel>
-        </div>
-      {/if}
-
       <fieldset>
         <legend class="sr-only">Portable mapping rows</legend>
-        {#each rowDrafts as _, index (index)}
-          <section class="border-b border-border-subtle px-4 py-4 sm:px-5">
-            <div class="mb-2 flex h-7 items-center justify-between gap-3">
-              <label
-                class="text-meta font-[650] uppercase text-text-muted"
-                for={`mapping-row-${index}`}
-                >Row {index + 1}</label
-              >
+        {#each rowDrafts as row, index (index)}
+          <section
+            class="border-b border-border-subtle px-4 py-4 sm:px-5"
+            onfocusin={() => (targetRowIndex = index)}
+          >
+            <div class="mb-4 flex items-start gap-3">
+              <div class="min-w-0 flex-1">
+                <h2 class="text-label font-semibold text-text-primary">Correspondence {index + 1}</h2>
+                <p class="mt-1 text-meta text-text-muted">References that identify the same item.</p>
+              </div>
               <IconButton
                 disabled={busy || rowDrafts.length === 1}
-                label={`Remove mapping row ${index + 1}`}
+                label={`Remove correspondence ${index + 1}`}
                 onclick={() => removeRow(index)}
                 size="sm"
-                variant="ghost"
+                variant="danger"
               >
                 <Trash2
                   aria-hidden="true"
@@ -196,15 +214,75 @@ function shortHash(value: string | null): string {
                 />
               </IconButton>
             </div>
-            <Textarea
-              aria-label={`Portable references for row ${index + 1}`}
-              disabled={busy}
-              id={`mapping-row-${index}`}
-              onfocus={() => (targetRowIndex = index)}
-              placeholder={'example.media://item/one\nexample.alt://item/one'}
-              rows={4}
-              bind:value={rowDrafts[index]}
-            />
+            <div class="grid gap-3">
+              {#each row as _, referenceIndex (`${index}:${referenceIndex}`)}
+                <div class="grid min-w-0 gap-1.5">
+                  <div class="flex min-h-7 items-center justify-between gap-2">
+                    <label
+                      class="text-label text-text-secondary"
+                      for={`mapping-reference-${index}-${referenceIndex}`}
+                    >
+                      Portable reference {referenceIndex + 1}
+                    </label>
+                    <IconButton
+                      disabled={busy}
+                      label={`Remove reference ${referenceIndex + 1} from correspondence ${index + 1}`}
+                      onclick={() => removeReference(index, referenceIndex)}
+                      size="sm"
+                      variant="ghost"
+                    >
+                      <X
+                        aria-hidden="true"
+                        size={12}
+                      />
+                    </IconButton>
+                  </div>
+                  <TextInput
+                    aria-invalid={invalidRowIndex === index && !row[referenceIndex].trim()}
+                    aria-label={`Portable reference ${referenceIndex + 1} for row ${index + 1}`}
+                    class="w-full font-mono"
+                    disabled={busy}
+                    id={`mapping-reference-${index}-${referenceIndex}`}
+                    onfocus={() => (targetRowIndex = index)}
+                    oninput={() => clearRowValidation(index)}
+                    placeholder="example.media://item/one"
+                    bind:value={rowDrafts[index][referenceIndex]}
+                  />
+                </div>
+              {/each}
+            </div>
+            {#if invalidRowIndex === index}
+              <p
+                class="mt-2 text-meta text-danger"
+                role="alert"
+              >
+                Add at least two portable references to this correspondence.
+              </p>
+            {/if}
+            <div class="mt-3 flex flex-wrap items-center gap-2">
+              <Button
+                disabled={busy}
+                onclick={() => addReferenceField(index)}
+                size="sm"
+                variant="ghost"
+              >
+                <Plus
+                  aria-hidden="true"
+                  size={12}
+                />Add reference
+              </Button>
+              <Button
+                disabled={busy}
+                onclick={() => selectCatalogRow(index)}
+                size="sm"
+                variant="ghost"
+              >
+                <LibraryBig
+                  aria-hidden="true"
+                  size={12}
+                />Add from catalog
+              </Button>
+            </div>
           </section>
         {/each}
       </fieldset>
@@ -213,6 +291,7 @@ function shortHash(value: string | null): string {
         onselect={addCatalogReference}
         targetRow={targetRowIndex + 1}
         {workspaceId}
+        bind:open={catalogPickerOpen}
       />
 
       <div class="px-4 py-4 sm:px-5">
@@ -225,7 +304,7 @@ function shortHash(value: string | null): string {
             aria-hidden="true"
             size={13}
           />
-          Add row
+          Add correspondence
         </Button>
       </div>
     </div>

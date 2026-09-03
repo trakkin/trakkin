@@ -179,13 +179,12 @@ test("authors and activates portable mapping revisions", async ({ page }) => {
   await expect(page.getByText("Mismatched publication", { exact: true })).not.toBeVisible();
   await page.getByLabel("Search catalog references").fill("Fresh");
   await expect(page.getByText("Fresh result", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Add example.media://media/fresh-result to mapping row 1" }).click();
-  await expect(page.getByRole("textbox", { name: "Portable references for row 1" })).toHaveValue(
-    "example.media://media/fresh-result",
+  await page.getByRole("button", { name: "Add example.media:media/fresh-result to mapping row 1" }).click();
+  await expect(page.getByRole("textbox", { name: "Portable reference 1 for row 1" })).toHaveValue(
+    "example.media:media/fresh-result",
   );
-  await page
-    .getByRole("textbox", { name: "Portable references for row 1" })
-    .fill("example.media://item/one\nexample.alt://item/one");
+  await page.getByRole("textbox", { name: "Portable reference 1 for row 1" }).fill("example.media://item/one");
+  await page.getByRole("textbox", { name: "Portable reference 2 for row 1" }).fill("example.alt://item/one");
   await page.getByRole("button", { name: "Create mapping" }).click();
   await expect.poll(() => staleSaveRequested).toBe(true);
   await page.keyboard.press("Escape");
@@ -211,9 +210,8 @@ test("authors and activates portable mapping revisions", async ({ page }) => {
   await expect(page.getByRole("region", { name: "Portable mapping document" })).toContainText('"revision": 1');
 
   await page.getByRole("button", { name: "New revision" }).click();
-  await page
-    .getByRole("textbox", { name: "Portable references for row 1" })
-    .fill("example.media://draft\nexample.alt://draft");
+  await page.getByRole("textbox", { name: "Portable reference 1 for row 1" }).fill("example.media://draft");
+  await page.getByRole("textbox", { name: "Portable reference 2 for row 1" }).fill("example.alt://draft");
   await page.getByRole("button", { name: "Save revision" }).click();
   await expect(page.getByRole("alert")).toContainText("Mapping head moved");
   await expect(page.getByRole("alert")).toContainText("1 added · 1 removed");

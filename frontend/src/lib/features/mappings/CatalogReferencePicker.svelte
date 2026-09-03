@@ -14,14 +14,14 @@ import {
 } from "$lib/features/workspaces/workspaceSourceDirectory";
 
 type Props = {
+  open?: boolean;
   workspaceId: string;
   targetRow: number;
   onselect: (reference: string) => void;
 };
 
-let { workspaceId, targetRow, onselect }: Props = $props();
+let { open: pickerOpen = $bindable(false), workspaceId, targetRow, onselect }: Props = $props();
 
-let pickerOpen = $state(false);
 let directory = $state<WorkspaceSourceDirectory | null>(null);
 let sourceId = $state("");
 let query = $state("");
