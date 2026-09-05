@@ -1,5 +1,6 @@
 use std::{future::Future, path::PathBuf, pin::Pin, sync::Arc};
 
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -11,8 +12,7 @@ pub type ProviderFuture<'a, T> =
 pub struct ProviderLaunchTarget {
     pub provider_id: String,
     pub version: String,
-    pub installation_id: Uuid,
-    pub generation: Uuid,
+    pub artifact_id: Uuid,
     pub executable: PathBuf,
     pub working_directory: PathBuf,
 }
@@ -24,113 +24,127 @@ pub trait ProviderLaunchResolver: Clone + Send + Sync {
 pub type ProviderApiFuture<'a, T> =
     Pin<Box<dyn Future<Output = Result<T, super::error::ApplicationError>> + Send + 'a>>;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ProviderRepositorySnapshot {
-    pub id: String,
-    pub display_name: String,
-    pub metadata_base_url: String,
-    pub targets_base_url: String,
-    pub built_in: bool,
-    pub enabled: bool,
-    pub catalog_sequence: Option<u64>,
-    pub refreshed_at: Option<OffsetDateTime>,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProviderUpdatePolicy {
+    Manual,
+    Automatic,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ProviderReleaseSnapshot {
-    pub repository_id: String,
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AvailableProviderSnapshot {
     pub provider_id: String,
-    pub name: String,
-    pub summary: String,
-    pub version: String,
-    pub channels: Vec<String>,
-    pub targets: Vec<String>,
-    pub installed_targets: Vec<String>,
-    pub active_target: Option<String>,
+    pub versions: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ProviderInstallationSnapshot {
+pub struct ProviderSourceSnapshot {
     pub id: Uuid,
-    pub repository_id: String,
-    pub provider_id: String,
+    pub repository_url: String,
+    pub available_providers: Vec<AvailableProviderSnapshot>,
+    pub trusted_at: OffsetDateTime,
+    pub last_checked_at: Option<OffsetDateTime>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProviderUpdateSnapshot {
     pub version: String,
-    pub target: String,
-    pub package_sha256: String,
-    pub active: bool,
-    pub generation: Option<Uuid>,
+    pub discovered_at: OffsetDateTime,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProviderSnapshot {
+    pub provider_id: String,
+    pub source_id: Uuid,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub version: String,
+    pub platform: String,
+    pub index_digest: String,
+    pub binary_digest: String,
+    pub update_policy: ProviderUpdatePolicy,
+    pub available_update: Option<ProviderUpdateSnapshot>,
+    pub last_update_error: Option<String>,
     pub installed_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RegisterProviderRepository {
-    pub url: String,
-    pub registered_at: OffsetDateTime,
+pub struct TrustProviderSource {
+    pub source_id: Uuid,
+    pub repository_url: String,
+    pub trusted_at: OffsetDateTime,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RefreshProviderRepository {
-    pub repository_id: String,
-    pub refreshed_at: OffsetDateTime,
+pub struct RefreshProviderSource {
+    pub source_id: Uuid,
+    pub checked_at: OffsetDateTime,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RemoveProviderSource {
+    pub source_id: Uuid,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InstallProvider {
-    pub installation_id: Uuid,
-    pub repository_id: String,
+    pub artifact_id: Uuid,
+    pub source_id: Uuid,
     pub provider_id: String,
     pub version: String,
-    pub target: String,
+    pub update_policy: ProviderUpdatePolicy,
     pub installed_at: OffsetDateTime,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ActivateProviderInstallation {
+pub struct UpdateProvider {
     pub provider_id: String,
-    pub installation_id: Uuid,
-    pub generation: Uuid,
-    pub activated_at: OffsetDateTime,
+    pub artifact_id: Uuid,
+    pub version: String,
+    pub updated_at: OffsetDateTime,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RemoveProviderInstallation {
-    pub installation_id: Uuid,
+pub struct ChangeProviderUpdatePolicy {
+    pub provider_id: String,
+    pub update_policy: ProviderUpdatePolicy,
+    pub updated_at: OffsetDateTime,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RemoveProvider {
+    pub provider_id: String,
 }
 
 pub trait ProviderRegistryApi: Send + Sync {
-    fn ensure_provider_active(&self, provider_id: &str) -> ProviderApiFuture<'_, ()>;
-    fn list_provider_repositories(&self) -> ProviderApiFuture<'_, Vec<ProviderRepositorySnapshot>>;
-    fn register_provider_repository(
+    fn ensure_provider_installed(&self, provider_id: &str) -> ProviderApiFuture<'_, ()>;
+    fn list_provider_sources(&self) -> ProviderApiFuture<'_, Vec<ProviderSourceSnapshot>>;
+    fn trust_provider_source(
         &self,
-        command: RegisterProviderRepository,
-    ) -> ProviderApiFuture<'_, ProviderRepositorySnapshot>;
-    fn refresh_provider_repository(
+        command: TrustProviderSource,
+    ) -> ProviderApiFuture<'_, ProviderSourceSnapshot>;
+    fn refresh_provider_source(
         &self,
-        command: RefreshProviderRepository,
-    ) -> ProviderApiFuture<'_, ProviderRepositorySnapshot>;
-    fn list_provider_releases(&self) -> ProviderApiFuture<'_, Vec<ProviderReleaseSnapshot>>;
-    fn list_provider_installations(
+        command: RefreshProviderSource,
+    ) -> ProviderApiFuture<'_, ProviderSourceSnapshot>;
+    fn remove_provider_source(&self, command: RemoveProviderSource) -> ProviderApiFuture<'_, ()>;
+    fn list_providers(&self) -> ProviderApiFuture<'_, Vec<ProviderSnapshot>>;
+    fn install_provider(&self, command: InstallProvider)
+    -> ProviderApiFuture<'_, ProviderSnapshot>;
+    fn update_provider(&self, command: UpdateProvider) -> ProviderApiFuture<'_, ProviderSnapshot>;
+    fn change_provider_update_policy(
         &self,
-    ) -> ProviderApiFuture<'_, Vec<ProviderInstallationSnapshot>>;
-    fn install_provider(
-        &self,
-        command: InstallProvider,
-    ) -> ProviderApiFuture<'_, ProviderInstallationSnapshot>;
-    fn activate_provider_installation(
-        &self,
-        command: ActivateProviderInstallation,
-    ) -> ProviderApiFuture<'_, ProviderInstallationSnapshot>;
-    fn remove_provider_installation(
-        &self,
-        command: RemoveProviderInstallation,
-    ) -> ProviderApiFuture<'_, ()>;
+        command: ChangeProviderUpdatePolicy,
+    ) -> ProviderApiFuture<'_, ProviderSnapshot>;
+    fn remove_provider(&self, command: RemoveProvider) -> ProviderApiFuture<'_, ()>;
 }
 
 pub type SharedProviderRegistry = Arc<dyn ProviderRegistryApi>;
 
 #[derive(Debug, Error)]
 pub enum ProviderLaunchError {
-    #[error("provider {0} has no active installation")]
+    #[error("provider {0} is not installed")]
     NotInstalled(String),
     #[error("provider {provider_id} installation is invalid: {reason}")]
     InvalidInstallation { provider_id: String, reason: String },

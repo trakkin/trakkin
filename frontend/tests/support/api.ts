@@ -7,30 +7,20 @@ export const sourceId = "33333333-3333-3333-3333-333333333333";
 export const taskId = "44444444-4444-4444-4444-444444444444";
 export const authenticationId = "77777777-7777-7777-7777-777777777777";
 export const timestamp = "2030-01-02T03:04:05Z";
-export const providerTarget = "x86_64-unknown-linux-gnu";
-
-export const activeFixtureProviderRelease = {
-  repositoryId: "dev.trakkin.community",
+export const activeFixtureProvider = {
   providerId: "dev.trakkin.fixture",
+  sourceId: "88888888-8888-4888-8888-888888888888",
   name: "Fixture",
-  summary: "Deterministic provider",
+  description: "Deterministic provider",
   version: "1.0.0",
-  channels: ["development"],
-  targets: [providerTarget],
-  installedTargets: [providerTarget],
-  activeTarget: providerTarget,
-};
-
-export const activeFixtureProviderInstallation = {
-  id: "88888888-8888-4888-8888-888888888888",
-  repositoryId: "dev.trakkin.community",
-  providerId: "dev.trakkin.fixture",
-  version: "1.0.0",
-  target: providerTarget,
-  packageSha256: "a".repeat(64),
-  active: true,
-  generation: "99999999-9999-4999-8999-999999999999",
+  platform: "linux/amd64",
+  indexDigest: `sha256:${"a".repeat(64)}`,
+  binaryDigest: `sha256:${"b".repeat(64)}`,
+  updatePolicy: "manual" as const,
+  availableUpdate: null,
+  lastUpdateError: null,
   installedAt: timestamp,
+  updatedAt: timestamp,
 };
 
 export const workspace = {
@@ -73,10 +63,7 @@ export async function json(route: Route, body: unknown, status = 200) {
 export async function fallback(route: Route) {
   const url = new URL(route.request().url());
   if (url.pathname === "/api/v1/providers" && route.request().method() === "GET") {
-    return json(route, [activeFixtureProviderRelease]);
-  }
-  if (url.pathname === "/api/v1/provider-installations" && route.request().method() === "GET") {
-    return json(route, [activeFixtureProviderInstallation]);
+    return json(route, [activeFixtureProvider]);
   }
   await route.fulfill({
     status: 404,

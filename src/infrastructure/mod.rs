@@ -7,6 +7,7 @@ pub mod mapping_lifecycle;
 pub mod mapping_queries;
 pub mod mapping_resolution;
 pub mod provider_access;
+pub mod provider_oci;
 pub mod provider_registry;
 pub mod sync_action_attempt;
 pub mod sync_action_dispatch;

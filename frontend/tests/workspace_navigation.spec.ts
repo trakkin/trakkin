@@ -14,15 +14,7 @@ test("global pages preserve the selected workspace", async ({ page }) => {
     const url = new URL(route.request().url());
     if (url.pathname === "/api/v1/workspaces") return json(route, [workspace]);
     if (url.pathname === "/api/v1/connections") return json(route, []);
-    if (
-      [
-        "/api/v1/provider-installations",
-        "/api/v1/provider-releases",
-        "/api/v1/provider-repositories",
-        "/api/v1/providers",
-      ].includes(url.pathname)
-    )
-      return json(route, []);
+    if (["/api/v1/provider-sources", "/api/v1/providers"].includes(url.pathname)) return json(route, []);
     return fallback(route);
   });
 

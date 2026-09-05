@@ -228,23 +228,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/provider-installations": {
+    "/api/v1/provider-sources": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get: operations["list_installations"];
+        get: operations["list_provider_sources"];
         put?: never;
-        post: operations["install_provider"];
+        post: operations["trust_provider_source"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/v1/provider-installations/{installation_id}": {
+    "/api/v1/provider-sources/{source_id}": {
         parameters: {
             query?: never;
             header?: never;
@@ -254,29 +254,13 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        delete: operations["remove_provider_installation"];
+        delete: operations["remove_provider_source"];
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/v1/provider-repositories": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["list_repositories"];
-        put?: never;
-        post: operations["register_repository"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/provider-repositories/{repository_id}/refresh": {
+    "/api/v1/provider-sources/{source_id}/refresh": {
         parameters: {
             query?: never;
             header?: never;
@@ -285,7 +269,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        post: operations["refresh_repository"];
+        post: operations["refresh_provider_source"];
         delete?: never;
         options?: never;
         head?: never;
@@ -301,14 +285,14 @@ export interface paths {
         };
         get: operations["list_providers"];
         put?: never;
-        post?: never;
+        post: operations["install_provider"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/v1/providers/{provider_id}/activation": {
+    "/api/v1/providers/{provider_id}": {
         parameters: {
             query?: never;
             header?: never;
@@ -316,7 +300,39 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        put: operations["activate_provider"];
+        put?: never;
+        post?: never;
+        delete: operations["remove_provider"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/providers/{provider_id}/update": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["update_provider"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/providers/{provider_id}/update-policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["change_provider_update_policy"];
         post?: never;
         delete?: never;
         options?: never;
@@ -769,10 +785,6 @@ export interface components {
         ActivateMappingRevisionRequest: {
             contentHash: string;
         };
-        ActivateProviderRequest: {
-            /** Format: uuid */
-            installationId: string;
-        };
         ActivityActionDetailResponse: {
             action: components["schemas"]["ActivityActionResponse"];
             provenance?: null | components["schemas"]["ActivityProvenanceResponse"];
@@ -1040,6 +1052,10 @@ export interface components {
             retryAfter?: null | components["schemas"]["RetryAfterResponse"];
             status: components["schemas"]["AuthenticationStatusResponse"];
         };
+        AvailableProviderResponse: {
+            providerId: string;
+            versions: string[];
+        };
         BinaryAssetReferenceResponse: {
             href: string;
             key: components["schemas"]["KeyResponse"];
@@ -1074,6 +1090,9 @@ export interface components {
             order: number[];
             parentKey?: null | components["schemas"]["KeyResponse"];
             providerItemKey?: null | components["schemas"]["KeyResponse"];
+        };
+        ChangeProviderUpdatePolicyRequest: {
+            updatePolicy: components["schemas"]["ProviderUpdatePolicyValue"];
         };
         ConnectionDeletionImpactResponse: {
             /** Format: int64 */
@@ -1182,8 +1201,9 @@ export interface components {
         };
         InstallProviderRequest: {
             providerId: string;
-            repositoryId: string;
-            target: string;
+            /** Format: uuid */
+            sourceId: string;
+            updatePolicy: components["schemas"]["ProviderUpdatePolicyValue"];
             version: string;
         };
         KeyResponse: {
@@ -1365,40 +1385,36 @@ export interface components {
         };
         /** @enum {string} */
         PreviewMembershipEffectResponse: "create" | "update";
-        ProviderInstallationResponse: {
-            active: boolean;
-            /** Format: uuid */
-            generation?: string | null;
-            /** Format: uuid */
-            id: string;
+        ProviderResponse: {
+            availableUpdate?: null | components["schemas"]["ProviderUpdateResponse"];
+            binaryDigest: string;
+            description?: string | null;
+            indexDigest: string;
             installedAt: string;
-            packageSha256: string;
+            lastUpdateError?: string | null;
+            name?: string | null;
+            platform: string;
             providerId: string;
-            repositoryId: string;
-            target: string;
+            /** Format: uuid */
+            sourceId: string;
+            updatePolicy: components["schemas"]["ProviderUpdatePolicyValue"];
+            updatedAt: string;
             version: string;
         };
-        ProviderReleaseResponse: {
-            activeTarget?: string | null;
-            channels: string[];
-            installedTargets: string[];
-            name: string;
-            providerId: string;
-            repositoryId: string;
-            summary: string;
-            targets: string[];
-            version: string;
-        };
-        ProviderRepositoryResponse: {
-            builtIn: boolean;
-            /** Format: int64 */
-            catalogSequence?: number | null;
-            displayName: string;
-            enabled: boolean;
+        ProviderSourceResponse: {
+            availableProviders: components["schemas"]["AvailableProviderResponse"][];
+            /** Format: uuid */
             id: string;
-            metadataBaseUrl: string;
-            refreshedAt?: string | null;
-            targetsBaseUrl: string;
+            lastCheckedAt?: string | null;
+            lastError?: string | null;
+            repositoryUrl: string;
+            trustedAt: string;
+        };
+        /** @enum {string} */
+        ProviderUpdatePolicyValue: "manual" | "automatic";
+        ProviderUpdateResponse: {
+            discoveredAt: string;
+            version: string;
         };
         PublishedResolutionEvidenceResponse: {
             backing?: null | components["schemas"]["CoordinateBackingResponse"];
@@ -1420,9 +1436,6 @@ export interface components {
         ReconfigureConnectionRequest: {
             secretPatches: components["schemas"]["AdapterSecretPatchRequest"][];
             settings: components["schemas"]["AdapterSettingRequest"][];
-        };
-        RegisterProviderRepositoryRequest: {
-            url: string;
         };
         RenameConnectionRequest: {
             displayName: string;
@@ -1723,9 +1736,15 @@ export interface components {
             name: string;
             namespace: string;
         };
+        TrustProviderSourceRequest: {
+            repositoryUrl: string;
+        };
         UpdateMappingDocumentRequest: {
             baseContentHash: string;
             mappings: string[][];
+        };
+        UpdateProviderRequest: {
+            version: string;
         };
         UpdateSyncPolicyRequest: {
             baseContentHash: string;
@@ -2410,7 +2429,7 @@ export interface operations {
             };
         };
     };
-    list_installations: {
+    list_provider_sources: {
         parameters: {
             query?: never;
             header?: never;
@@ -2424,7 +2443,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ProviderInstallationResponse"][];
+                    "application/json": components["schemas"]["ProviderSourceResponse"][];
                 };
             };
             500: {
@@ -2437,7 +2456,7 @@ export interface operations {
             };
         };
     };
-    install_provider: {
+    trust_provider_source: {
         parameters: {
             query?: never;
             header?: never;
@@ -2446,7 +2465,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["InstallProviderRequest"];
+                "application/json": components["schemas"]["TrustProviderSourceRequest"];
             };
         };
         responses: {
@@ -2455,18 +2474,10 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ProviderInstallationResponse"];
+                    "application/json": components["schemas"]["ProviderSourceResponse"];
                 };
             };
             400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2490,22 +2501,14 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            502: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
         };
     };
-    remove_provider_installation: {
+    remove_provider_source: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                installation_id: string;
+                source_id: string;
             };
             cookie?: never;
         };
@@ -2551,78 +2554,12 @@ export interface operations {
             };
         };
     };
-    list_repositories: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ProviderRepositoryResponse"][];
-                };
-            };
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    register_repository: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RegisterProviderRepositoryRequest"];
-            };
-        };
-        responses: {
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ProviderRepositoryResponse"];
-                };
-            };
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    refresh_repository: {
+    refresh_provider_source: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                repository_id: string;
+                source_id: string;
             };
             cookie?: never;
         };
@@ -2633,7 +2570,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ProviderRepositoryResponse"];
+                    "application/json": components["schemas"]["ProviderSourceResponse"];
                 };
             };
             400: {
@@ -2645,14 +2582,6 @@ export interface operations {
                 };
             };
             404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            500: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2684,7 +2613,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ProviderReleaseResponse"][];
+                    "application/json": components["schemas"]["ProviderResponse"][];
                 };
             };
             500: {
@@ -2697,7 +2626,113 @@ export interface operations {
             };
         };
     };
-    activate_provider: {
+    install_provider: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InstallProviderRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    remove_provider: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                provider_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    update_provider: {
         parameters: {
             query?: never;
             header?: never;
@@ -2708,7 +2743,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ActivateProviderRequest"];
+                "application/json": components["schemas"]["UpdateProviderRequest"];
             };
         };
         responses: {
@@ -2717,7 +2752,72 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ProviderInstallationResponse"];
+                    "application/json": components["schemas"]["ProviderResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    change_provider_update_policy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                provider_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChangeProviderUpdatePolicyRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderResponse"];
                 };
             };
             400: {

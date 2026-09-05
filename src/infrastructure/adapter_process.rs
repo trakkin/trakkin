@@ -2848,8 +2848,7 @@ mod tests {
         let target = ProviderLaunchTarget {
             provider_id: "dev.trakkin.fixture".to_owned(),
             version: "0.0.0".to_owned(),
-            installation_id: uuid::Uuid::nil(),
-            generation: uuid::Uuid::nil(),
+            artifact_id: uuid::Uuid::nil(),
             executable: PathBuf::from("bin/provider"),
             working_directory: PathBuf::from("."),
         };

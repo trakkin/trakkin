@@ -5,117 +5,157 @@ use uuid::Uuid;
 use crate::application::{
     error::ApplicationError,
     providers::{
-        ProviderInstallationSnapshot, ProviderReleaseSnapshot, ProviderRepositorySnapshot,
+        AvailableProviderSnapshot, ProviderSnapshot, ProviderSourceSnapshot, ProviderUpdatePolicy,
     },
 };
 
 use super::timestamp;
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ProviderUpdatePolicyValue {
+    Manual,
+    Automatic,
+}
+
+impl From<ProviderUpdatePolicyValue> for ProviderUpdatePolicy {
+    fn from(value: ProviderUpdatePolicyValue) -> Self {
+        match value {
+            ProviderUpdatePolicyValue::Manual => Self::Manual,
+            ProviderUpdatePolicyValue::Automatic => Self::Automatic,
+        }
+    }
+}
+
+impl From<ProviderUpdatePolicy> for ProviderUpdatePolicyValue {
+    fn from(value: ProviderUpdatePolicy) -> Self {
+        match value {
+            ProviderUpdatePolicy::Manual => Self::Manual,
+            ProviderUpdatePolicy::Automatic => Self::Automatic,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct RegisterProviderRepositoryRequest {
-    pub url: String,
+pub struct TrustProviderSourceRequest {
+    pub repository_url: String,
 }
 
 #[derive(Clone, Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct InstallProviderRequest {
-    pub repository_id: String,
+    pub source_id: Uuid,
     pub provider_id: String,
     pub version: String,
-    pub target: String,
+    pub update_policy: ProviderUpdatePolicyValue,
 }
 
 #[derive(Clone, Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct ActivateProviderRequest {
-    pub installation_id: Uuid,
+pub struct UpdateProviderRequest {
+    pub version: String,
+}
+
+#[derive(Clone, Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangeProviderUpdatePolicyRequest {
+    pub update_policy: ProviderUpdatePolicyValue,
+}
+
+#[derive(Clone, Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderSourceResponse {
+    pub id: Uuid,
+    pub repository_url: String,
+    pub available_providers: Vec<AvailableProviderResponse>,
+    pub trusted_at: String,
+    pub last_checked_at: Option<String>,
+    pub last_error: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct ProviderRepositoryResponse {
-    pub id: String,
-    pub display_name: String,
-    pub metadata_base_url: String,
-    pub targets_base_url: String,
-    pub built_in: bool,
-    pub enabled: bool,
-    pub catalog_sequence: Option<u64>,
-    pub refreshed_at: Option<String>,
+pub struct AvailableProviderResponse {
+    pub provider_id: String,
+    pub versions: Vec<String>,
 }
 
-impl ProviderRepositoryResponse {
-    pub fn from_snapshot(snapshot: ProviderRepositorySnapshot) -> Result<Self, ApplicationError> {
+impl From<AvailableProviderSnapshot> for AvailableProviderResponse {
+    fn from(snapshot: AvailableProviderSnapshot) -> Self {
+        Self {
+            provider_id: snapshot.provider_id,
+            versions: snapshot.versions,
+        }
+    }
+}
+
+impl ProviderSourceResponse {
+    pub fn from_snapshot(snapshot: ProviderSourceSnapshot) -> Result<Self, ApplicationError> {
         Ok(Self {
             id: snapshot.id,
-            display_name: snapshot.display_name,
-            metadata_base_url: snapshot.metadata_base_url,
-            targets_base_url: snapshot.targets_base_url,
-            built_in: snapshot.built_in,
-            enabled: snapshot.enabled,
-            catalog_sequence: snapshot.catalog_sequence,
-            refreshed_at: snapshot.refreshed_at.map(timestamp).transpose()?,
+            repository_url: snapshot.repository_url,
+            available_providers: snapshot
+                .available_providers
+                .into_iter()
+                .map(AvailableProviderResponse::from)
+                .collect(),
+            trusted_at: timestamp(snapshot.trusted_at)?,
+            last_checked_at: snapshot.last_checked_at.map(timestamp).transpose()?,
+            last_error: snapshot.last_error,
         })
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct ProviderReleaseResponse {
-    pub repository_id: String,
-    pub provider_id: String,
-    pub name: String,
-    pub summary: String,
+pub struct ProviderUpdateResponse {
     pub version: String,
-    pub channels: Vec<String>,
-    pub targets: Vec<String>,
-    pub installed_targets: Vec<String>,
-    pub active_target: Option<String>,
+    pub discovered_at: String,
 }
 
-impl From<ProviderReleaseSnapshot> for ProviderReleaseResponse {
-    fn from(snapshot: ProviderReleaseSnapshot) -> Self {
-        Self {
-            repository_id: snapshot.repository_id,
-            provider_id: snapshot.provider_id,
-            name: snapshot.name,
-            summary: snapshot.summary,
-            version: snapshot.version,
-            channels: snapshot.channels,
-            targets: snapshot.targets,
-            installed_targets: snapshot.installed_targets,
-            active_target: snapshot.active_target,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, ToSchema)]
+#[derive(Clone, Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct ProviderInstallationResponse {
-    pub id: Uuid,
-    pub repository_id: String,
+pub struct ProviderResponse {
     pub provider_id: String,
+    pub source_id: Uuid,
+    pub name: Option<String>,
+    pub description: Option<String>,
     pub version: String,
-    pub target: String,
-    pub package_sha256: String,
-    pub active: bool,
-    pub generation: Option<Uuid>,
+    pub platform: String,
+    pub index_digest: String,
+    pub binary_digest: String,
+    pub update_policy: ProviderUpdatePolicyValue,
+    pub available_update: Option<ProviderUpdateResponse>,
+    pub last_update_error: Option<String>,
     pub installed_at: String,
+    pub updated_at: String,
 }
 
-impl ProviderInstallationResponse {
-    pub fn from_snapshot(snapshot: ProviderInstallationSnapshot) -> Result<Self, ApplicationError> {
+impl ProviderResponse {
+    pub fn from_snapshot(snapshot: ProviderSnapshot) -> Result<Self, ApplicationError> {
         Ok(Self {
-            id: snapshot.id,
-            repository_id: snapshot.repository_id,
             provider_id: snapshot.provider_id,
+            source_id: snapshot.source_id,
+            name: snapshot.name,
+            description: snapshot.description,
             version: snapshot.version,
-            target: snapshot.target,
-            package_sha256: snapshot.package_sha256,
-            active: snapshot.active,
-            generation: snapshot.generation,
+            platform: snapshot.platform,
+            index_digest: snapshot.index_digest,
+            binary_digest: snapshot.binary_digest,
+            update_policy: snapshot.update_policy.into(),
+            available_update: snapshot
+                .available_update
+                .map(|update| {
+                    Ok(ProviderUpdateResponse {
+                        version: update.version,
+                        discovered_at: timestamp(update.discovered_at)?,
+                    })
+                })
+                .transpose()?,
+            last_update_error: snapshot.last_update_error,
             installed_at: timestamp(snapshot.installed_at)?,
+            updated_at: timestamp(snapshot.updated_at)?,
         })
     }
 }

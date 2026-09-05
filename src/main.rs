@@ -165,14 +165,16 @@ impl Configuration {
             .unwrap_or_else(|_| DEFAULT_BIND_ADDRESS.to_owned())
             .parse()
             .map_err(ConfigurationError::BindAddress)?;
-        let data_directory = env::var_os("TRAKKIN_DATA_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(DEFAULT_DATA_DIRECTORY));
+        let data_directory = absolute_path(
+            env::var_os("TRAKKIN_DATA_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(DEFAULT_DATA_DIRECTORY)),
+        )?;
         let database_url = env::var("TRAKKIN_DATABASE_URL")
             .ok()
             .filter(|value| !value.trim().is_empty());
         let provider_runtime_directory = match env::var_os("TRAKKIN_PROVIDER_RUNTIME_DIR") {
-            Some(path) => PathBuf::from(path),
+            Some(path) => absolute_path(PathBuf::from(path))?,
             None => create_default_provider_runtime_directory()?,
         };
         let connection_master_key = env::var("TRAKKIN_MASTER_KEY")
@@ -189,6 +191,14 @@ impl Configuration {
             provider_runtime_directory,
             connection_master_key,
         })
+    }
+}
+
+fn absolute_path(path: PathBuf) -> Result<PathBuf, ConfigurationError> {
+    if path.is_absolute() {
+        Ok(path)
+    } else {
+        Ok(env::current_dir()?.join(path))
     }
 }
 
@@ -282,6 +292,15 @@ enum ConfigurationError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn configured_paths_are_absolute() {
+        let path = absolute_path(PathBuf::from(".trakkin/test"))
+            .expect("relative configuration path resolves");
+
+        assert!(path.is_absolute());
+        assert!(path.ends_with(".trakkin/test"));
+    }
 
     #[test]
     fn default_provider_runtime_directory_is_private_and_unique() {

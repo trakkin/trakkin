@@ -73,6 +73,7 @@ const TASK_WORKERS_PER_KIND: usize = 2;
 const TASK_IDLE_INTERVAL: Duration = Duration::from_millis(50);
 const SCHEDULE_IDLE_INTERVAL: Duration = Duration::from_secs(30);
 const SCHEDULE_PREVIEW_LIFETIME: TimeDuration = TimeDuration::minutes(5);
+const PROVIDER_UPDATE_INTERVAL: Duration = Duration::from_secs(15 * 60);
 const RETENTION_IDLE_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const RETENTION_PASSES_PER_SWEEP: usize = 16;
 
@@ -120,10 +121,6 @@ impl Host {
             data_directory.into().join("providers"),
             provider_runtime_directory,
         );
-        provider_registry
-            .bootstrap_community_repository(OffsetDateTime::now_utc())
-            .await
-            .map_err(|error| HostError::ProviderRegistry(error.message))?;
         provider_registry
             .reconcile(OffsetDateTime::now_utc())
             .await
@@ -246,7 +243,7 @@ impl Host {
                 Arc::new(SyncActivityService::new(
                     PostgresSyncActivityRepository::new(pool.clone()),
                 )),
-                Arc::new(provider_management),
+                Arc::new(provider_management.clone()),
             )
             .with_sync_preview_mutation(sync_workflow)
             .with_sync_run_mutation(sync_run_workflow)
@@ -255,7 +252,7 @@ impl Host {
             ))),
         ));
         let (shutdown_sender, shutdown_receiver) = watch::channel(false);
-        let mut workers = Vec::with_capacity(TASK_WORKERS_PER_KIND * 4 + 2);
+        let mut workers = Vec::with_capacity(TASK_WORKERS_PER_KIND * 4 + 3);
         for _ in 0..TASK_WORKERS_PER_KIND {
             let discovery = TaskDispatcher::new(
                 self.task_manager.clone(),
@@ -314,6 +311,10 @@ impl Host {
         workers.push(spawn_supervised(
             "schedules",
             run_schedules(sync_schedule_runner, shutdown_receiver.clone()),
+        ));
+        workers.push(spawn_supervised(
+            "provider-updates",
+            run_provider_updates(provider_management, shutdown_receiver.clone()),
         ));
         workers.push(spawn_supervised(
             "retention",
@@ -616,6 +617,25 @@ async fn run_retention(
                 }
             }
             () = sleep(RETENTION_IDLE_INTERVAL) => {}
+        }
+    }
+}
+
+async fn run_provider_updates(
+    registry: ProbedProviderRegistry,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    while !*shutdown.borrow() {
+        registry
+            .refresh_all_provider_sources(OffsetDateTime::now_utc())
+            .await;
+        tokio::select! {
+            result = shutdown.changed() => {
+                if result.is_err() {
+                    return;
+                }
+            }
+            () = sleep(PROVIDER_UPDATE_INTERVAL) => {}
         }
     }
 }

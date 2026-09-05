@@ -32,9 +32,9 @@ use super::{
         ExactMappingRevision, MappingResolution, MappingResolutionInteraction, ResolutionRequest,
     },
     providers::{
-        ActivateProviderInstallation, InstallProvider, ProviderInstallationSnapshot,
-        ProviderReleaseSnapshot, ProviderRepositorySnapshot, RefreshProviderRepository,
-        RegisterProviderRepository, RemoveProviderInstallation, SharedProviderRegistry,
+        ChangeProviderUpdatePolicy, InstallProvider, ProviderSnapshot, ProviderSourceSnapshot,
+        RefreshProviderSource, RemoveProvider, RemoveProviderSource, SharedProviderRegistry,
+        TrustProviderSource, UpdateProvider,
     },
     reference_lookup::{LookupPortableReferences, ReferenceLookupInteraction},
     sync_activity::{
@@ -310,31 +310,25 @@ pub trait ApplicationApi: Send + Sync {
         workspace_id: Uuid,
         action_id: Uuid,
     ) -> ApplicationFuture<'_, SyncActivityActionDetail>;
-    fn list_provider_repositories(&self) -> ApplicationFuture<'_, Vec<ProviderRepositorySnapshot>>;
-    fn register_provider_repository(
+    fn list_provider_sources(&self) -> ApplicationFuture<'_, Vec<ProviderSourceSnapshot>>;
+    fn trust_provider_source(
         &self,
-        command: RegisterProviderRepository,
-    ) -> ApplicationFuture<'_, ProviderRepositorySnapshot>;
-    fn refresh_provider_repository(
+        command: TrustProviderSource,
+    ) -> ApplicationFuture<'_, ProviderSourceSnapshot>;
+    fn refresh_provider_source(
         &self,
-        command: RefreshProviderRepository,
-    ) -> ApplicationFuture<'_, ProviderRepositorySnapshot>;
-    fn list_provider_releases(&self) -> ApplicationFuture<'_, Vec<ProviderReleaseSnapshot>>;
-    fn list_provider_installations(
+        command: RefreshProviderSource,
+    ) -> ApplicationFuture<'_, ProviderSourceSnapshot>;
+    fn remove_provider_source(&self, command: RemoveProviderSource) -> ApplicationFuture<'_, ()>;
+    fn list_providers(&self) -> ApplicationFuture<'_, Vec<ProviderSnapshot>>;
+    fn install_provider(&self, command: InstallProvider)
+    -> ApplicationFuture<'_, ProviderSnapshot>;
+    fn update_provider(&self, command: UpdateProvider) -> ApplicationFuture<'_, ProviderSnapshot>;
+    fn change_provider_update_policy(
         &self,
-    ) -> ApplicationFuture<'_, Vec<ProviderInstallationSnapshot>>;
-    fn install_provider(
-        &self,
-        command: InstallProvider,
-    ) -> ApplicationFuture<'_, ProviderInstallationSnapshot>;
-    fn activate_provider_installation(
-        &self,
-        command: ActivateProviderInstallation,
-    ) -> ApplicationFuture<'_, ProviderInstallationSnapshot>;
-    fn remove_provider_installation(
-        &self,
-        command: RemoveProviderInstallation,
-    ) -> ApplicationFuture<'_, ()>;
+        command: ChangeProviderUpdatePolicy,
+    ) -> ApplicationFuture<'_, ProviderSnapshot>;
+    fn remove_provider(&self, command: RemoveProvider) -> ApplicationFuture<'_, ()>;
 }
 
 #[derive(Clone)]
@@ -802,7 +796,7 @@ where
         Box::pin(async move {
             let connection_id = command.connection_id;
             self.providers
-                .ensure_provider_active(&command.provider_id)
+                .ensure_provider_installed(&command.provider_id)
                 .await?;
             self.connections
                 .store_connection(command)
@@ -1094,53 +1088,52 @@ where
             .get_activity_action(workspace_id, action_id)
     }
 
-    fn list_provider_repositories(&self) -> ApplicationFuture<'_, Vec<ProviderRepositorySnapshot>> {
-        self.providers.list_provider_repositories()
+    fn list_provider_sources(&self) -> ApplicationFuture<'_, Vec<ProviderSourceSnapshot>> {
+        self.providers.list_provider_sources()
     }
 
-    fn register_provider_repository(
+    fn trust_provider_source(
         &self,
-        command: RegisterProviderRepository,
-    ) -> ApplicationFuture<'_, ProviderRepositorySnapshot> {
-        self.providers.register_provider_repository(command)
+        command: TrustProviderSource,
+    ) -> ApplicationFuture<'_, ProviderSourceSnapshot> {
+        self.providers.trust_provider_source(command)
     }
 
-    fn refresh_provider_repository(
+    fn refresh_provider_source(
         &self,
-        command: RefreshProviderRepository,
-    ) -> ApplicationFuture<'_, ProviderRepositorySnapshot> {
-        self.providers.refresh_provider_repository(command)
+        command: RefreshProviderSource,
+    ) -> ApplicationFuture<'_, ProviderSourceSnapshot> {
+        self.providers.refresh_provider_source(command)
     }
 
-    fn list_provider_releases(&self) -> ApplicationFuture<'_, Vec<ProviderReleaseSnapshot>> {
-        self.providers.list_provider_releases()
+    fn remove_provider_source(&self, command: RemoveProviderSource) -> ApplicationFuture<'_, ()> {
+        self.providers.remove_provider_source(command)
     }
 
-    fn list_provider_installations(
-        &self,
-    ) -> ApplicationFuture<'_, Vec<ProviderInstallationSnapshot>> {
-        self.providers.list_provider_installations()
+    fn list_providers(&self) -> ApplicationFuture<'_, Vec<ProviderSnapshot>> {
+        self.providers.list_providers()
     }
 
     fn install_provider(
         &self,
         command: InstallProvider,
-    ) -> ApplicationFuture<'_, ProviderInstallationSnapshot> {
+    ) -> ApplicationFuture<'_, ProviderSnapshot> {
         self.providers.install_provider(command)
     }
 
-    fn activate_provider_installation(
-        &self,
-        command: ActivateProviderInstallation,
-    ) -> ApplicationFuture<'_, ProviderInstallationSnapshot> {
-        self.providers.activate_provider_installation(command)
+    fn update_provider(&self, command: UpdateProvider) -> ApplicationFuture<'_, ProviderSnapshot> {
+        self.providers.update_provider(command)
     }
 
-    fn remove_provider_installation(
+    fn change_provider_update_policy(
         &self,
-        command: RemoveProviderInstallation,
-    ) -> ApplicationFuture<'_, ()> {
-        self.providers.remove_provider_installation(command)
+        command: ChangeProviderUpdatePolicy,
+    ) -> ApplicationFuture<'_, ProviderSnapshot> {
+        self.providers.change_provider_update_policy(command)
+    }
+
+    fn remove_provider(&self, command: RemoveProvider) -> ApplicationFuture<'_, ()> {
+        self.providers.remove_provider(command)
     }
 }
 

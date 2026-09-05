@@ -12,7 +12,7 @@ use tokio::{
 };
 
 #[tokio::test(flavor = "multi_thread")]
-async fn external_host_bootstraps_provider_registry_and_stops_cleanly() {
+async fn external_host_starts_with_user_controlled_provider_registry_and_stops_cleanly() {
     let directory = tempdir().expect("temporary data directory is created");
     let mut command = Command::new(env!("CARGO_BIN_EXE_trakkin"));
     command
@@ -40,22 +40,11 @@ async fn external_host_bootstraps_provider_registry_and_stops_cleanly() {
         .as_str()
         .expect("readiness includes the bound address");
 
-    let repositories = request(address, "GET", "/api/v1/provider-repositories", None).await;
-    assert_eq!(repositories.0, 200);
-    let community = repositories
-        .1
-        .as_array()
-        .and_then(|repositories| {
-            repositories
-                .iter()
-                .find(|repository| repository["id"] == "dev.trakkin.community")
-        })
-        .expect("community provider repository is bootstrapped");
-    assert_eq!(community["builtIn"], true);
-    assert_eq!(community["enabled"], true);
+    let sources = request(address, "GET", "/api/v1/provider-sources", None).await;
+    assert_eq!(sources, (200, json!([])));
 
-    let installations = request(address, "GET", "/api/v1/provider-installations", None).await;
-    assert_eq!(installations, (200, json!([])));
+    let providers = request(address, "GET", "/api/v1/providers", None).await;
+    assert_eq!(providers, (200, json!([])));
 
     let unavailable_connection = request(
         address,

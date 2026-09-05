@@ -42,12 +42,7 @@ import {
   startConnectionAuthentication,
 } from "$lib/api/connections";
 import { pollCatalog, waitForTask } from "$lib/api/operations";
-import {
-  listProviderInstallations,
-  listProviderReleases,
-  type ProviderInstallation,
-  type ProviderRelease,
-} from "$lib/api/providers";
+import { listProviders, type Provider } from "$lib/api/providers";
 import { attachSource, detachSource, listWorkspaces, type Workspace, type WorkspaceSource } from "$lib/api/workspaces";
 
 const fixtureScenarios = [
@@ -134,11 +129,10 @@ async function loadDirectory(signal?: AbortSignal) {
   loading = true;
   errorMessage = "";
   try {
-    const [nextConnections, nextWorkspaces, providerReleases, providerInstallations] = await Promise.all([
+    const [nextConnections, nextWorkspaces, providers] = await Promise.all([
       listConnections(signal),
       listWorkspaces(signal),
-      listProviderReleases(signal),
-      listProviderInstallations(signal),
+      listProviders(signal),
     ]);
     if (sequence !== directorySequence) return;
     const sourceResults = await Promise.allSettled(
@@ -153,7 +147,7 @@ async function loadDirectory(signal?: AbortSignal) {
       ...Object.fromEntries(sourceResults.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []))),
     };
     workspaces = nextWorkspaces.filter((workspace) => workspace.status === "active");
-    providerItems = activeProviderItems(providerReleases, providerInstallations);
+    providerItems = installedProviderItems(providers);
     if (!providerItems.some((provider) => provider.value === selectedProviderId)) {
       selectedProviderId = providerItems[0]?.value ?? "";
     }
@@ -172,23 +166,11 @@ function retryDirectory(): void {
   void loadDirectory(lifecycleController.signal);
 }
 
-function activeProviderItems(releases: ProviderRelease[], installations: ProviderInstallation[]) {
-  const items = releases
-    .filter((release) => release.activeTarget !== null)
-    .map((release) => ({
-      value: release.providerId,
-      label: `${release.name} ${release.version} (${release.providerId})`,
-    }));
-  const providerIds = new Set(items.map((item) => item.value));
-  for (const installation of installations) {
-    if (!installation.active || providerIds.has(installation.providerId)) continue;
-    providerIds.add(installation.providerId);
-    items.push({
-      value: installation.providerId,
-      label: `${installation.providerId} ${installation.version} (${installation.target})`,
-    });
-  }
-  return items;
+function installedProviderItems(providers: Provider[]) {
+  return providers.map((provider) => ({
+    value: provider.providerId,
+    label: `${provider.name ?? provider.providerId} ${provider.version}`,
+  }));
 }
 
 async function addConnection() {

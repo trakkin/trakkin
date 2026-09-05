@@ -1,55 +1,55 @@
-CREATE TABLE provider_repositories (
-    id TEXT PRIMARY KEY CHECK (id <> ''),
-    display_name TEXT NOT NULL CHECK (display_name <> ''),
-    metadata_base_url TEXT NOT NULL CHECK (metadata_base_url <> ''),
-    targets_base_url TEXT NOT NULL CHECK (targets_base_url <> ''),
-    trusted_root BYTEA NOT NULL CHECK (octet_length(trusted_root) > 0),
-    built_in BOOLEAN NOT NULL DEFAULT FALSE,
-    enabled BOOLEAN NOT NULL DEFAULT TRUE,
-    catalog_sequence BIGINT CHECK (catalog_sequence >= 0),
-    catalog JSONB,
-    refreshed_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL,
-    updated_at TIMESTAMPTZ NOT NULL,
-    CHECK ((catalog_sequence IS NULL) = (catalog IS NULL)),
-    CHECK ((catalog IS NULL) = (refreshed_at IS NULL))
-);
-
-CREATE UNIQUE INDEX provider_repositories_one_built_in_idx
-ON provider_repositories (built_in) WHERE built_in;
-
-CREATE TABLE provider_installations (
+CREATE TABLE provider_sources (
     id UUID PRIMARY KEY,
-    repository_id TEXT NOT NULL
-    REFERENCES provider_repositories(id) ON DELETE RESTRICT,
-    provider_id TEXT NOT NULL CHECK (provider_id <> ''),
-    version TEXT NOT NULL CHECK (version <> ''),
-    target TEXT NOT NULL CHECK (target <> ''),
-    package_sha256 TEXT NOT NULL CHECK (
-        package_sha256 ~ '^[0-9a-f]{64}$'
+    repository_url TEXT NOT NULL UNIQUE CHECK (
+        repository_url
+        ~ (
+            '^https?://[a-z0-9][a-z0-9.-]*(:[0-9]+)?'
+            || '/[a-z0-9]+([._/-][a-z0-9]+)*$'
+        )
     ),
-    manifest JSONB NOT NULL,
-    status TEXT NOT NULL CHECK (
-        status IN ('installing', 'installed', 'failed')
+    available_providers JSONB NOT NULL DEFAULT '[]'::JSONB CHECK (
+        jsonb_typeof(available_providers) = 'array'
     ),
-    installed_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL,
-    updated_at TIMESTAMPTZ NOT NULL,
-    UNIQUE (id, provider_id),
-    CHECK ((status = 'installed') = (installed_at IS NOT NULL))
+    trusted_at TIMESTAMPTZ NOT NULL,
+    last_checked_at TIMESTAMPTZ,
+    last_error TEXT
 );
 
-CREATE UNIQUE INDEX provider_installations_live_release_idx
-ON provider_installations (repository_id, provider_id, version, target)
-WHERE status IN ('installing', 'installed');
-
-CREATE TABLE active_provider_installations (
+CREATE TABLE providers (
     provider_id TEXT PRIMARY KEY CHECK (provider_id <> ''),
-    installation_id UUID NOT NULL,
-    generation UUID NOT NULL UNIQUE,
-    activated_at TIMESTAMPTZ NOT NULL,
-    FOREIGN KEY (installation_id, provider_id)
-    REFERENCES provider_installations(id, provider_id) ON DELETE RESTRICT
+    artifact_id UUID NOT NULL UNIQUE,
+    source_id UUID NOT NULL REFERENCES provider_sources(id) ON DELETE RESTRICT,
+    version TEXT NOT NULL CHECK (version <> ''),
+    platform TEXT NOT NULL CHECK (
+        platform IN ('linux/amd64', 'linux/arm64')
+    ),
+    index_digest TEXT NOT NULL CHECK (
+        index_digest ~ '^sha256:[0-9a-f]{64}$'
+    ),
+    manifest_digest TEXT NOT NULL CHECK (
+        manifest_digest ~ '^sha256:[0-9a-f]{64}$'
+    ),
+    metadata_digest TEXT NOT NULL CHECK (
+        metadata_digest ~ '^sha256:[0-9a-f]{64}$'
+    ),
+    binary_digest TEXT NOT NULL CHECK (
+        binary_digest ~ '^sha256:[0-9a-f]{64}$'
+    ),
+    metadata JSONB NOT NULL,
+    update_policy TEXT NOT NULL CHECK (
+        update_policy IN ('manual', 'automatic')
+    ),
+    available_version TEXT,
+    available_discovered_at TIMESTAMPTZ,
+    last_update_error TEXT,
+    installed_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    CHECK (
+        (available_version IS NULL) = (available_discovered_at IS NULL)
+    ),
+    CHECK (
+        available_version IS NULL OR available_version <> version
+    )
 );
 
 CREATE TABLE connections (

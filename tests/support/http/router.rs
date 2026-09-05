@@ -26,10 +26,9 @@ use trakkin::{
         },
         error::{ApplicationError, ApplicationErrorCode},
         providers::{
-            ActivateProviderInstallation, InstallProvider, ProviderApiFuture,
-            ProviderInstallationSnapshot, ProviderRegistryApi, ProviderReleaseSnapshot,
-            ProviderRepositorySnapshot, RefreshProviderRepository, RegisterProviderRepository,
-            RemoveProviderInstallation, SharedProviderRegistry,
+            ChangeProviderUpdatePolicy, InstallProvider, ProviderApiFuture, ProviderRegistryApi,
+            ProviderSnapshot, ProviderSourceSnapshot, RefreshProviderSource, RemoveProvider,
+            RemoveProviderSource, SharedProviderRegistry, TrustProviderSource, UpdateProvider,
         },
         reference_lookup::{
             LookupPortableReferences, ReferenceLookupFuture, ReferenceLookupInteraction,
@@ -55,56 +54,55 @@ pub fn static_provider_registry() -> SharedProviderRegistry {
 struct StaticProviderRegistry;
 
 impl ProviderRegistryApi for StaticProviderRegistry {
-    fn ensure_provider_active(&self, _provider_id: &str) -> ProviderApiFuture<'_, ()> {
+    fn ensure_provider_installed(&self, _provider_id: &str) -> ProviderApiFuture<'_, ()> {
         Box::pin(async { Ok(()) })
     }
 
-    fn list_provider_repositories(&self) -> ProviderApiFuture<'_, Vec<ProviderRepositorySnapshot>> {
+    fn list_provider_sources(&self) -> ProviderApiFuture<'_, Vec<ProviderSourceSnapshot>> {
         Box::pin(async { Ok(Vec::new()) })
     }
 
-    fn register_provider_repository(
+    fn trust_provider_source(
         &self,
-        _command: RegisterProviderRepository,
-    ) -> ProviderApiFuture<'_, ProviderRepositorySnapshot> {
+        _command: TrustProviderSource,
+    ) -> ProviderApiFuture<'_, ProviderSourceSnapshot> {
         unsupported_provider_operation()
     }
 
-    fn refresh_provider_repository(
+    fn refresh_provider_source(
         &self,
-        _command: RefreshProviderRepository,
-    ) -> ProviderApiFuture<'_, ProviderRepositorySnapshot> {
+        _command: RefreshProviderSource,
+    ) -> ProviderApiFuture<'_, ProviderSourceSnapshot> {
         unsupported_provider_operation()
     }
 
-    fn list_provider_releases(&self) -> ProviderApiFuture<'_, Vec<ProviderReleaseSnapshot>> {
-        Box::pin(async { Ok(Vec::new()) })
+    fn remove_provider_source(&self, _command: RemoveProviderSource) -> ProviderApiFuture<'_, ()> {
+        unsupported_provider_operation()
     }
 
-    fn list_provider_installations(
-        &self,
-    ) -> ProviderApiFuture<'_, Vec<ProviderInstallationSnapshot>> {
+    fn list_providers(&self) -> ProviderApiFuture<'_, Vec<ProviderSnapshot>> {
         Box::pin(async { Ok(Vec::new()) })
     }
 
     fn install_provider(
         &self,
         _command: InstallProvider,
-    ) -> ProviderApiFuture<'_, ProviderInstallationSnapshot> {
+    ) -> ProviderApiFuture<'_, ProviderSnapshot> {
         unsupported_provider_operation()
     }
 
-    fn activate_provider_installation(
-        &self,
-        _command: ActivateProviderInstallation,
-    ) -> ProviderApiFuture<'_, ProviderInstallationSnapshot> {
+    fn update_provider(&self, _command: UpdateProvider) -> ProviderApiFuture<'_, ProviderSnapshot> {
         unsupported_provider_operation()
     }
 
-    fn remove_provider_installation(
+    fn change_provider_update_policy(
         &self,
-        _command: RemoveProviderInstallation,
-    ) -> ProviderApiFuture<'_, ()> {
+        _command: ChangeProviderUpdatePolicy,
+    ) -> ProviderApiFuture<'_, ProviderSnapshot> {
+        unsupported_provider_operation()
+    }
+
+    fn remove_provider(&self, _command: RemoveProvider) -> ProviderApiFuture<'_, ()> {
         unsupported_provider_operation()
     }
 }

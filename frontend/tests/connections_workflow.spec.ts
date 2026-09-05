@@ -9,10 +9,10 @@ import {
   fallback,
   json,
   mockApi,
-  providerTarget,
   source,
   sourceId,
   task,
+  timestamp,
   workspace,
   workspaceId,
 } from "./support/api.ts";
@@ -63,18 +63,22 @@ test("creates and edits active provider connections without stale command state"
     const url = new URL(route.request().url());
     const method = route.request().method();
     if (url.pathname === "/api/v1/workspaces" && method === "GET") return json(route, [workspace]);
-    if (url.pathname === "/api/v1/provider-releases" && method === "GET") {
+    if (url.pathname === "/api/v1/providers" && method === "GET") {
       return json(route, [
         {
-          repositoryId: "org.example.providers",
           providerId: "org.example.provider",
+          sourceId: "88888888-8888-4888-8888-888888888888",
           name: "Example provider",
-          summary: "Example active provider",
+          description: "Example active provider",
           version: "2.0.0",
-          channels: ["stable"],
-          targets: [providerTarget],
-          installedTargets: [providerTarget],
-          activeTarget: providerTarget,
+          platform: "linux/amd64",
+          indexDigest: `sha256:${"a".repeat(64)}`,
+          binaryDigest: `sha256:${"b".repeat(64)}`,
+          updatePolicy: "manual",
+          availableUpdate: null,
+          lastUpdateError: null,
+          installedAt: timestamp,
+          updatedAt: timestamp,
         },
       ]);
     }
@@ -146,7 +150,7 @@ test("creates and edits active provider connections without stale command state"
   await expect(page.getByLabel("Connection name")).toHaveCount(0);
   await directoryError.getByRole("button", { name: "Retry" }).click();
   await expect.poll(() => connectionDirectoryRequests).toBe(2);
-  await expect(page.getByLabel("Provider")).toHaveText("Example provider 2.0.0 (org.example.provider)");
+  await expect(page.getByLabel("Provider")).toHaveText("Example provider 2.0.0");
   await expect(page.getByLabel("Fixture token")).toHaveCount(0);
   await page.getByLabel("Connection name").fill("Fixture account");
   await page.getByRole("button", { name: "Create connection" }).click();
@@ -233,8 +237,7 @@ test("requires an active provider before creating a connection", async ({ page }
     const url = new URL(route.request().url());
     if (url.pathname === "/api/v1/workspaces") return json(route, [workspace]);
     if (url.pathname === "/api/v1/connections") return json(route, []);
-    if (url.pathname === "/api/v1/provider-releases") return json(route, []);
-    if (url.pathname === "/api/v1/provider-installations") return json(route, []);
+    if (url.pathname === "/api/v1/providers") return json(route, []);
     return fallback(route);
   });
 
@@ -251,19 +254,22 @@ test("keeps retained active providers selectable after catalog removal", async (
     const url = new URL(route.request().url());
     if (url.pathname === "/api/v1/workspaces") return json(route, [workspace]);
     if (url.pathname === "/api/v1/connections") return json(route, []);
-    if (url.pathname === "/api/v1/provider-releases") return json(route, []);
-    if (url.pathname === "/api/v1/provider-installations") {
+    if (url.pathname === "/api/v1/providers") {
       return json(route, [
         {
-          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          repositoryId: "org.example.providers",
           providerId: retainedProviderId,
+          sourceId: "88888888-8888-4888-8888-888888888888",
+          name: null,
+          description: null,
           version: "2.0.0",
-          target: providerTarget,
-          packageSha256: "a".repeat(64),
-          active: true,
-          generation: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          platform: "linux/amd64",
+          indexDigest: `sha256:${"a".repeat(64)}`,
+          binaryDigest: `sha256:${"b".repeat(64)}`,
+          updatePolicy: "manual",
+          availableUpdate: null,
+          lastUpdateError: null,
           installedAt: "2030-01-02T03:04:05Z",
+          updatedAt: "2030-01-02T03:04:05Z",
         },
       ]);
     }
@@ -272,7 +278,7 @@ test("keeps retained active providers selectable after catalog removal", async (
 
   await page.goto("/connections");
 
-  await expect(page.getByLabel("Provider")).toHaveText(`${retainedProviderId} 2.0.0 (${providerTarget})`);
+  await expect(page.getByLabel("Provider")).toHaveText(`${retainedProviderId} 2.0.0`);
   await page.getByLabel("Connection name").fill("Retained provider");
   await expect(page.getByRole("button", { name: "Create connection" })).toBeEnabled();
   await expectNoHorizontalOverflow(page);

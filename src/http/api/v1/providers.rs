@@ -1,6 +1,6 @@
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Path, State, rejection::JsonRejection},
+    extract::{Path, State, rejection::JsonRejection},
     http::StatusCode,
     routing::{get, post, put},
 };
@@ -10,13 +10,13 @@ use uuid::Uuid;
 
 use crate::{
     application::providers::{
-        ActivateProviderInstallation, InstallProvider, RefreshProviderRepository,
-        RegisterProviderRepository, RemoveProviderInstallation,
+        ChangeProviderUpdatePolicy, InstallProvider, RefreshProviderSource, RemoveProvider,
+        RemoveProviderSource, TrustProviderSource, UpdateProvider,
     },
     http::{
         dto::providers::{
-            ActivateProviderRequest, InstallProviderRequest, ProviderInstallationResponse,
-            ProviderReleaseResponse, ProviderRepositoryResponse, RegisterProviderRepositoryRequest,
+            ChangeProviderUpdatePolicyRequest, InstallProviderRequest, ProviderResponse,
+            ProviderSourceResponse, TrustProviderSourceRequest, UpdateProviderRequest,
         },
         error::{ErrorResponse, HttpError},
     },
@@ -24,187 +24,203 @@ use crate::{
 
 use super::support::{HttpState, generate_uuid};
 
-const MAXIMUM_REGISTER_REPOSITORY_REQUEST_BYTES: usize = 16 * 1024;
-
 pub(super) fn router() -> Router<HttpState> {
     Router::new()
         .route(
-            "/api/v1/provider-repositories",
-            get(list_repositories)
-                .post(register_repository)
-                .layer(DefaultBodyLimit::max(
-                    MAXIMUM_REGISTER_REPOSITORY_REQUEST_BYTES,
-                )),
+            "/api/v1/provider-sources",
+            get(list_provider_sources).post(trust_provider_source),
         )
         .route(
-            "/api/v1/provider-repositories/{repository_id}/refresh",
-            post(refresh_repository),
-        )
-        .route("/api/v1/providers", get(list_providers))
-        .route(
-            "/api/v1/provider-installations",
-            get(list_installations).post(install_provider),
+            "/api/v1/provider-sources/{source_id}",
+            axum::routing::delete(remove_provider_source),
         )
         .route(
-            "/api/v1/provider-installations/{installation_id}",
-            axum::routing::delete(remove_provider_installation),
+            "/api/v1/provider-sources/{source_id}/refresh",
+            post(refresh_provider_source),
         )
         .route(
-            "/api/v1/providers/{provider_id}/activation",
-            put(activate_provider),
+            "/api/v1/providers",
+            get(list_providers).post(install_provider),
+        )
+        .route(
+            "/api/v1/providers/{provider_id}",
+            axum::routing::delete(remove_provider),
+        )
+        .route(
+            "/api/v1/providers/{provider_id}/update",
+            post(update_provider),
+        )
+        .route(
+            "/api/v1/providers/{provider_id}/update-policy",
+            put(change_provider_update_policy),
         )
 }
 
-#[utoipa::path(get, path = "/api/v1/provider-repositories", responses((status = 200, body = [ProviderRepositoryResponse]), (status = 500, body = ErrorResponse)), tag = "providers")]
-pub(super) async fn list_repositories(
+#[utoipa::path(get, path = "/api/v1/provider-sources", responses((status = 200, body = [ProviderSourceResponse]), (status = 500, body = ErrorResponse)), tag = "providers")]
+pub(super) async fn list_provider_sources(
     State(state): State<HttpState>,
-) -> Result<Json<Vec<ProviderRepositoryResponse>>, HttpError> {
-    let repositories = state.application.list_provider_repositories().await?;
+) -> Result<Json<Vec<ProviderSourceResponse>>, HttpError> {
     Ok(Json(
-        repositories
+        state
+            .application
+            .list_provider_sources()
+            .await?
             .into_iter()
-            .map(ProviderRepositoryResponse::from_snapshot)
+            .map(ProviderSourceResponse::from_snapshot)
             .collect::<Result<_, _>>()?,
     ))
 }
 
-#[utoipa::path(post, path = "/api/v1/provider-repositories", request_body = RegisterProviderRepositoryRequest, responses((status = 201, body = ProviderRepositoryResponse), (status = 400, body = ErrorResponse), (status = 500, body = ErrorResponse)), tag = "providers")]
-pub(super) async fn register_repository(
+#[utoipa::path(post, path = "/api/v1/provider-sources", request_body = TrustProviderSourceRequest, responses((status = 201, body = ProviderSourceResponse), (status = 400, body = ErrorResponse), (status = 409, body = ErrorResponse), (status = 500, body = ErrorResponse)), tag = "providers")]
+pub(super) async fn trust_provider_source(
     State(state): State<HttpState>,
-    payload: Result<Json<RegisterProviderRepositoryRequest>, JsonRejection>,
-) -> Result<(StatusCode, Json<ProviderRepositoryResponse>), HttpError> {
+    payload: Result<Json<TrustProviderSourceRequest>, JsonRejection>,
+) -> Result<(StatusCode, Json<ProviderSourceResponse>), HttpError> {
     let Json(payload) =
         payload.map_err(|_| HttpError::invalid_request("request body is invalid"))?;
-    let repository = state
+    let source = state
         .application
-        .register_provider_repository(RegisterProviderRepository {
-            url: payload.url,
-            registered_at: OffsetDateTime::now_utc(),
+        .trust_provider_source(TrustProviderSource {
+            source_id: generate_uuid()?,
+            repository_url: payload.repository_url,
+            trusted_at: OffsetDateTime::now_utc(),
         })
         .await?;
     Ok((
         StatusCode::CREATED,
-        Json(ProviderRepositoryResponse::from_snapshot(repository)?),
+        Json(ProviderSourceResponse::from_snapshot(source)?),
     ))
 }
 
-#[utoipa::path(post, path = "/api/v1/provider-repositories/{repository_id}/refresh", params(("repository_id" = String, Path)), responses((status = 200, body = ProviderRepositoryResponse), (status = 400, body = ErrorResponse), (status = 404, body = ErrorResponse), (status = 500, body = ErrorResponse), (status = 502, body = ErrorResponse)), tag = "providers")]
-pub(super) async fn refresh_repository(
+#[utoipa::path(post, path = "/api/v1/provider-sources/{source_id}/refresh", params(("source_id" = Uuid, Path)), responses((status = 200, body = ProviderSourceResponse), (status = 400, body = ErrorResponse), (status = 404, body = ErrorResponse), (status = 502, body = ErrorResponse)), tag = "providers")]
+pub(super) async fn refresh_provider_source(
     State(state): State<HttpState>,
-    Path(path): Path<RepositoryPath>,
-) -> Result<Json<ProviderRepositoryResponse>, HttpError> {
-    let repository = state
+    Path(path): Path<SourcePath>,
+) -> Result<Json<ProviderSourceResponse>, HttpError> {
+    let source_id = parse_source_id(&path.source_id)?;
+    let source = state
         .application
-        .refresh_provider_repository(RefreshProviderRepository {
-            repository_id: path.repository_id,
-            refreshed_at: OffsetDateTime::now_utc(),
+        .refresh_provider_source(RefreshProviderSource {
+            source_id,
+            checked_at: OffsetDateTime::now_utc(),
         })
         .await?;
-    Ok(Json(ProviderRepositoryResponse::from_snapshot(repository)?))
+    Ok(Json(ProviderSourceResponse::from_snapshot(source)?))
 }
 
-#[utoipa::path(get, path = "/api/v1/providers", responses((status = 200, body = [ProviderReleaseResponse]), (status = 500, body = ErrorResponse)), tag = "providers")]
+#[utoipa::path(delete, path = "/api/v1/provider-sources/{source_id}", params(("source_id" = Uuid, Path)), responses((status = 204), (status = 400, body = ErrorResponse), (status = 404, body = ErrorResponse), (status = 409, body = ErrorResponse), (status = 500, body = ErrorResponse)), tag = "providers")]
+pub(super) async fn remove_provider_source(
+    State(state): State<HttpState>,
+    Path(path): Path<SourcePath>,
+) -> Result<StatusCode, HttpError> {
+    let source_id = parse_source_id(&path.source_id)?;
+    state
+        .application
+        .remove_provider_source(RemoveProviderSource { source_id })
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(get, path = "/api/v1/providers", responses((status = 200, body = [ProviderResponse]), (status = 500, body = ErrorResponse)), tag = "providers")]
 pub(super) async fn list_providers(
     State(state): State<HttpState>,
-) -> Result<Json<Vec<ProviderReleaseResponse>>, HttpError> {
+) -> Result<Json<Vec<ProviderResponse>>, HttpError> {
     Ok(Json(
         state
             .application
-            .list_provider_releases()
+            .list_providers()
             .await?
             .into_iter()
-            .map(ProviderReleaseResponse::from)
-            .collect(),
-    ))
-}
-
-#[utoipa::path(get, path = "/api/v1/provider-installations", responses((status = 200, body = [ProviderInstallationResponse]), (status = 500, body = ErrorResponse)), tag = "providers")]
-pub(super) async fn list_installations(
-    State(state): State<HttpState>,
-) -> Result<Json<Vec<ProviderInstallationResponse>>, HttpError> {
-    Ok(Json(
-        state
-            .application
-            .list_provider_installations()
-            .await?
-            .into_iter()
-            .map(ProviderInstallationResponse::from_snapshot)
+            .map(ProviderResponse::from_snapshot)
             .collect::<Result<_, _>>()?,
     ))
 }
 
-#[utoipa::path(post, path = "/api/v1/provider-installations", request_body = InstallProviderRequest, responses((status = 201, body = ProviderInstallationResponse), (status = 400, body = ErrorResponse), (status = 404, body = ErrorResponse), (status = 409, body = ErrorResponse), (status = 500, body = ErrorResponse), (status = 502, body = ErrorResponse)), tag = "providers")]
+#[utoipa::path(post, path = "/api/v1/providers", request_body = InstallProviderRequest, responses((status = 201, body = ProviderResponse), (status = 400, body = ErrorResponse), (status = 404, body = ErrorResponse), (status = 409, body = ErrorResponse), (status = 500, body = ErrorResponse), (status = 502, body = ErrorResponse)), tag = "providers")]
 pub(super) async fn install_provider(
     State(state): State<HttpState>,
     payload: Result<Json<InstallProviderRequest>, JsonRejection>,
-) -> Result<(StatusCode, Json<ProviderInstallationResponse>), HttpError> {
+) -> Result<(StatusCode, Json<ProviderResponse>), HttpError> {
     let Json(payload) =
         payload.map_err(|_| HttpError::invalid_request("request body is invalid"))?;
-    let installation = state
+    let provider = state
         .application
         .install_provider(InstallProvider {
-            installation_id: generate_uuid()?,
-            repository_id: payload.repository_id,
+            artifact_id: generate_uuid()?,
+            source_id: payload.source_id,
             provider_id: payload.provider_id,
             version: payload.version,
-            target: payload.target,
+            update_policy: payload.update_policy.into(),
             installed_at: OffsetDateTime::now_utc(),
         })
         .await?;
     Ok((
         StatusCode::CREATED,
-        Json(ProviderInstallationResponse::from_snapshot(installation)?),
+        Json(ProviderResponse::from_snapshot(provider)?),
     ))
 }
 
-#[utoipa::path(put, path = "/api/v1/providers/{provider_id}/activation", params(("provider_id" = String, Path)), request_body = ActivateProviderRequest, responses((status = 200, body = ProviderInstallationResponse), (status = 400, body = ErrorResponse), (status = 404, body = ErrorResponse), (status = 500, body = ErrorResponse), (status = 502, body = ErrorResponse)), tag = "providers")]
-pub(super) async fn activate_provider(
+#[utoipa::path(post, path = "/api/v1/providers/{provider_id}/update", params(("provider_id" = String, Path)), request_body = UpdateProviderRequest, responses((status = 200, body = ProviderResponse), (status = 400, body = ErrorResponse), (status = 404, body = ErrorResponse), (status = 409, body = ErrorResponse), (status = 500, body = ErrorResponse), (status = 502, body = ErrorResponse)), tag = "providers")]
+pub(super) async fn update_provider(
     State(state): State<HttpState>,
     Path(path): Path<ProviderPath>,
-    payload: Result<Json<ActivateProviderRequest>, JsonRejection>,
-) -> Result<Json<ProviderInstallationResponse>, HttpError> {
+    payload: Result<Json<UpdateProviderRequest>, JsonRejection>,
+) -> Result<Json<ProviderResponse>, HttpError> {
     let Json(payload) =
         payload.map_err(|_| HttpError::invalid_request("request body is invalid"))?;
-    let installation = state
+    let provider = state
         .application
-        .activate_provider_installation(ActivateProviderInstallation {
+        .update_provider(UpdateProvider {
             provider_id: path.provider_id,
-            installation_id: payload.installation_id,
-            generation: generate_uuid()?,
-            activated_at: OffsetDateTime::now_utc(),
+            artifact_id: generate_uuid()?,
+            version: payload.version,
+            updated_at: OffsetDateTime::now_utc(),
         })
         .await?;
-    Ok(Json(ProviderInstallationResponse::from_snapshot(
-        installation,
-    )?))
+    Ok(Json(ProviderResponse::from_snapshot(provider)?))
 }
 
-#[utoipa::path(delete, path = "/api/v1/provider-installations/{installation_id}", params(("installation_id" = Uuid, Path)), responses((status = 204), (status = 400, body = ErrorResponse), (status = 404, body = ErrorResponse), (status = 409, body = ErrorResponse), (status = 500, body = ErrorResponse)), tag = "providers")]
-pub(super) async fn remove_provider_installation(
+#[utoipa::path(put, path = "/api/v1/providers/{provider_id}/update-policy", params(("provider_id" = String, Path)), request_body = ChangeProviderUpdatePolicyRequest, responses((status = 200, body = ProviderResponse), (status = 400, body = ErrorResponse), (status = 404, body = ErrorResponse), (status = 500, body = ErrorResponse), (status = 502, body = ErrorResponse)), tag = "providers")]
+pub(super) async fn change_provider_update_policy(
     State(state): State<HttpState>,
-    Path(path): Path<InstallationPath>,
+    Path(path): Path<ProviderPath>,
+    payload: Result<Json<ChangeProviderUpdatePolicyRequest>, JsonRejection>,
+) -> Result<Json<ProviderResponse>, HttpError> {
+    let Json(payload) =
+        payload.map_err(|_| HttpError::invalid_request("request body is invalid"))?;
+    let provider = state
+        .application
+        .change_provider_update_policy(ChangeProviderUpdatePolicy {
+            provider_id: path.provider_id,
+            update_policy: payload.update_policy.into(),
+            updated_at: OffsetDateTime::now_utc(),
+        })
+        .await?;
+    Ok(Json(ProviderResponse::from_snapshot(provider)?))
+}
+
+#[utoipa::path(delete, path = "/api/v1/providers/{provider_id}", params(("provider_id" = String, Path)), responses((status = 204), (status = 404, body = ErrorResponse), (status = 409, body = ErrorResponse), (status = 500, body = ErrorResponse)), tag = "providers")]
+pub(super) async fn remove_provider(
+    State(state): State<HttpState>,
+    Path(path): Path<ProviderPath>,
 ) -> Result<StatusCode, HttpError> {
-    let installation_id = parse_installation_id(&path.installation_id)?;
     state
         .application
-        .remove_provider_installation(RemoveProviderInstallation { installation_id })
+        .remove_provider(RemoveProvider {
+            provider_id: path.provider_id,
+        })
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-fn parse_installation_id(value: &str) -> Result<Uuid, HttpError> {
+fn parse_source_id(value: &str) -> Result<Uuid, HttpError> {
     Uuid::parse_str(value).map_err(|_| {
         HttpError::invalid_field(
-            "installationId",
+            "sourceId",
             "invalid_uuid",
-            "installation ID must be a UUID",
+            "provider source ID must be a UUID",
         )
     })
-}
-
-#[derive(Deserialize)]
-pub(super) struct RepositoryPath {
-    repository_id: String,
 }
 
 #[derive(Deserialize)]
@@ -213,8 +229,8 @@ pub(super) struct ProviderPath {
 }
 
 #[derive(Deserialize)]
-pub(super) struct InstallationPath {
-    installation_id: String,
+pub(super) struct SourcePath {
+    source_id: String,
 }
 
 #[cfg(test)]
@@ -224,13 +240,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn malformed_installation_id_uses_structured_field_error() {
-        let error = parse_installation_id("not-a-uuid")
-            .expect_err("malformed installation ID is rejected")
+    fn malformed_source_id_uses_structured_field_error() {
+        let error = parse_source_id("not-a-uuid")
+            .expect_err("malformed source ID is rejected")
             .0;
 
         assert_eq!(error.code, ApplicationErrorCode::InvalidField);
-        assert_eq!(error.field_problems[0].path, "installationId");
+        assert_eq!(error.field_problems[0].path, "sourceId");
         assert_eq!(error.field_problems[0].code, "invalid_uuid");
     }
 }
