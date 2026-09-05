@@ -38,14 +38,14 @@
   "containerEnv": {
     "DO_NOT_TRACK": "1",
     "NEXT_TELEMETRY_DISABLED": "1",
-    "MISE_TRUSTED_CONFIG_PATHS": "${containerWorkspaceFolder}"
+    "MISE_TRUSTED_CONFIG_PATHS": "/workspaces"
   },
-  "remoteEnv": {
-    "PATH": "${containerEnv:PATH}:${containerWorkspaceFolder}/node_modules/.bin"
-  },
+  "remoteEnv": {},
+  "workspaceMount": "source=${localWorkspaceFolder}/..,target=/workspaces,type=bind",
+  "workspaceFolder": "/workspaces/trakkin",
   "mounts": [],
   "init": true,
   "remoteUser": "vscode",
-  "onCreateCommand": "mise setup",
+  "updateContentCommand": "mise setup",
   "postCreateCommand": "mise prepare"
 }
