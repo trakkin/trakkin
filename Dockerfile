@@ -30,16 +30,17 @@ RUN --mount=type=cache,target=/pnpm/store \
 
 COPY frontend/ frontend/
 
-RUN mise run build:frontend
-
 COPY Cargo.toml Cargo.lock build.rs ./
 COPY migrations/ migrations/
 COPY src/ src/
 
+RUN mise run api:generate && \
+    mise run web:build
+
 RUN --mount=type=cache,target=/root/.cargo/git \
     --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/app/target \
-    mise run build:backend && \
+    mise run server:build && \
     install -D -m 755 target/release/trakkin /rootfs/usr/local/bin/trakkin
 
 FROM debian:13-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132

@@ -22,68 +22,67 @@ watchexec = "2.7.0"
 [tasks.build]
 description = "Build the self-contained release executable"
 run = [
-  { task = "clean:release" },
-  { task = "build:frontend" },
-  { task = "build:backend" },
-  { task = "stage:release" },
+  { task = "api:generate" },
+  { task = "web:build" },
+  { task = "server:build" },
+  { task = "release:stage" },
 ]
 
-[tasks."build:backend"]
+[tasks."api:generate"]
+description = "Generate the OpenAPI document and web API types"
 run = [
   "mkdir -p target/openapi",
   "cargo run --locked --quiet --bin export_openapi -- target/openapi/trakkin.openapi.json",
   "pnpm --dir frontend exec openapi-typescript ../target/openapi/trakkin.openapi.json -o src/lib/api/generated/schema.ts",
-  "cargo build --locked --release --workspace --features trakkin/bundled",
 ]
 
-[tasks."build:frontend"]
+[tasks."server:build"]
+description = "Build the bundled release server"
+run = "cargo build --locked --release --workspace --features trakkin/bundled"
+
+[tasks."web:build"]
+description = "Build the web application"
 dir = "frontend"
 run = "pnpm build"
 
-[tasks."build:docs"]
+[tasks."docs:build"]
+description = "Build the documentation site"
 dir = "docs"
 run = "pnpm build"
 
-[tasks."stage:release"]
+[tasks."release:stage"]
+description = "Stage the release executable for distribution"
+hide = true
 run = "install -D -m 755 target/release/trakkin dist/trakkin"
 
-[tasks."build:docker"]
-run = '''
-#!/usr/bin/env bash
-mise run docker -- "$@"
-'''
-
 [tasks.clean]
-description = "Clean all build artifacts"
-run = [
-  { tasks = [
-    "clean:backend",
-    "clean:frontend",
-    "clean:docs",
-    "clean:release",
-  ] },
-]
+description = "Clean server, web, documentation, and release artifacts"
+run = [{ tasks = ["server:clean", "web:clean", "docs:clean", "release:clean"] }]
 
-[tasks."clean:backend"]
+[tasks."server:clean"]
+description = "Clean server build artifacts"
 run = "cargo clean"
 
-[tasks."clean:frontend"]
+[tasks."web:clean"]
+description = "Clean web build artifacts"
 dir = "frontend"
 run = "pnpm clean"
 
-[tasks."clean:docs"]
+[tasks."docs:clean"]
+description = "Clean documentation build artifacts"
 dir = "docs"
 run = "pnpm clean"
 
-[tasks."clean:release"]
+[tasks."release:clean"]
+description = "Clean staged release artifacts"
 run = "rm -rf dist"
 
 [tasks.dev]
-description = "Run backend and frontend development servers"
-run = [{ tasks = ["dev:backend", "dev:frontend"] }]
+description = "Run the server and web development processes"
+run = [{ tasks = ["server:dev", "web:dev"] }]
 
-[tasks."dev:backend"]
-description = "Restart the backend when Rust inputs change"
+[tasks."server:dev"]
+description = "Restart the server when Rust inputs change"
 run = '''
 watchexec --restart --stop-signal SIGTERM \
   --watch Cargo.toml \
@@ -96,183 +95,170 @@ watchexec --restart --stop-signal SIGTERM \
   -- 'cargo run --locked -p trakkin --features embedded-database --bin trakkin'
 '''
 
-[tasks."dev:frontend"]
+[tasks."web:dev"]
+description = "Run the web development server"
 dir = "frontend"
 run = "pnpm dev"
 
-[tasks."dev:docs"]
+[tasks."docs:dev"]
+description = "Run the documentation development server"
 dir = "docs"
 run = "pnpm dev"
-
-[tasks.start]
-description = "Build and start the backend, frontend, and documentation servers"
-run = [
-  { tasks = [
-    "build:frontend",
-    "build:docs",
-  ] },
-  { tasks = [
-    "start:backend",
-    "start:frontend",
-    "start:docs",
-  ] },
-]
-
-[tasks."start:backend"]
-run = "cargo run --locked -p trakkin --features embedded-database --bin trakkin"
-
-[tasks."start:frontend"]
-dir = "frontend"
-run = "pnpm start"
-
-[tasks."start:docs"]
-dir = "docs"
-run = "pnpm start"
 
 [tasks.fix]
-description = "Automatically fix lint and formatting issues"
+description = "Fix server, web, documentation, and SQL issues"
 run = [
-  { task = "fix:backend" },
-  { task = "fix:frontend" },
-  { task = "fix:sql" },
+  { task = "server:fix" },
+  { task = "web:fix" },
+  { task = "docs:fix" },
+  { task = "sql:fix" },
 ]
 
-[tasks."fix:backend"]
+[tasks."server:fix"]
+description = "Apply automated server lint fixes"
 run = "cargo clippy --fix --workspace --all-targets --all-features --allow-dirty"
 
-[tasks."fix:frontend"]
+[tasks."web:fix"]
+description = "Apply automated web lint fixes"
 dir = "frontend"
 run = "pnpm fix"
 
-[tasks."fix:sql"]
+[tasks."sql:fix"]
+description = "Apply automated SQL lint and formatting fixes"
 run = [
   "cargo dylint --all --fix -- --workspace --all-targets --allow-dirty --ignore-rust-version",
   "sqruff fix --dialect postgres migrations",
 ]
 
-[tasks."fix:docs"]
+[tasks."docs:fix"]
+description = "Apply automated documentation lint fixes"
 dir = "docs"
 run = "pnpm fix"
 
 [tasks.format]
-description = "Format the project"
+description = "Format server, web, and documentation sources"
 run = [
-  { task = "format:backend" },
-  { task = "format:frontend" },
-  { task = "format:sql" },
+  { task = "server:format" },
+  { task = "web:format" },
+  { task = "docs:format" },
 ]
 
-[tasks."format:backend"]
+[tasks."server:format"]
+description = "Format server sources"
 run = "cargo fmt --all"
 
-[tasks."format:frontend"]
+[tasks."web:format"]
+description = "Format web sources"
 dir = "frontend"
 run = "pnpm format"
 
-[tasks."format:sql"]
-run = [
-  "cargo dylint --all --fix -- --workspace --all-targets --allow-dirty --ignore-rust-version",
-  "sqruff fix --dialect postgres migrations",
-]
-
-[tasks."format:docs"]
+[tasks."docs:format"]
+description = "Format documentation sources"
 dir = "docs"
 run = "pnpm format"
 
 [tasks.setup]
-description = "Set up product dependencies"
-run = [{ tasks = ["setup:backend", "setup:frontend"] }, { task = "prepare" }]
+description = "Set up server, web, and documentation dependencies"
+run = [{ tasks = ["server:setup", "web:setup", "docs:setup"] }]
 
-[tasks."setup:backend"]
+[tasks."server:setup"]
+description = "Fetch locked server dependencies"
 run = "cargo fetch --locked"
 
-[tasks."setup:frontend"]
+[tasks."web:setup"]
+description = "Install web dependencies and Chromium"
 dir = "frontend"
-run = "pnpm install"
+run = [
+  "pnpm install",
+  "pnpm exec playwright install-deps chromium",
+  "pnpm setup",
+]
 
-[tasks."setup:docs"]
+[tasks."docs:setup"]
+description = "Install and prepare documentation dependencies"
 dir = "docs"
-run = "pnpm install"
+run = ["pnpm install", "pnpm setup"]
 
-[tasks.lint]
-description = "Lint the project"
+[tasks.check]
+description = "Check workflows, server, web, documentation, and SQL sources"
 run = [
   { tasks = [
-    "lint:actions",
-    "lint:backend",
-    "lint:frontend",
-    "lint:sql",
+    "workflows:check",
+    "server:check",
+    "web:check",
+    "docs:check",
+    "sql:check",
   ] },
 ]
-[tasks."lint:actions"]
+
+[tasks."workflows:check"]
+description = "Check GitHub Actions workflows"
 run = "actionlint"
 
-[tasks."lint:backend"]
+[tasks."server:check"]
+description = "Check server lints"
 run = "cargo clippy --workspace --all-targets --all-features -- -D warnings"
 
-[tasks."lint:frontend"]
+[tasks."web:check"]
+description = "Check web formatting, lints, and types"
 dir = "frontend"
 run = "pnpm lint"
 
-[tasks."lint:sql"]
+[tasks."sql:check"]
+description = "Check embedded and migration SQL"
 run = [
   "cargo dylint --all -- --workspace --all-targets --ignore-rust-version",
   "sqruff lint --dialect postgres migrations",
 ]
 
-[tasks."lint:docs"]
+[tasks."docs:check"]
+description = "Check documentation formatting and types"
 dir = "docs"
 run = "pnpm lint"
 
-[tasks.prepare]
-description = "Prepare frontend browser dependencies"
-run = [{ task = "prepare:frontend" }]
-
-[tasks."prepare:frontend"]
-dir = "frontend"
-run = ["pnpm exec playwright install-deps chromium", "pnpm setup"]
-
-[tasks."prepare:docs"]
-dir = "docs"
-run = "pnpm setup"
-
 [tasks.test]
-description = "Run all tests"
-run = [{ task = "test:backend" }, { task = "test:frontend" }]
+description = "Run server and web tests"
+run = [{ task = "server:test" }, { task = "web:test" }]
 
-[tasks."test:backend"]
+[tasks."server:test"]
+description = "Run server tests"
 run = "cargo test --workspace --all-features"
 
-[tasks."test:frontend"]
+[tasks."web:test"]
+description = "Run web browser tests"
 dir = "frontend"
 run = "pnpm test"
 
 [tasks.update]
-description = "Update tools and dependencies"
+description = "Update the toolchain, workflows, server, web, and documentation dependencies"
 run = [
-  { task = "update:tools" },
+  { task = "toolchain:update" },
   { tasks = [
-    "update:actions",
-    "update:backend",
-    "update:frontend",
-    "update:docs",
+    "workflows:update",
+    "server:update",
+    "web:update",
+    "docs:update",
   ] },
 ]
 
-[tasks."update:actions"]
+[tasks."workflows:update"]
 description = "Update and SHA-pin GitHub Actions dependencies"
 run = "actions-up --yes"
 
-[tasks."update:backend"]
+[tasks."server:update"]
+description = "Update server dependencies"
 run = "cargo upgrade --incompatible allow --pinned allow"
 
-[tasks."update:frontend"]
+[tasks."web:update"]
+description = "Update web dependencies"
 dir = "frontend"
 run = "pnpm update --latest"
 
-[tasks."update:docs"]
+[tasks."docs:update"]
+description = "Update documentation dependencies"
 dir = "docs"
 run = "pnpm update --latest"
 
-[tasks."update:tools"]
+[tasks."toolchain:update"]
+description = "Update mise-managed tools"
 run = "mise upgrade --bump"

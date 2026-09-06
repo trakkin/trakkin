@@ -19,7 +19,7 @@ Set up the repository with:
 mise run setup
 ```
 
-Start the backend and frontend development servers with:
+Start the server and web development processes with:
 
 ```sh
 mise run dev
@@ -33,19 +33,18 @@ Run `mise run --list` to see all available tasks.
 
 The main repository tasks are:
 
-| Task               | Purpose                                                              |
-| ------------------ | -------------------------------------------------------------------- |
-| `mise run setup`   | Install project dependencies and prepare the development environment |
-| `mise run dev`     | Run the backend and frontend development servers with hot reloading  |
-| `mise run lint`    | Run application linters                                              |
-| `mise run format`  | Format application source files                                      |
-| `mise run fix`     | Apply automatically fixable lint and formatting changes              |
-| `mise run test`    | Run backend and frontend tests                                       |
-| `mise run build`   | Build the release executable to `dist/`                              |
-| `mise run clean`   | Remove build artifacts                                               |
-| `mise run prepare` | Prepare frontend browser dependencies                                |
+| Task              | Purpose                                                              |
+| ----------------- | -------------------------------------------------------------------- |
+| `mise run setup`  | Install project dependencies and prepare the development environment |
+| `mise run dev`    | Run the server and web development processes with hot reloading      |
+| `mise run check`  | Check workflows, server, web, documentation, and SQL sources         |
+| `mise run format` | Format server, web, and documentation sources                        |
+| `mise run fix`    | Apply automated server, web, documentation, and SQL fixes            |
+| `mise run test`   | Run server and web tests                                             |
+| `mise run build`  | Build the release executable to `dist/`                              |
+| `mise run clean`  | Remove build artifacts                                               |
 
-There are also sub-tasks for each subsystem, such as `mise run lint:backend`, `mise run test:frontend`, and `mise run build:docs`. See [`mise.toml`](mise.toml) or run `mise run --list` for the complete list.
+Target a specific subsystem with scope-first tasks such as `mise run server:check`, `mise run web:test`, and `mise run docs:build`. See [`mise.toml`](mise.toml) or run `mise run --list` for the complete list.
 
 ## Tooling
 
@@ -75,10 +74,10 @@ For Rust:
 
 Run the checks that cover your change while iterating:
 
-- Backend: `mise run lint:backend` and `mise run test:backend`
-- Frontend: `mise run lint:frontend`, `mise run test:frontend`, and `mise run build:frontend`
-- Documentation: `mise run lint:docs` and `mise run build:docs`
-- SQL: `mise run lint:sql`
+- Server: `mise run server:check` and `mise run server:test`
+- Web: `mise run web:check`, `mise run web:test`, and `mise run web:build`
+- Documentation: `mise run docs:check` and `mise run docs:build`
+- SQL: `mise run sql:check`
 
 ## Branches
 
