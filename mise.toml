@@ -1,3 +1,6 @@
+[bootstrap.mise_shell_activate]
+bashrc = "activate"
+
 [settings]
 lockfile = true
 minimum_release_age = "3d"

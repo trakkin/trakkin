@@ -40,12 +40,14 @@
     "NEXT_TELEMETRY_DISABLED": "1",
     "MISE_TRUSTED_CONFIG_PATHS": "/workspaces"
   },
-  "remoteEnv": {},
+  "remoteEnv": {
+    "PATH": "/home/vscode/.local/share/mise/shims:${containerEnv:PATH}"
+  },
   "workspaceMount": "source=${localWorkspaceFolder}/..,target=/workspaces,type=bind",
   "workspaceFolder": "/workspaces/trakkin",
   "mounts": [],
   "init": true,
   "remoteUser": "vscode",
   "updateContentCommand": "mise setup",
-  "postCreateCommand": "mise prepare"
+  "postCreateCommand": "mise bootstrap mise-shell-activate apply --yes && mise prepare"
 }
