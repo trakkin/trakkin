@@ -15,7 +15,7 @@ import {
 } from "@lucide/svelte";
 import { onDestroy } from "svelte";
 import { goto } from "$app/navigation";
-import { AlertDialog, Button, IconButton, MediaArtwork, Panel, Select, Spinner, Tabs, TextInput } from "$lib";
+import { AlertDialog, Button, Chip, IconButton, MediaArtwork, Panel, Select, Spinner, Tabs, TextInput } from "$lib";
 import {
   CATALOG_PAGE_LIMIT,
   type CatalogAsset,
@@ -455,22 +455,44 @@ async function copyPortableReference(referenceId: string, value: string): Promis
         </dl>
       </section>
 
-      {#if entry.item?.portableReferences.length}
+      {#if entry.item?.portableReferenceCandidates.length}
         <section>
           <h3 class="text-meta font-semibold uppercase text-text-disabled">Portable references</h3>
           <div class="mt-2 grid gap-1.5">
-            {#each entry.item.portableReferences as reference, index}
+            {#each entry.item.portableReferenceCandidates as reference, index}
               {@const referenceValue = formatPortableReference(reference)}
               {@const referenceId = `${relationId(entry)}:${index}`}
+              {@const recommended = reference.providerRecommended}
+              {@const effective = reference.effectiveMappingRoot}
 
               <div
                 class="flex min-h-10 items-center gap-2 rounded-md border border-border-subtle bg-black/10 px-3 py-2"
               >
-                <div
-                  class="min-w-0 flex-1 truncate font-mono text-label leading-5 text-text-secondary"
-                  title={referenceValue}
-                >
-                  {referenceValue}
+                <div class="min-w-0 flex-1">
+                  <div
+                    class="truncate font-mono text-label leading-5 text-text-secondary"
+                    title={referenceValue}
+                  >
+                    {referenceValue}
+                  </div>
+                  {#if recommended || effective}
+                    <div class="mt-1 flex flex-wrap gap-1.5">
+                      {#if recommended}
+                        <Chip
+                          dot
+                          tone="info"
+                          >Provider recommended</Chip
+                        >
+                      {/if}
+                      {#if effective}
+                        <Chip
+                          dot
+                          tone="success"
+                          >Effective root</Chip
+                        >
+                      {/if}
+                    </div>
+                  {/if}
                 </div>
 
                 <IconButton

@@ -43,7 +43,7 @@ let selectedSourceError = $derived(
 let sourceItems = $derived(
   directory?.sources.map((entry) => ({ value: entry.source.id, label: entry.source.displayName })) ?? [],
 );
-let referenceEntries = $derived(entries.filter((entry) => Boolean(entry.item?.portableReferences.length)));
+let referenceEntries = $derived(entries.filter((entry) => Boolean(entry.item?.portableReferenceCandidates.length)));
 
 $effect(() => {
   const activeWorkspaceId = workspaceId;
@@ -271,7 +271,7 @@ async function loadMore(): Promise<void> {
                 </div>
               </div>
               <div class="mt-2 grid gap-1.5">
-                {#each entry.item?.portableReferences ?? [] as reference}
+                {#each entry.item?.portableReferenceCandidates ?? [] as reference}
                   {@const endpoint = formatPortableReference(reference)}
                   <div
                     class="flex min-w-0 items-center gap-2 rounded-control border border-border-subtle bg-black/10 px-2 py-1.5"

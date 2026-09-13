@@ -59,6 +59,8 @@ test("preserves healthy sources and keeps mobile inspection in a persistent lowe
   const details = page.getByRole("region", { name: "Catalog details for First entry" });
   await expect(details).toBeVisible();
   await expect(details.getByText("example.media:media/first", { exact: true })).toBeVisible();
+  await expect(details.getByText("Provider recommended", { exact: true })).toBeVisible();
+  await expect(details.getByText("Effective root", { exact: true })).toBeVisible();
   await expect(details.getByText("Reference 1", { exact: true })).toHaveCount(0);
   if ((page.viewportSize()?.width ?? 0) < 1024) {
     const detailsBox = await details.boundingBox();

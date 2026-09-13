@@ -64,7 +64,15 @@ test("authors and activates portable mapping revisions", async ({ page }) => {
         });
       }
       if (url.searchParams.get("search") === "fresh") {
-        return json(route, catalogPage([catalogEntry("Fresh result", "media/fresh-result", "fresh", false, false)]));
+        return json(
+          route,
+          catalogPage([
+            catalogEntry("Fresh result", "media/fresh-result", "fresh", false, false, {
+              recommended: false,
+              effective: false,
+            }),
+          ]),
+        );
       }
       rootCatalogRequests += 1;
       if (rootCatalogRequests >= 3) {

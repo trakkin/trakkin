@@ -14,8 +14,15 @@ export function catalogEntry(
   relationKey: string,
   hasChildren: boolean,
   asset: boolean,
+  referenceRoles: { recommended?: boolean; effective?: boolean } = {},
 ) {
   const itemValue = bytes(itemKey);
+  const reference = {
+    namespace: "example.media",
+    value: itemValue,
+    providerRecommended: referenceRoles.recommended ?? true,
+    effectiveMappingRoot: referenceRoles.effective ?? true,
+  };
   return {
     hasChildren,
     relation: {
@@ -31,7 +38,7 @@ export function catalogEntry(
       kind: { namespace: "fixture", name: hasChildren ? "show" : "episode" },
       displayName,
       attributes: {},
-      portableReferences: [{ namespace: "example.media", value: itemValue }],
+      portableReferenceCandidates: [reference],
       binaryAssets: asset
         ? [
             {

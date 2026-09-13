@@ -564,6 +564,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspace_id}/sources/{source_id}/mapping-root-policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_mapping_root_policy"];
+        put: operations["update_mapping_root_policy"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{workspace_id}/sources/{source_id}/reads": {
         parameters: {
             query?: never;
@@ -1074,7 +1090,7 @@ export interface components {
             displayName: string;
             key: components["schemas"]["KeyResponse"];
             kind: components["schemas"]["TermResponse"];
-            portableReferences: components["schemas"]["PortableReferenceResponse"][];
+            portableReferenceCandidates: components["schemas"]["PortableReferenceCandidateResponse"][];
         };
         CatalogPageResponse: {
             entries: components["schemas"]["CatalogEntryResponse"][];
@@ -1235,7 +1251,7 @@ export interface components {
             displayName: string;
             key: components["schemas"]["KeyResponse"];
             kind: components["schemas"]["TermResponse"];
-            portableReferences: components["schemas"]["PortableReferenceResponse"][];
+            portableReferenceCandidates: components["schemas"]["PortableReferenceCandidateResponse"][];
         };
         LookupResolutionEvidenceResponse: {
             backing?: null | components["schemas"]["CoordinateBackingResponse"];
@@ -1342,6 +1358,15 @@ export interface components {
             /** Format: int64 */
             rowCount: number;
         };
+        MappingRootNamespaceResponse: {
+            /** Format: int64 */
+            candidateCount: number;
+            namespace: string;
+        };
+        MappingRootPolicyResponse: {
+            availableNamespaces: components["schemas"]["MappingRootNamespaceResponse"][];
+            namespaces: string[] | null;
+        };
         MappingSummaryResponse: {
             activation?: null | components["schemas"]["MappingActivationResponse"];
             createdAt: string;
@@ -1355,6 +1380,12 @@ export interface components {
         };
         OpenApiDocumentResponse: {
             [key: string]: unknown;
+        };
+        PortableReferenceCandidateResponse: {
+            effectiveMappingRoot: boolean;
+            namespace: string;
+            providerRecommended: boolean;
+            value: number[];
         };
         PortableReferenceLookupOutcomeResponse: {
             candidate: components["schemas"]["LookupCandidateResponse"];
@@ -1742,6 +1773,9 @@ export interface components {
         UpdateMappingDocumentRequest: {
             baseContentHash: string;
             mappings: string[][];
+        };
+        UpdateMappingRootPolicyRequest: {
+            namespaces: string[] | null;
         };
         UpdateProviderRequest: {
             version: string;
@@ -3773,6 +3807,102 @@ export interface operations {
                 };
             };
             502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_mapping_root_policy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MappingRootPolicyResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    update_mapping_root_policy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateMappingRootPolicyRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MappingRootPolicyResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };
