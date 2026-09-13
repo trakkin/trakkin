@@ -40,7 +40,7 @@ const edgeSelectItems = Array.from({ length: 20 }, (_, index) => ({
 const tableRows: [string, string, string, ChipTone][] = [
   ["Living Room Server", "Fixture Media", "Ready", "success"],
   ["Watch history", "Trakt", "Pending", "warning"],
-  ["Archive", "Plex", "Unavailable", "danger"],
+  ["Archive", "Media server", "Unavailable", "danger"],
 ];
 
 let selectedStatus = $state("ready");

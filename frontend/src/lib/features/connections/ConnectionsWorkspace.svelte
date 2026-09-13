@@ -391,10 +391,19 @@ function selectMethod(connectionId: string, method: string) {
 
 async function startAuthentication(connection: Connection) {
   const method = methodFor(connection.id);
-  if (!method) return;
+  const inspection = inspections[connection.id];
+  if (!method || !inspection) return;
   const values = inputsFor(connection.id, method.fields);
   if (!values) return;
+  const configuration = inspection.fields.length > 0 ? configurationInput(connection.id, inspection) : undefined;
+  if (inspection.fields.length > 0 && !configuration) return;
   await runPending(`authentication:${connection.id}`, async () => {
+    if (configuration) {
+      const updated = await reconfigureConnection(connection.id, configuration, lifecycleController.signal);
+      if (!lifecycleActive()) return;
+      connections = connections.map((candidate) => (candidate.id === updated.id ? updated : candidate));
+      secretReplacementDrafts = { ...secretReplacementDrafts, [connection.id]: {} };
+    }
     const step = await startConnectionAuthentication(connection.id, method.key, values, lifecycleController.signal);
     if (!lifecycleActive()) return;
     drafts = { ...drafts, [connection.id]: {} };
@@ -688,6 +697,14 @@ function methodItems(connectionId: string) {
     value: method.key,
     label: method.displayName,
   }));
+}
+
+function authenticationSetupPending(connectionId: string, inspection: ConnectionInspection): boolean {
+  return (
+    inspection.authenticationMethods.length > 0 &&
+    inspection.configuredSecretKeys.length === 0 &&
+    authentications[connectionId]?.status !== "completed"
+  );
 }
 
 function accountName(connectionId: string): string {
@@ -1140,37 +1157,30 @@ function messageFor(error: unknown, fallback: string): string {
                         <h3 class="text-label font-[510] text-text-primary">Configuration</h3>
                         <p class="mt-0.5 text-meta text-text-muted">Provider settings and credential replacement</p>
                       </div>
-                      <Button
-                        disabled={pending[`configuration:${connection.id}`]}
-                        onclick={() => saveConfiguration(connection)}
-                        size="sm"
-                        variant="ghost"
-                      >
-                        {#if pending[`configuration:${connection.id}`]}
-                          <Spinner size={13} />
-                        {:else}
-                          <Save
-                            aria-hidden="true"
-                            size={13}
-                          />
-                        {/if}
-                        Save</Button
-                      >
+                      {#if inspection && !authenticationSetupPending(connection.id, inspection)}
+                        <Button
+                          disabled={pending[`configuration:${connection.id}`]}
+                          onclick={() => saveConfiguration(connection)}
+                          size="sm"
+                          variant="ghost"
+                        >
+                          {#if pending[`configuration:${connection.id}`]}
+                            <Spinner size={13} />
+                          {:else}
+                            <Save
+                              aria-hidden="true"
+                              size={13}
+                            />
+                          {/if}
+                          Save</Button
+                        >
+                      {/if}
                     </div>
                     <div class="mt-4">
                       {@render configurationFields(connection.id, inspection?.fields ?? [], "configuration")}
                     </div>
                     {#if inspection?.fields.length === 0}
                       <p class="mt-3 text-label text-text-muted">This provider has no configurable fields.</p>
-                    {/if}
-                    {#if inspection?.fieldProblems.length}
-                      <div
-                        class="mt-3 grid gap-1 rounded-md border border-warning/25 bg-warning/8 px-3 py-2 text-meta text-warning"
-                      >
-                        {#each inspection.fieldProblems as problem}
-                          <p>{problem.path}: {problem.message}</p>
-                        {/each}
-                      </div>
                     {/if}
                   </section>
 

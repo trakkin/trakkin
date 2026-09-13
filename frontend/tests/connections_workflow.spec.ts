@@ -467,6 +467,55 @@ test("connection authentication polling stops after navigation", async ({ page }
   await expectNoHorizontalOverflow(page);
 });
 
+test("connection authentication highlights and saves required configuration before connecting", async ({ page }) => {
+  let savedConfiguration: unknown;
+  let authenticationRequests = 0;
+  let authenticationStartedAfterSave = false;
+  await mockApi(page, async (route) => {
+    const url = new URL(route.request().url());
+    const method = route.request().method();
+    if (url.pathname === "/api/v1/workspaces" && method === "GET") return json(route, [workspace]);
+    if (url.pathname === "/api/v1/connections" && method === "GET") return json(route, [connection]);
+    if (url.pathname === `/api/v1/connections/${connectionId}/inspection`) {
+      return json(route, configuredAuthenticationInspection());
+    }
+    if (url.pathname === `/api/v1/connections/${connectionId}/sources`) return json(route, []);
+    if (url.pathname === `/api/v1/connections/${connectionId}/configuration` && method === "PUT") {
+      savedConfiguration = await route.request().postDataJSON();
+      return json(route, connection);
+    }
+    if (url.pathname === `/api/v1/connections/${connectionId}/authentications` && method === "POST") {
+      authenticationRequests += 1;
+      authenticationStartedAfterSave = savedConfiguration !== undefined;
+      return json(route, inputRequiredAuthentication(), 201);
+    }
+    return fallback(route);
+  });
+
+  await page.goto(`/connections?workspace=${workspaceId}`);
+  await page.getByRole("button", { name: "Expand Fixture account" }).first().click();
+  await expect(page.getByRole("button", { name: "Save", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("textbox")).toHaveCount(1);
+  const serviceUrl = page.getByLabel("Service URL");
+  await expect(serviceUrl).toHaveAttribute("aria-invalid", "false");
+
+  await page.getByRole("button", { name: "Connect", exact: true }).click();
+
+  await expect(serviceUrl).toHaveAttribute("aria-invalid", "true");
+  expect(savedConfiguration).toBeUndefined();
+  expect(authenticationRequests).toBe(0);
+
+  await serviceUrl.fill("http://localhost:8096");
+  await expect(serviceUrl).toHaveAttribute("aria-invalid", "false");
+  await page.getByRole("button", { name: "Connect", exact: true }).click();
+
+  await expect.poll(() => authenticationStartedAfterSave).toBe(true);
+  expect(savedConfiguration).toEqual({
+    settings: [{ key: "service_url", value: { kind: "text", value: "http://localhost:8096" } }],
+    secretPatches: [],
+  });
+});
+
 function deletionImpact() {
   return {
     connectionId,
@@ -490,6 +539,23 @@ function authenticationInspection() {
         displayName: "Fixture prompt",
         interactions: [],
         fields: [adapterField("account_name", "Account name")],
+      },
+    ],
+  };
+}
+
+function configuredAuthenticationInspection() {
+  return {
+    fields: [adapterField("service_url", "Service URL")],
+    settings: [],
+    configuredSecretKeys: [],
+    fieldProblems: [],
+    authenticationMethods: [
+      {
+        key: "provider/device",
+        displayName: "Sign in",
+        interactions: [],
+        fields: [],
       },
     ],
   };

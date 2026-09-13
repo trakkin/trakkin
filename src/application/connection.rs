@@ -376,12 +376,22 @@ where
                 .await
             {
                 Ok(_) => TaskCompletion::Succeeded,
-                Err(_) => {
-                    TaskCompletion::Failed(TaskFailure::coded("connection_discovery_failed", false))
-                }
+                Err(error) => TaskCompletion::Failed(source_discovery_failure(error)),
             };
             Ok(TaskHandlerOutcome::Complete(completion))
         })
+    }
+}
+
+fn source_discovery_failure<RepositoryError, AdapterError>(
+    error: ConnectionCoordinatorError<RepositoryError, AdapterError>,
+) -> TaskFailure {
+    match error {
+        ConnectionCoordinatorError::Rejected(error)
+        | ConnectionCoordinatorError::AdapterNotReady(AdapterHealth {
+            error: Some(error), ..
+        }) => TaskFailure::from_adapter(&error),
+        _ => TaskFailure::coded("connection_discovery_failed", false),
     }
 }
 
@@ -994,6 +1004,31 @@ mod tests {
         assert!(error.retry().is_some_and(|retry| retry.retryable));
         assert_eq!(error.diagnostic_id(), Some("provider:rate-limit:1"));
         assert!(error.internal_message().is_none());
+    }
+
+    #[test]
+    fn discovery_task_preserves_provider_rejection() {
+        let rejection = AdapterCallError {
+            category: AdapterFailureCategory::Authentication,
+            code: "remote_authentication_failed".to_owned(),
+            safe_message: "remote authentication failed".to_owned(),
+            retryable: false,
+            retry_after: None,
+            field_problems: Vec::new(),
+            diagnostic_id: "provider:authentication:1".to_owned(),
+        };
+
+        let failure = source_discovery_failure(ConnectionCoordinatorError::<(), ()>::Rejected(
+            rejection,
+        ));
+
+        assert_eq!(failure.code, "remote_authentication_failed");
+        assert_eq!(failure.message, "remote authentication failed");
+        assert!(!failure.retryable);
+        assert_eq!(
+            failure.diagnostic_id.as_deref(),
+            Some("provider:authentication:1")
+        );
     }
 
     #[test]
