@@ -44,6 +44,7 @@ import {
 import { pollCatalog, waitForTask } from "$lib/api/operations";
 import { listProviders, type Provider } from "$lib/api/providers";
 import { attachSource, detachSource, listWorkspaces, type Workspace, type WorkspaceSource } from "$lib/api/workspaces";
+import MappingRootPolicyDrawer from "./MappingRootPolicyDrawer.svelte";
 
 const fixtureScenarios = [
   "hierarchical-catalog-assets-v1",
@@ -1331,6 +1332,13 @@ function messageFor(error: unknown, fallback: string): string {
                               </p>
                             </div>
                             <div class="flex flex-wrap items-center justify-end gap-3">
+                              {#if selectedWorkspace && attachment}
+                                <MappingRootPolicyDrawer
+                                  sourceId={source.id}
+                                  sourceName={source.displayName}
+                                  workspaceId={selectedWorkspace.id}
+                                />
+                              {/if}
                               <Button
                                 disabled={pending[`scan:${source.id}`] || !selectedWorkspace || !attachment || source.availability !== "available"}
                                 onclick={() => scanCatalog(source)}
