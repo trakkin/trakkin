@@ -119,8 +119,9 @@ VALUES ($1, $2, $3)
     .expect("catalog item is seeded");
     sqlx::query(
         "INSERT INTO catalog_item_references (
-    source_id, item_key_namespace, item_key_value, reference_namespace, reference_value
-) VALUES ($1, 'fixture.item', $2, $3, $4)
+    source_id, item_key_namespace, item_key_value, reference_namespace, reference_value,
+    recommended_mapping_root
+) VALUES ($1, 'fixture.item', $2, $3, $4, TRUE)
 ",
     )
     .bind(ids.source_id)

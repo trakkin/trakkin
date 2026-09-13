@@ -494,6 +494,7 @@ pub struct AdapterReadCompletion {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LookupAdapterPortableReferences {
     pub operation_id: Vec<u8>,
+    pub source_key: AdapterKey,
     pub references: Vec<PortableReference>,
 }
 
@@ -528,6 +529,7 @@ pub struct AdapterPortableReferenceLookup {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResolveAdapterPortableEndpoints {
     pub operation_id: Vec<u8>,
+    pub source_key: AdapterKey,
     pub endpoints: Vec<PortableEndpoint>,
     pub maximum_response_bytes: u64,
 }

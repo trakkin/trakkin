@@ -18,6 +18,7 @@ pub type ReferenceLookupFuture<'a, T, E> = Pin<Box<dyn Future<Output = Result<T,
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReferenceLookupTarget {
     pub connection_id: Uuid,
+    pub source_key: super::adapter_runtime::AdapterKey,
     pub reference_namespaces: Vec<String>,
     pub maximum_batch_size: u32,
 }
@@ -132,6 +133,7 @@ impl<R, G> ReferenceLookupService<R, G> {
         let result = session
             .lookup_portable_references(LookupAdapterPortableReferences {
                 operation_id: command.operation_id,
+                source_key: target.source_key,
                 references: command.references,
             })
             .await;

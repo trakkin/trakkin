@@ -22,7 +22,9 @@ use crate::{
         catalog_queries::{InspectSourceState, QueryCatalogPage},
         reference_lookup::LookupPortableReferences,
         task_manager::{AdmitTask, SourceStream, TaskDefinition},
-        workspaces::{AttachWorkspaceSource, DetachWorkspaceSource},
+        workspaces::{
+            AttachWorkspaceSource, DetachWorkspaceSource, UpdateWorkspaceSourceMappingRootPolicy,
+        },
     },
     domain::acquisition::{
         BinaryAssetKey, CatalogRelationKey, PortableReference, ProviderItemKey, StateSubject,
@@ -35,7 +37,9 @@ use crate::{
                 StartSourceResetRequest, StateQueryParameters,
             },
             tasks::TaskResponse,
-            workspaces::WorkspaceResponse,
+            workspaces::{
+                MappingRootPolicyResponse, UpdateMappingRootPolicyRequest, WorkspaceResponse,
+            },
         },
         error::{ErrorResponse, HttpError},
     },
@@ -54,6 +58,10 @@ pub(super) fn router() -> Router<HttpState> {
         .route(
             "/api/v1/workspaces/{workspace_id}/sources/{source_id}/catalog",
             get(get_catalog),
+        )
+        .route(
+            "/api/v1/workspaces/{workspace_id}/sources/{source_id}/mapping-root-policy",
+            get(get_mapping_root_policy).put(update_mapping_root_policy),
         )
         .route(
             "/api/v1/workspaces/{workspace_id}/sources/{source_id}/catalog/{publication_id}/assets/{provider_item_namespace}/{provider_item_value}/{asset_namespace}/{asset_value}",
@@ -108,6 +116,39 @@ pub(in crate::http::api::v1) async fn detach_source(
         })
         .await?;
     Ok(Json(WorkspaceResponse::from_view(workspace)?))
+}
+
+#[utoipa::path(get, path = "/api/v1/workspaces/{workspace_id}/sources/{source_id}/mapping-root-policy", params(("workspace_id" = Uuid, Path), ("source_id" = Uuid, Path)), responses((status = 200, body = MappingRootPolicyResponse), (status = 400, body = ErrorResponse), (status = 404, body = ErrorResponse), (status = 500, body = ErrorResponse)), tag = "workspaces")]
+pub(in crate::http::api::v1) async fn get_mapping_root_policy(
+    State(state): State<HttpState>,
+    path: Result<Path<SourcePath>, PathRejection>,
+) -> Result<Json<MappingRootPolicyResponse>, HttpError> {
+    let Path(path) = path.map_err(|_| HttpError::invalid_request("path parameters are invalid"))?;
+    let policy = state
+        .application
+        .get_mapping_root_policy(path.workspace_id, path.source_id)
+        .await?;
+    Ok(Json(MappingRootPolicyResponse::from_policy(policy)))
+}
+
+#[utoipa::path(put, path = "/api/v1/workspaces/{workspace_id}/sources/{source_id}/mapping-root-policy", params(("workspace_id" = Uuid, Path), ("source_id" = Uuid, Path)), request_body = UpdateMappingRootPolicyRequest, responses((status = 200, body = MappingRootPolicyResponse), (status = 400, body = ErrorResponse), (status = 404, body = ErrorResponse), (status = 500, body = ErrorResponse)), tag = "workspaces")]
+pub(in crate::http::api::v1) async fn update_mapping_root_policy(
+    State(state): State<HttpState>,
+    path: Result<Path<SourcePath>, PathRejection>,
+    payload: Result<Json<UpdateMappingRootPolicyRequest>, JsonRejection>,
+) -> Result<Json<MappingRootPolicyResponse>, HttpError> {
+    let Path(path) = path.map_err(|_| HttpError::invalid_request("path parameters are invalid"))?;
+    let Json(payload) =
+        payload.map_err(|_| HttpError::invalid_request("request body is invalid"))?;
+    let policy = state
+        .application
+        .update_mapping_root_policy(UpdateWorkspaceSourceMappingRootPolicy {
+            workspace_id: path.workspace_id,
+            source_id: path.source_id,
+            namespaces: payload.namespaces,
+        })
+        .await?;
+    Ok(Json(MappingRootPolicyResponse::from_policy(policy)))
 }
 
 #[utoipa::path(get, path = "/api/v1/workspaces/{workspace_id}/sources/{source_id}/catalog", params(("workspace_id" = Uuid, Path), ("source_id" = Uuid, Path), CatalogQueryParameters), responses((status = 200, body = CatalogPageResponse), (status = 400, body = ErrorResponse), (status = 404, body = ErrorResponse), (status = 409, body = ErrorResponse)), tag = "catalog")]
@@ -200,10 +241,19 @@ pub(in crate::http::api::v1) async fn lookup_portable_references(
             references,
         })
         .await?;
+    let policy = state
+        .application
+        .get_mapping_root_policy(path.workspace_id, path.source_id)
+        .await?;
+    let mapping_root_policy = crate::application::workspaces::MappingRootPolicy::from(
+        policy.attachment.mapping_root_namespace_allowlist,
+    );
     Ok(Json(
         lookups
             .into_iter()
-            .map(PortableReferenceLookupResponse::from_lookup)
+            .map(|lookup| {
+                PortableReferenceLookupResponse::from_lookup(lookup, &mapping_root_policy)
+            })
             .collect::<Result<_, _>>()?,
     ))
 }

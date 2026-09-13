@@ -192,6 +192,15 @@ LEFT JOIN catalog_item_references AS reference
         reference.source_id = item.source_id
         AND reference.item_key_namespace = item.key_namespace
         AND reference.item_key_value = item.key_value
+        AND (
+            (
+                attachment.mapping_root_namespace_allowlist IS NULL
+                AND reference.recommended_mapping_root
+            )
+            OR reference.reference_namespace = ANY(
+                attachment.mapping_root_namespace_allowlist
+            )
+        )
 ORDER BY
     evidence.source_id,
     evidence.subject_kind,

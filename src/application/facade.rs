@@ -52,8 +52,9 @@ use super::{
     },
     task_manager::{AdmitTask, RequestTaskCancellation, TaskManager, TaskRepository, TaskSnapshot},
     workspaces::{
-        AttachWorkspaceSource, CreateWorkspace, DetachWorkspaceSource, WorkspaceRepository,
-        WorkspaceService, WorkspaceSnapshot, WorkspaceSourceAttachment,
+        AttachWorkspaceSource, CreateWorkspace, DetachWorkspaceSource,
+        UpdateWorkspaceSourceMappingRootPolicy, WorkspaceRepository, WorkspaceService,
+        WorkspaceSnapshot, WorkspaceSourceAttachment, WorkspaceSourceMappingRootPolicy,
     },
 };
 
@@ -153,6 +154,15 @@ pub trait ApplicationApi: Send + Sync {
     -> ApplicationFuture<'_, WorkspaceView>;
     fn detach_source(&self, command: DetachWorkspaceSource)
     -> ApplicationFuture<'_, WorkspaceView>;
+    fn get_mapping_root_policy(
+        &self,
+        workspace_id: Uuid,
+        source_id: Uuid,
+    ) -> ApplicationFuture<'_, WorkspaceSourceMappingRootPolicy>;
+    fn update_mapping_root_policy(
+        &self,
+        command: UpdateWorkspaceSourceMappingRootPolicy,
+    ) -> ApplicationFuture<'_, WorkspaceSourceMappingRootPolicy>;
     fn query_catalog(&self, query: QueryCatalogPage) -> ApplicationFuture<'_, CatalogPage>;
     fn query_mapping_registry(
         &self,
@@ -535,6 +545,31 @@ where
                 .await
                 .map_err(IntoApplicationError::into_application_error)?;
             self.workspace_view(workspace_id).await
+        })
+    }
+
+    fn get_mapping_root_policy(
+        &self,
+        workspace_id: Uuid,
+        source_id: Uuid,
+    ) -> ApplicationFuture<'_, WorkspaceSourceMappingRootPolicy> {
+        Box::pin(async move {
+            self.workspaces
+                .mapping_root_policy(workspace_id, source_id)
+                .await
+                .map_err(IntoApplicationError::into_application_error)
+        })
+    }
+
+    fn update_mapping_root_policy(
+        &self,
+        command: UpdateWorkspaceSourceMappingRootPolicy,
+    ) -> ApplicationFuture<'_, WorkspaceSourceMappingRootPolicy> {
+        Box::pin(async move {
+            self.workspaces
+                .update_mapping_root_policy(command)
+                .await
+                .map_err(IntoApplicationError::into_application_error)
         })
     }
 

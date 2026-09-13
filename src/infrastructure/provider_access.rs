@@ -14,6 +14,7 @@ use crate::{
         reference_lookup::{
             ReferenceLookupFuture, ReferenceLookupRepository, ReferenceLookupTarget,
         },
+        workspaces::MappingRootPolicy,
     },
     domain::acquisition::{BinaryAssetKey, ProviderItemKey},
 };
@@ -102,7 +103,11 @@ WHERE
         source_id: Uuid,
     ) -> Result<ReferenceLookupTarget, ProviderAccessError> {
         let row = sqlx::query_as::<_, LookupTargetRow>(
-            "SELECT source.connection_id, connection.capabilities
+            "SELECT
+            source.connection_id,
+            source.provider_key_namespace AS source_key_namespace,
+            source.provider_key_value AS source_key_value,
+            connection.capabilities
 FROM workspace_sources AS attachment
 INNER JOIN sources AS source ON source.id = attachment.source_id
 INNER JOIN connections AS connection ON connection.id = source.connection_id
@@ -123,6 +128,10 @@ WHERE
             parse_lookup_capability(&row.capabilities)?;
         Ok(ReferenceLookupTarget {
             connection_id: row.connection_id,
+            source_key: AdapterKey {
+                namespace: row.source_key_namespace,
+                value: row.source_key_value,
+            },
             reference_namespaces,
             maximum_batch_size,
         })
@@ -133,7 +142,13 @@ WHERE
         workspace_id: Uuid,
     ) -> Result<Vec<MappingEndpointLookupTarget>, ProviderAccessError> {
         let rows = sqlx::query_as::<_, EndpointLookupTargetRow>(
-            "SELECT DISTINCT connection.id AS connection_id, connection.capabilities
+            "SELECT
+            source.id AS source_id,
+            connection.id AS connection_id,
+            source.provider_key_namespace AS source_key_namespace,
+            source.provider_key_value AS source_key_value,
+            attachment.mapping_root_namespace_allowlist,
+            connection.capabilities
 FROM workspace_sources AS attachment
 INNER JOIN sources AS source ON source.id = attachment.source_id
 INNER JOIN connections AS connection ON connection.id = source.connection_id
@@ -146,7 +161,7 @@ WHERE
         jsonb_typeof(connection.capabilities -> 'referenceLookup') = 'object'
         OR jsonb_typeof(connection.capabilities -> 'endpointLookup') = 'object'
     )
-ORDER BY connection.id
+ORDER BY connection.id, source.id
 ",
         )
         .bind(workspace_id)
@@ -174,7 +189,15 @@ ORDER BY connection.id
                     maximum_response_bytes,
                 ) = selected.unwrap_or_else(|| (Vec::new(), Vec::new(), 0, 1));
                 Ok(MappingEndpointLookupTarget {
+                    source_id: row.source_id,
                     connection_id: row.connection_id,
+                    source_key: AdapterKey {
+                        namespace: row.source_key_namespace,
+                        value: row.source_key_value,
+                    },
+                    mapping_root_policy: MappingRootPolicy::from(
+                        row.mapping_root_namespace_allowlist,
+                    ),
                     bare_reference_namespaces,
                     maximum_bare_batch_size,
                     reference_namespaces,
@@ -366,12 +389,18 @@ struct AssetTargetRow {
 #[derive(FromRow)]
 struct LookupTargetRow {
     connection_id: Uuid,
+    source_key_namespace: String,
+    source_key_value: Vec<u8>,
     capabilities: Value,
 }
 
 #[derive(FromRow)]
 struct EndpointLookupTargetRow {
+    source_id: Uuid,
     connection_id: Uuid,
+    source_key_namespace: String,
+    source_key_value: Vec<u8>,
+    mapping_root_namespace_allowlist: Option<Vec<String>>,
     capabilities: Value,
 }
 

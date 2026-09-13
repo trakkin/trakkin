@@ -187,6 +187,10 @@ CREATE TABLE workspace_sources (
     workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     source_id UUID NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
     attached_at TIMESTAMPTZ NOT NULL,
+    mapping_root_namespace_allowlist TEXT[],
+    mapping_root_policy_generation BIGINT NOT NULL DEFAULT 1 CHECK (
+        mapping_root_policy_generation > 0
+    ),
     PRIMARY KEY (workspace_id, source_id)
 );
 
@@ -381,6 +385,7 @@ CREATE TABLE staged_catalog_item_references (
     reference_value BYTEA NOT NULL CHECK (
         octet_length(reference_value) > 0
     ),
+    recommended_mapping_root BOOLEAN NOT NULL,
     PRIMARY KEY (
         attempt_id,
         item_key_namespace,
@@ -526,6 +531,7 @@ CREATE TABLE catalog_item_references (
     reference_value BYTEA NOT NULL CHECK (
         octet_length(reference_value) > 0
     ),
+    recommended_mapping_root BOOLEAN NOT NULL,
     PRIMARY KEY (
         source_id,
         item_key_namespace,

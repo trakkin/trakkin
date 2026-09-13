@@ -22,6 +22,7 @@ use super::{
     },
     connection::ConnectionSessionRegistry,
     error::{ApplicationError, ApplicationErrorCode, IntoApplicationError},
+    workspaces::MappingRootPolicy,
 };
 
 pub type MappingResolutionFuture<'a, T, E> =
@@ -192,6 +193,8 @@ pub struct ResolutionSourcePin {
     pub source_id: Uuid,
     pub connection_id: Uuid,
     pub attached_at: OffsetDateTime,
+    pub mapping_root_namespace_allowlist: Option<Vec<String>>,
+    pub mapping_root_policy_generation: i64,
     pub source_removed: bool,
     pub source_capability_revision: i64,
     pub connection_ready: bool,
@@ -244,7 +247,10 @@ pub trait MappingResolutionRepository: Send + Sync {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MappingEndpointLookupTarget {
+    pub source_id: Uuid,
     pub connection_id: Uuid,
+    pub source_key: super::adapter_runtime::AdapterKey,
+    pub mapping_root_policy: MappingRootPolicy,
     pub bare_reference_namespaces: Vec<String>,
     pub maximum_bare_batch_size: u32,
     pub reference_namespaces: Vec<String>,
@@ -255,6 +261,12 @@ pub struct MappingEndpointLookupTarget {
 
 impl MappingEndpointLookupTarget {
     fn supports(&self, endpoint: &PortableEndpoint) -> bool {
+        if !self
+            .mapping_root_policy
+            .may_select_namespace(endpoint.namespace())
+        {
+            return false;
+        }
         if endpoint.selector().is_none() {
             return self
                 .bare_reference_namespaces
@@ -280,6 +292,30 @@ impl MappingEndpointLookupTarget {
             self.maximum_batch_size
         }
     }
+
+    fn accepts_mapping_root(
+        &self,
+        endpoint: &PortableEndpoint,
+        provider_item: &crate::domain::acquisition::ProviderItem,
+    ) -> bool {
+        let matches = |reference: &crate::domain::acquisition::PortableReference| {
+            reference.namespace() == endpoint.namespace() && reference.value() == endpoint.value()
+        };
+        if !provider_item
+            .portable_reference_candidates()
+            .iter()
+            .any(matches)
+        {
+            return false;
+        }
+        self.mapping_root_policy.selects(
+            endpoint.namespace(),
+            provider_item
+                .recommended_mapping_roots()
+                .iter()
+                .any(matches),
+        )
+    }
 }
 
 struct PlannedMappingEndpointLookup {
@@ -297,7 +333,7 @@ fn plan_mapping_endpoint_lookups(
     endpoints: &[PortableEndpoint],
     maximum_calls: u64,
 ) -> Result<MappingEndpointLookupPlan, ApplicationError> {
-    targets.sort_by_key(|target| target.connection_id);
+    targets.sort_by_key(|target| (target.connection_id, target.source_id));
     let mut planned_targets = Vec::new();
     let mut scheduled_calls = 0_u64;
     for target in targets {
@@ -498,10 +534,11 @@ where
                     let result = session
                         .resolve_portable_endpoints(ResolveAdapterPortableEndpoints {
                             operation_id: format!(
-                                "mapping:{}:{}:{operation_kind}:{chunk_index}",
-                                request.workspace_id, target.connection_id,
+                                "mapping:{}:{}:{}:{operation_kind}:{chunk_index}",
+                                request.workspace_id, target.connection_id, target.source_id,
                             )
                             .into_bytes(),
+                            source_key: target.source_key.clone(),
                             endpoints,
                             maximum_response_bytes: target.maximum_response_bytes,
                         })
@@ -509,6 +546,7 @@ where
                     match result {
                         Ok(Ok(results)) => append_lookup_results(
                             &mut batch,
+                            &target,
                             &process,
                             request.resolved_at,
                             results,
@@ -2211,13 +2249,43 @@ fn finding_priority(kind: ResolutionFindingKind) -> u8 {
 
 fn append_lookup_results(
     batch: &mut MappingEndpointLookupBatch,
+    target: &MappingEndpointLookupTarget,
     process: &ProcessInstancePin,
     resolved_at: OffsetDateTime,
     results: Vec<AdapterPortableEndpointResolution>,
 ) {
     for result in results {
-        match result.outcome {
+        let outcome = match result.outcome {
+            AdapterEndpointLookupOutcome::Ambiguous(candidates) => {
+                let mut effective_candidates = candidates
+                    .into_iter()
+                    .filter(|candidate| {
+                        target.accepts_mapping_root(&result.requested, &candidate.provider_item)
+                    })
+                    .collect::<Vec<_>>();
+                match effective_candidates.len() {
+                    0 => AdapterEndpointLookupOutcome::NotFound,
+                    1 => AdapterEndpointLookupOutcome::Matched(Box::new(
+                        effective_candidates
+                            .pop()
+                            .expect("candidate length checked"),
+                    )),
+                    _ => AdapterEndpointLookupOutcome::Ambiguous(effective_candidates),
+                }
+            }
+            outcome => outcome,
+        };
+        match outcome {
             AdapterEndpointLookupOutcome::Matched(candidate) => {
+                if !target.accepts_mapping_root(&result.requested, &candidate.provider_item) {
+                    batch.findings.push(ResolutionFinding {
+                        endpoint: result.requested,
+                        kind: ResolutionFindingKind::NotFound,
+                        span: None,
+                        proof_paths: Vec::new(),
+                    });
+                    continue;
+                }
                 let coordinate = candidate.binding.as_ref().map(|binding| {
                     (
                         map_coordinate_backing(binding.backing()),
@@ -2351,6 +2419,12 @@ fn proof_key(row: &DirectFrontierRow) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::adapter_runtime::{
+        AdapterEndpointLookupCandidate, AdapterLookupEvidence,
+    };
+    use crate::domain::acquisition::{
+        PortableReference as ProviderPortableReference, ProviderItem, ProviderItemKey, Term,
+    };
 
     struct PendingResolutionRepository;
 
@@ -2385,6 +2459,75 @@ mod tests {
         assert_eq!(limits.lookup_references, 256);
         assert_eq!(limits.lookup_calls, 256);
         assert_eq!(limits.lookup_bytes, 1_048_576);
+    }
+
+    #[test]
+    fn adapter_ambiguity_is_filtered_before_classification() {
+        let reference = ProviderPortableReference::new("example.media", b"item".to_vec())
+            .expect("reference is valid");
+        let provider_item = |key: &str, recommended: bool| {
+            ProviderItem::new(
+                ProviderItemKey::new("fixture.item", key.as_bytes().to_vec())
+                    .expect("provider item key is valid"),
+                Term::new("example.media", "item").expect("provider item kind is valid"),
+                key,
+                serde_json::json!({}),
+                vec![reference.clone()],
+                recommended.then(|| reference.clone()).into_iter().collect(),
+                Vec::new(),
+            )
+            .expect("provider item is valid")
+        };
+        let candidate = |provider_item| AdapterEndpointLookupCandidate {
+            provider_item,
+            binding: None,
+            evidence: AdapterLookupEvidence {
+                adapter_revision: b"lookup-1".to_vec(),
+                observed_at: OffsetDateTime::UNIX_EPOCH,
+                expires_at: None,
+                matched_references: vec![reference.clone()],
+            },
+        };
+        let endpoint =
+            PortableEndpoint::parse("example.media://item").expect("lookup endpoint is valid");
+        let target = MappingEndpointLookupTarget {
+            source_id: Uuid::from_u128(2),
+            connection_id: Uuid::from_u128(1),
+            source_key: crate::application::adapter_runtime::AdapterKey {
+                namespace: "fixture".to_owned(),
+                value: b"source-a".to_vec(),
+            },
+            mapping_root_policy: MappingRootPolicy::ProviderRecommended,
+            bare_reference_namespaces: vec!["example.media".to_owned()],
+            maximum_bare_batch_size: 10,
+            reference_namespaces: Vec::new(),
+            coordinate_ids: Vec::new(),
+            maximum_batch_size: 0,
+            maximum_response_bytes: 1024,
+        };
+        let process = ProcessInstancePin {
+            connection_id: target.connection_id,
+            process_instance_id: "process-1".to_owned(),
+        };
+        let mut batch = MappingEndpointLookupBatch::default();
+
+        append_lookup_results(
+            &mut batch,
+            &target,
+            &process,
+            OffsetDateTime::UNIX_EPOCH,
+            vec![AdapterPortableEndpointResolution {
+                requested: endpoint,
+                outcome: AdapterEndpointLookupOutcome::Ambiguous(vec![
+                    candidate(provider_item("candidate-only", false)),
+                    candidate(provider_item("recommended", true)),
+                ]),
+            }],
+        );
+
+        assert!(batch.findings.is_empty());
+        assert_eq!(batch.matches.len(), 1);
+        assert_eq!(batch.matches[0].item_key_value, b"recommended");
     }
 
     #[tokio::test]
@@ -2429,7 +2572,13 @@ mod tests {
                 .expect("second endpoint is valid"),
         ];
         let target = MappingEndpointLookupTarget {
+            source_id: Uuid::from_u128(2),
             connection_id: Uuid::from_u128(1),
+            source_key: crate::application::adapter_runtime::AdapterKey {
+                namespace: "fixture".to_owned(),
+                value: b"source-a".to_vec(),
+            },
+            mapping_root_policy: MappingRootPolicy::ProviderRecommended,
             bare_reference_namespaces: Vec::new(),
             maximum_bare_batch_size: 1,
             reference_namespaces: vec!["example.media".to_owned()],

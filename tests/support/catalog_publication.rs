@@ -118,8 +118,8 @@ pub async fn seed_catalog_read(pool: PgPool) {
     sqlx::query(
         "INSERT INTO catalog_item_references (
              source_id, item_key_namespace, item_key_value,
-             reference_namespace, reference_value
-         ) VALUES ($1, 'fixture.item', $2, 'example.media', $3)",
+             reference_namespace, reference_value, recommended_mapping_root
+         ) VALUES ($1, 'fixture.item', $2, 'example.media', $3, TRUE)",
     )
     .bind(SOURCE_ID)
     .bind(b"item.old".as_slice())

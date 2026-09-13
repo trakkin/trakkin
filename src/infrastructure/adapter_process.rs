@@ -761,7 +761,11 @@ impl AdapterSession for AdapterProcess {
     ) -> AdapterFuture<'_, Result<Vec<AdapterPortableReferenceLookup>, AdapterCallError>, Self::Error>
     {
         Box::pin(async move {
-            if command.operation_id.is_empty() || command.references.is_empty() {
+            if command.operation_id.is_empty()
+                || command.source_key.namespace.is_empty()
+                || command.source_key.value.is_empty()
+                || command.references.is_empty()
+            {
                 return Err(AdapterProcessError::InvalidLookupRequest);
             }
             let requested = command
@@ -772,6 +776,10 @@ impl AdapterSession for AdapterProcess {
             let request = self.signed(LookupPortableReferencesRequest {
                 operation_id: command.operation_id,
                 references: requested.clone(),
+                source_key: Some(Key {
+                    namespace: command.source_key.namespace,
+                    value: command.source_key.value,
+                }),
             });
             let response = timeout(
                 self.rpc_timeout,
@@ -809,6 +817,8 @@ impl AdapterSession for AdapterProcess {
     > {
         Box::pin(async move {
             if command.operation_id.is_empty()
+                || command.source_key.namespace.is_empty()
+                || command.source_key.value.is_empty()
                 || command.endpoints.is_empty()
                 || command.maximum_response_bytes == 0
             {
@@ -859,6 +869,7 @@ impl AdapterSession for AdapterProcess {
                 let lookups = match self
                     .lookup_portable_references(LookupAdapterPortableReferences {
                         operation_id: command.operation_id.clone(),
+                        source_key: command.source_key.clone(),
                         references,
                     })
                     .await?
@@ -891,6 +902,10 @@ impl AdapterSession for AdapterProcess {
                     operation_id: command.operation_id,
                     endpoints: requested.clone(),
                     maximum_response_bytes,
+                    source_key: Some(Key {
+                        namespace: command.source_key.namespace,
+                        value: command.source_key.value,
+                    }),
                 });
                 let response = timeout(
                     self.rpc_timeout,
@@ -1570,11 +1585,20 @@ fn map_provider_item(
         map_domain_term(item.kind)?,
         item.display_name,
         map_attributes(item.attributes)?,
-        item.portable_references
+        item.portable_reference_candidates
             .into_iter()
             .map(|reference| {
-                PortableReference::new(reference.namespace, reference.value)
-                    .map_err(|_| AdapterProcessError::InvalidResponse("invalid portable reference"))
+                PortableReference::new(reference.namespace, reference.value).map_err(|_| {
+                    AdapterProcessError::InvalidResponse("invalid portable reference candidate")
+                })
+            })
+            .collect::<Result<_, _>>()?,
+        item.recommended_mapping_roots
+            .into_iter()
+            .map(|reference| {
+                PortableReference::new(reference.namespace, reference.value).map_err(|_| {
+                    AdapterProcessError::InvalidResponse("invalid recommended mapping root")
+                })
             })
             .collect::<Result<_, _>>()?,
         item.assets

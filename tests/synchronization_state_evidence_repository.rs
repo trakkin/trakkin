@@ -69,6 +69,83 @@ async fn postgres_sync_state_evidence_preserves_presence_and_publication_pins() 
         "example.media://media/quiet-signal"
     );
 
+    sqlx::query(
+        "UPDATE catalog_item_references
+SET recommended_mapping_root = FALSE
+WHERE source_id = $1
+",
+    )
+    .bind(COVERED_SOURCE_ID)
+    .execute(&database.pool())
+    .await
+    .expect("reference becomes candidate-only");
+    let candidate_only = repository
+        .discover_sync_contributor_roots(DiscoverSyncContributorRoots {
+            workspace_id: WORKSPACE_ID,
+            policy_id: POLICY_ID,
+            policy_revision: 1,
+            semantic_fields: vec![
+                Term::new("trakkin.state", "progress").expect("semantic field is valid"),
+            ],
+        })
+        .await
+        .expect("candidate-only contributor roots are discovered");
+    assert_eq!(candidate_only.contributors.len(), 1);
+    assert!(candidate_only.contributors[0].roots.is_empty());
+
+    sqlx::query(
+        "UPDATE workspace_sources
+SET
+    mapping_root_namespace_allowlist = ARRAY['example.media'],
+    mapping_root_policy_generation = mapping_root_policy_generation + 1
+WHERE workspace_id = $1 AND source_id = $2
+",
+    )
+    .bind(WORKSPACE_ID)
+    .bind(COVERED_SOURCE_ID)
+    .execute(&database.pool())
+    .await
+    .expect("custom root policy is seeded");
+    let custom = repository
+        .discover_sync_contributor_roots(DiscoverSyncContributorRoots {
+            workspace_id: WORKSPACE_ID,
+            policy_id: POLICY_ID,
+            policy_revision: 1,
+            semantic_fields: vec![
+                Term::new("trakkin.state", "progress").expect("semantic field is valid"),
+            ],
+        })
+        .await
+        .expect("custom contributor roots are discovered");
+    assert_eq!(custom.contributors[0].roots.len(), 1);
+
+    sqlx::query(
+        "UPDATE workspace_sources
+SET
+    mapping_root_namespace_allowlist = ARRAY[]::TEXT[],
+    mapping_root_policy_generation = mapping_root_policy_generation + 1
+WHERE workspace_id = $1 AND source_id = $2
+",
+    )
+    .bind(WORKSPACE_ID)
+    .bind(COVERED_SOURCE_ID)
+    .execute(&database.pool())
+    .await
+    .expect("automatic roots are disabled");
+    let disabled = repository
+        .discover_sync_contributor_roots(DiscoverSyncContributorRoots {
+            workspace_id: WORKSPACE_ID,
+            policy_id: POLICY_ID,
+            policy_revision: 1,
+            semantic_fields: vec![
+                Term::new("trakkin.state", "progress").expect("semantic field is valid"),
+            ],
+        })
+        .await
+        .expect("disabled contributor roots are discovered");
+    assert_eq!(disabled.contributors.len(), 1);
+    assert!(disabled.contributors[0].roots.is_empty());
+
     let projection = repository
         .query_sync_state_evidence(QuerySyncStateEvidence {
             workspace_id: WORKSPACE_ID,
@@ -332,10 +409,10 @@ VALUES ($1, $2, $3)",
     sqlx::query(
         "INSERT INTO catalog_item_references (
     source_id, item_key_namespace, item_key_value,
-    reference_namespace, reference_value
+    reference_namespace, reference_value, recommended_mapping_root
 ) VALUES (
     $1, 'fixture.item', 'quiet-signal'::BYTEA,
-    'example.media', 'media/quiet-signal'::BYTEA
+    'example.media', 'media/quiet-signal'::BYTEA, TRUE
 )",
     )
     .bind(COVERED_SOURCE_ID)

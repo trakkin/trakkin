@@ -409,6 +409,52 @@ async fn connection_and_acquisition_routes_are_closed_bounded_and_secret_safe() 
     .await;
     assert_eq!(attached.0, StatusCode::OK);
 
+    let policy_path =
+        format!("/api/v1/workspaces/{workspace_id}/sources/{SOURCE_ID}/mapping-root-policy");
+    let default_policy = request(
+        &router,
+        Request::get(&policy_path)
+            .body(Body::empty())
+            .expect("mapping root policy request is built"),
+    )
+    .await;
+    assert_eq!(default_policy.0, StatusCode::OK);
+    assert!(default_policy.1["namespaces"].is_null());
+    assert!(default_policy.1["availableNamespaces"].is_array());
+
+    let missing_namespaces = request(
+        &router,
+        Request::put(&policy_path)
+            .header("content-type", "application/json")
+            .body(Body::from("{}"))
+            .expect("mapping root policy request is built"),
+    )
+    .await;
+    assert_eq!(missing_namespaces.0, StatusCode::BAD_REQUEST);
+    assert_closed_error(&missing_namespaces.1, "invalid_request");
+
+    let disabled_policy = request(
+        &router,
+        Request::put(&policy_path)
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"namespaces":[]}"#))
+            .expect("mapping root policy request is built"),
+    )
+    .await;
+    assert_eq!(disabled_policy.0, StatusCode::OK);
+    assert_eq!(disabled_policy.1["namespaces"], json!([]));
+
+    let reset_policy = request(
+        &router,
+        Request::put(&policy_path)
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"namespaces":null}"#))
+            .expect("mapping root policy request is built"),
+    )
+    .await;
+    assert_eq!(reset_policy.0, StatusCode::OK);
+    assert!(reset_policy.1["namespaces"].is_null());
+
     let first_page = request(
         &router,
         Request::get(format!(
@@ -480,6 +526,10 @@ async fn connection_and_acquisition_routes_are_closed_bounded_and_secret_safe() 
     .await;
     assert_eq!(lookup.0, StatusCode::OK);
     assert_eq!(lookup.1[0]["outcome"]["kind"], "matched");
+    let lookup_candidate =
+        &lookup.1[0]["outcome"]["candidate"]["providerItem"]["portableReferenceCandidates"][0];
+    assert_eq!(lookup_candidate["providerRecommended"], true);
+    assert_eq!(lookup_candidate["effectiveMappingRoot"], true);
     assert_eq!(lookup.1[1]["outcome"]["kind"], "notFound");
     assert_eq!(lookup.1[2]["outcome"]["kind"], "ambiguous");
     assert_eq!(lookup.1[3]["outcome"]["kind"], "unsupported");

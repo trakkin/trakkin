@@ -940,7 +940,7 @@ fn validate_batch_uniqueness(batch: &CatalogBatch) -> Result<(), PublicationErro
             return duplicate_staging_key("provider item");
         }
         let mut references = HashSet::new();
-        for reference in item.portable_references() {
+        for reference in item.portable_reference_candidates() {
             if !references.insert(reference.clone()) {
                 return duplicate_staging_key("portable reference");
             }
@@ -1110,13 +1110,13 @@ row_ordinal = excluded.row_ordinal
     .execute(&mut **transaction)
     .await?;
 
-    for reference in item.portable_references() {
+    for reference in item.portable_reference_candidates() {
         sqlx::query(
             "INSERT INTO staged_catalog_item_references (
     attempt_id, item_key_namespace, item_key_value,
-    reference_namespace, reference_value
+    reference_namespace, reference_value, recommended_mapping_root
 )
-VALUES ($1, $2, $3, $4, $5)
+VALUES ($1, $2, $3, $4, $5, $6)
 ",
         )
         .bind(attempt_id)
@@ -1124,6 +1124,7 @@ VALUES ($1, $2, $3, $4, $5)
         .bind(item.key().value())
         .bind(reference.namespace())
         .bind(reference.value())
+        .bind(item.recommended_mapping_roots().contains(reference))
         .execute(&mut **transaction)
         .await?;
     }
@@ -1516,11 +1517,11 @@ WHERE attempt_id = $4 AND operation = 'upsert'
     sqlx::query(
         "INSERT INTO catalog_item_references (
     source_id, item_key_namespace, item_key_value,
-    reference_namespace, reference_value
+    reference_namespace, reference_value, recommended_mapping_root
 )
 SELECT
     $1 AS source_id, item_key_namespace, item_key_value,
-    reference_namespace, reference_value
+    reference_namespace, reference_value, recommended_mapping_root
 FROM staged_catalog_item_references
 WHERE attempt_id = $2
 ",
@@ -1670,11 +1671,11 @@ updated_at = excluded.updated_at
     sqlx::query(
         "INSERT INTO catalog_item_references (
     source_id, item_key_namespace, item_key_value,
-    reference_namespace, reference_value
+    reference_namespace, reference_value, recommended_mapping_root
 )
 SELECT
     $1 AS source_id, item_key_namespace, item_key_value,
-    reference_namespace, reference_value
+    reference_namespace, reference_value, recommended_mapping_root
 FROM staged_catalog_item_references
 WHERE attempt_id = $2
 ",

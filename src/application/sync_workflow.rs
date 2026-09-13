@@ -836,6 +836,8 @@ fn attachment_value(source: &super::mapping_resolution::ResolutionSourcePin) -> 
         "connectionDeleted": source.connection_deleted,
         "connectionId": source.connection_id,
         "connectionReady": source.connection_ready,
+        "mappingRootNamespaceAllowlist": source.mapping_root_namespace_allowlist,
+        "mappingRootPolicyGeneration": source.mapping_root_policy_generation,
         "sourceId": source.source_id,
         "sourceRemoved": source.source_removed,
     })

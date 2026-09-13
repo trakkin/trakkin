@@ -286,6 +286,7 @@ fn lookup_candidate(index: usize, matched_reference: PortableReference) -> Adapt
         format!("Lookup item {index}"),
         json!({"lookup": true}),
         vec![matched_reference.clone()],
+        vec![matched_reference.clone()],
         vec![BinaryAssetReference::new(
             BinaryAssetKey::new("fixture.asset", b"poster".to_vec())
                 .expect("lookup asset key is valid"),

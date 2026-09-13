@@ -39,7 +39,7 @@ use crate::{
 use super::{
     CollectSyncPreviewInputs, PreflightSyncReceivers, ProductionSyncPreviewInputCollector,
     SyncPreviewInputCollector, SyncReceiverPreflightApi, SyncReceiverPreflightResult,
-    SyncReceiverPreflightTarget,
+    SyncReceiverPreflightTarget, attachment_value, digest,
 };
 
 const WORKSPACE_ID: Uuid = Uuid::from_u128(1);
@@ -147,8 +147,8 @@ impl SyncReceiverPreflightApi for StaticReceiverPreflight {
 
 #[tokio::test]
 async fn production_collector_joins_bounded_pinned_inputs_without_writes() {
-    let root =
-        PortableEndpoint::parse("example.media://original[episode:1..12]").expect("contributor root");
+    let root = PortableEndpoint::parse("example.media://original[episode:1..12]")
+        .expect("contributor root");
     let receiver_endpoint = PortableEndpoint::parse("example.media://receiver[episode:1..12]")
         .expect("receiver endpoint");
     let field = progress_field();
@@ -254,6 +254,25 @@ async fn production_collector_joins_bounded_pinned_inputs_without_writes() {
         .fingerprint
         .canonical_json()
         .expect("collected fingerprint is canonical");
+}
+
+#[test]
+fn mapping_root_policy_changes_attachment_fingerprint() {
+    let default = source_pin(CONTRIBUTOR_ID, CONNECTION_ID);
+    let mut custom = default.clone();
+    custom.mapping_root_namespace_allowlist = Some(vec!["example.media".to_owned()]);
+    custom.mapping_root_policy_generation = 2;
+    let mut next_generation = custom.clone();
+    next_generation.mapping_root_policy_generation = 3;
+
+    assert_ne!(
+        digest(&attachment_value(&default)),
+        digest(&attachment_value(&custom))
+    );
+    assert_ne!(
+        digest(&attachment_value(&custom)),
+        digest(&attachment_value(&next_generation))
+    );
 }
 
 fn contributor_projection(
@@ -364,6 +383,8 @@ fn source_pin(source_id: Uuid, connection_id: Uuid) -> ResolutionSourcePin {
         source_id,
         connection_id,
         attached_at: CREATED_AT,
+        mapping_root_namespace_allowlist: None,
+        mapping_root_policy_generation: 1,
         source_removed: false,
         source_capability_revision: 1,
         connection_ready: true,

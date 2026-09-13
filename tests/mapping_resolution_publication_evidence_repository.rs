@@ -148,6 +148,8 @@ async fn postgres_direct_bare_reference_resolution_executes_initial_vectors() {
     assert_eq!(pins.sources[0].source_id, source_id);
     assert_eq!(pins.sources[0].connection_id, id(30));
     assert_eq!(pins.sources[0].attached_at, now);
+    assert_eq!(pins.sources[0].mapping_root_namespace_allowlist, None);
+    assert_eq!(pins.sources[0].mapping_root_policy_generation, 1);
     assert_eq!(pins.sources[0].source_capability_revision, 1);
     assert_eq!(pins.sources[0].connection_capability_revision, 1);
     assert_eq!(
@@ -215,6 +217,115 @@ async fn postgres_direct_bare_reference_resolution_executes_initial_vectors() {
         published.correspondences[0].proof.coordinate_publications,
         vec![coordinate_publication_id]
     );
+
+    database.shutdown().await;
+}
+
+#[tokio::test]
+async fn postgres_published_matches_follow_mapping_root_policy() {
+    let database = MappingResolutionDatabase::start().await;
+    let pool = database.pool();
+    let now = fixture_time();
+    let workspace_id = id(41);
+    let source_id = id(42);
+    let requested = endpoint("example.media://published");
+    seed_standard_published_reference(&pool, workspace_id, source_id, id(43), id(44), now).await;
+    let repository = PostgresMappingResolutionRepository::new(pool.clone());
+
+    let default = repository
+        .load_direct_frontier(LoadDirectFrontier {
+            workspace_id,
+            revision: None,
+            references: vec![requested.clone()],
+            window: None,
+        })
+        .await
+        .expect("provider-default evidence loads");
+    assert_eq!(default.published_matches.len(), 1);
+    assert_eq!(
+        default.pins.sources[0].mapping_root_namespace_allowlist,
+        None
+    );
+    assert_eq!(default.pins.sources[0].mapping_root_policy_generation, 1);
+
+    sqlx::query(
+        "UPDATE catalog_item_references
+SET recommended_mapping_root = FALSE
+WHERE source_id = $1
+",
+    )
+    .bind(source_id)
+    .execute(&pool)
+    .await
+    .expect("reference becomes candidate-only");
+    let candidate_only = repository
+        .load_direct_frontier(LoadDirectFrontier {
+            workspace_id,
+            revision: None,
+            references: vec![requested.clone()],
+            window: None,
+        })
+        .await
+        .expect("candidate-only evidence loads");
+    assert!(candidate_only.published_matches.is_empty());
+
+    sqlx::query(
+        "UPDATE workspace_sources
+SET
+    mapping_root_namespace_allowlist = ARRAY['example.media'],
+    mapping_root_policy_generation = mapping_root_policy_generation + 1
+WHERE workspace_id = $1 AND source_id = $2
+",
+    )
+    .bind(workspace_id)
+    .bind(source_id)
+    .execute(&pool)
+    .await
+    .expect("custom root policy is seeded");
+    let custom = repository
+        .load_direct_frontier(LoadDirectFrontier {
+            workspace_id,
+            revision: None,
+            references: vec![requested.clone()],
+            window: None,
+        })
+        .await
+        .expect("custom-policy evidence loads");
+    assert_eq!(custom.published_matches.len(), 1);
+    assert_eq!(
+        custom.pins.sources[0].mapping_root_namespace_allowlist,
+        Some(vec!["example.media".to_owned()])
+    );
+    assert_eq!(custom.pins.sources[0].mapping_root_policy_generation, 2);
+
+    sqlx::query(
+        "UPDATE workspace_sources
+SET
+    mapping_root_namespace_allowlist = ARRAY[]::TEXT[],
+    mapping_root_policy_generation = mapping_root_policy_generation + 1
+WHERE workspace_id = $1 AND source_id = $2
+",
+    )
+    .bind(workspace_id)
+    .bind(source_id)
+    .execute(&pool)
+    .await
+    .expect("automatic roots are disabled");
+    let disabled = repository
+        .load_direct_frontier(LoadDirectFrontier {
+            workspace_id,
+            revision: None,
+            references: vec![requested],
+            window: None,
+        })
+        .await
+        .expect("disabled-policy evidence loads");
+    assert!(disabled.published_matches.is_empty());
+    assert_eq!(
+        disabled.pins.sources[0].mapping_root_namespace_allowlist,
+        Some(Vec::new())
+    );
+    assert_eq!(disabled.pins.sources[0].mapping_root_policy_generation, 3);
 
     database.shutdown().await;
 }
@@ -557,6 +668,7 @@ async fn postgres_direct_resolution_discards_proof_when_database_pins_change() {
     for (name, mutation) in [
         ("activationGeneration", DatabasePinMutation::Activation),
         ("attachmentSetDigest", DatabasePinMutation::Attachment),
+        ("mappingRootPolicy", DatabasePinMutation::MappingRootPolicy),
         (
             "catalogPublication",
             DatabasePinMutation::CatalogPublication,
@@ -678,6 +790,7 @@ async fn resolve_after_database_pin_mutation(
 enum DatabasePinMutation {
     Activation,
     Attachment,
+    MappingRootPolicy,
     CatalogPublication,
     CoordinatePublication,
     Capability,
@@ -720,6 +833,12 @@ WHERE workspace_id = $1 AND active_content_hash IS NOT NULL
                     DatabasePinMutation::Attachment => {
                         "UPDATE workspace_sources
 SET attached_at = attached_at + INTERVAL '1 second'
+WHERE workspace_id = $1
+"
+                    }
+                    DatabasePinMutation::MappingRootPolicy => {
+                        "UPDATE workspace_sources
+SET mapping_root_policy_generation = mapping_root_policy_generation + 1
 WHERE workspace_id = $1
 "
                     }
@@ -845,8 +964,9 @@ async fn seed_named_catalog_endpoint(
     .expect("selected catalog item is seeded");
     sqlx::query(
         "INSERT INTO catalog_item_references (
-    source_id, item_key_namespace, item_key_value, reference_namespace, reference_value
-) VALUES ($1, 'fixture.item', $2, $3, $4)
+    source_id, item_key_namespace, item_key_value, reference_namespace, reference_value,
+    recommended_mapping_root
+) VALUES ($1, 'fixture.item', $2, $3, $4, TRUE)
 ",
     )
     .bind(source_id)

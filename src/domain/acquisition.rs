@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use serde_json::Value;
 use thiserror::Error;
 use time::OffsetDateTime;
@@ -164,7 +166,8 @@ pub struct ProviderItem {
     kind: Term,
     display_name: String,
     attributes: Value,
-    portable_references: Vec<PortableReference>,
+    portable_reference_candidates: Vec<PortableReference>,
+    recommended_mapping_roots: Vec<PortableReference>,
     binary_assets: Vec<BinaryAssetReference>,
 }
 
@@ -174,7 +177,8 @@ impl ProviderItem {
         kind: Term,
         display_name: impl Into<String>,
         attributes: Value,
-        portable_references: Vec<PortableReference>,
+        portable_reference_candidates: Vec<PortableReference>,
+        recommended_mapping_roots: Vec<PortableReference>,
         binary_assets: Vec<BinaryAssetReference>,
     ) -> Result<Self, AcquisitionValueError> {
         let display_name = display_name.into();
@@ -184,12 +188,24 @@ impl ProviderItem {
         if !attributes.is_object() {
             return Err(AcquisitionValueError::AttributesMustBeObject);
         }
+        let candidates = portable_reference_candidates.iter().collect::<HashSet<_>>();
+        if candidates.len() != portable_reference_candidates.len() {
+            return Err(AcquisitionValueError::DuplicatePortableReferenceCandidate);
+        }
+        let roots = recommended_mapping_roots.iter().collect::<HashSet<_>>();
+        if roots.len() != recommended_mapping_roots.len() {
+            return Err(AcquisitionValueError::DuplicateRecommendedMappingRoot);
+        }
+        if !roots.is_subset(&candidates) {
+            return Err(AcquisitionValueError::RecommendedMappingRootNotCandidate);
+        }
         Ok(Self {
             key,
             kind,
             display_name,
             attributes,
-            portable_references,
+            portable_reference_candidates,
+            recommended_mapping_roots,
             binary_assets,
         })
     }
@@ -210,8 +226,12 @@ impl ProviderItem {
         &self.attributes
     }
 
-    pub fn portable_references(&self) -> &[PortableReference] {
-        &self.portable_references
+    pub fn portable_reference_candidates(&self) -> &[PortableReference] {
+        &self.portable_reference_candidates
+    }
+
+    pub fn recommended_mapping_roots(&self) -> &[PortableReference] {
+        &self.recommended_mapping_roots
     }
 
     pub fn binary_assets(&self) -> &[BinaryAssetReference] {
@@ -230,7 +250,8 @@ impl CatalogItem {
         kind: Term,
         display_name: impl Into<String>,
         attributes: Value,
-        portable_references: Vec<PortableReference>,
+        portable_reference_candidates: Vec<PortableReference>,
+        recommended_mapping_roots: Vec<PortableReference>,
         binary_assets: Vec<BinaryAssetReference>,
     ) -> Result<Self, AcquisitionValueError> {
         ProviderItem::new(
@@ -238,7 +259,8 @@ impl CatalogItem {
             kind,
             display_name,
             attributes,
-            portable_references,
+            portable_reference_candidates,
+            recommended_mapping_roots,
             binary_assets,
         )
         .map(Self::from)
@@ -260,8 +282,12 @@ impl CatalogItem {
         self.provider_item.attributes()
     }
 
-    pub fn portable_references(&self) -> &[PortableReference] {
-        self.provider_item.portable_references()
+    pub fn portable_reference_candidates(&self) -> &[PortableReference] {
+        self.provider_item.portable_reference_candidates()
+    }
+
+    pub fn recommended_mapping_roots(&self) -> &[PortableReference] {
+        self.provider_item.recommended_mapping_roots()
     }
 
     pub fn binary_assets(&self) -> &[BinaryAssetReference] {
@@ -621,6 +647,12 @@ pub enum AcquisitionValueError {
     EmptyDisplayName,
     #[error("attributes must be a JSON object")]
     AttributesMustBeObject,
+    #[error("portable reference candidates must be unique")]
+    DuplicatePortableReferenceCandidate,
+    #[error("recommended mapping roots must be unique")]
+    DuplicateRecommendedMappingRoot,
+    #[error("recommended mapping roots must also be portable reference candidates")]
+    RecommendedMappingRootNotCandidate,
     #[error("provider revision must not be empty")]
     EmptyProviderRevision,
     #[error("coordinate evidence revision must not be empty")]

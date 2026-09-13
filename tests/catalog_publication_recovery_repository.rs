@@ -848,8 +848,8 @@ async fn seed_incremental_catalog_read(pool: PgPool) {
     sqlx::query(
         "INSERT INTO catalog_item_references (
              source_id, item_key_namespace, item_key_value,
-             reference_namespace, reference_value
-         ) VALUES ($1, 'fixture.item', $2, 'example.media', $3)",
+             reference_namespace, reference_value, recommended_mapping_root
+         ) VALUES ($1, 'fixture.item', $2, 'example.media', $3, TRUE)",
     )
     .bind(SOURCE_ID)
     .bind(b"item.stale".as_slice())
@@ -1081,15 +1081,15 @@ async fn seed_concurrent_state_read_and_queued_task(pool: PgPool) {
 fn replacement_batch() -> CatalogBatch {
     let item_key = ProviderItemKey::new("fixture.item", b"item.new".to_vec())
         .expect("provider item key is valid");
+    let reference = PortableReference::new("example.media", b"new".to_vec())
+        .expect("portable reference is valid");
     let item = CatalogItem::new(
         item_key.clone(),
         Term::new("fixture", "episode").expect("item kind is valid"),
         "New item",
         json!({"season": 1}),
-        vec![
-            PortableReference::new("example.media", b"new".to_vec())
-                .expect("portable reference is valid"),
-        ],
+        vec![reference.clone()],
+        vec![reference],
         vec![BinaryAssetReference::new(
             BinaryAssetKey::new("fixture.asset", b"asset.new".to_vec())
                 .expect("binary asset key is valid"),
@@ -1126,15 +1126,15 @@ fn incremental_batch() -> CatalogBatch {
         .expect("updated provider item key is valid");
     let added_key = ProviderItemKey::new("fixture.item", b"item.new".to_vec())
         .expect("added provider item key is valid");
+    let updated_reference = PortableReference::new("example.media", b"old.updated".to_vec())
+        .expect("updated portable reference is valid");
     let updated = CatalogItem::new(
         updated_key.clone(),
         Term::new("fixture", "episode").expect("updated item kind is valid"),
         "Updated item",
         json!({"revision": 2}),
-        vec![
-            PortableReference::new("example.media", b"old.updated".to_vec())
-                .expect("updated portable reference is valid"),
-        ],
+        vec![updated_reference.clone()],
+        vec![updated_reference],
         vec![BinaryAssetReference::new(
             BinaryAssetKey::new("fixture.asset", b"asset.updated".to_vec())
                 .expect("updated binary asset key is valid"),
@@ -1142,15 +1142,15 @@ fn incremental_batch() -> CatalogBatch {
         )],
     )
     .expect("updated catalog item is valid");
+    let added_reference = PortableReference::new("example.media", b"new".to_vec())
+        .expect("added portable reference is valid");
     let added = CatalogItem::new(
         added_key.clone(),
         Term::new("fixture", "episode").expect("added item kind is valid"),
         "Added item",
         json!({}),
-        vec![
-            PortableReference::new("example.media", b"new".to_vec())
-                .expect("added portable reference is valid"),
-        ],
+        vec![added_reference.clone()],
+        vec![added_reference],
         vec![BinaryAssetReference::new(
             BinaryAssetKey::new("fixture.asset", b"asset.new".to_vec())
                 .expect("added binary asset key is valid"),

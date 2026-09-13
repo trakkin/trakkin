@@ -242,6 +242,8 @@ struct ResolutionSourcePinRecord {
     source_id: Uuid,
     connection_id: Uuid,
     attached_at: time::OffsetDateTime,
+    mapping_root_namespace_allowlist: Option<Vec<String>>,
+    mapping_root_policy_generation: i64,
     source_removed: bool,
     source_capability_revision: i64,
     connection_ready: bool,
@@ -261,6 +263,8 @@ impl From<ResolutionSourcePinRecord> for ResolutionSourcePin {
             source_id: record.source_id,
             connection_id: record.connection_id,
             attached_at: record.attached_at,
+            mapping_root_namespace_allowlist: record.mapping_root_namespace_allowlist,
+            mapping_root_policy_generation: record.mapping_root_policy_generation,
             source_removed: record.source_removed,
             source_capability_revision: record.source_capability_revision,
             connection_ready: record.connection_ready,
@@ -354,6 +358,8 @@ ORDER BY mapping_id
     source.id AS source_id,
     source.connection_id,
     attachment.attached_at,
+    attachment.mapping_root_namespace_allowlist,
+    attachment.mapping_root_policy_generation,
     source.availability = 'removed' AS source_removed,
     source.capability_revision AS source_capability_revision,
     connection.status = 'ready' AS connection_ready,
@@ -518,6 +524,15 @@ INNER JOIN catalog_items AS item
 INNER JOIN workspace_sources AS attached
     ON attached.workspace_id = $1
     AND attached.source_id = item.source_id
+    AND (
+        (
+            attached.mapping_root_namespace_allowlist IS NULL
+            AND reference.recommended_mapping_root
+        )
+        OR reference.reference_namespace = ANY(
+            attached.mapping_root_namespace_allowlist
+        )
+    )
 LEFT JOIN source_coordinate_bindings AS coordinate
     ON coordinate.source_id = item.source_id
     AND coordinate.item_key_namespace = item.key_namespace
