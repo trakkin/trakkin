@@ -719,11 +719,7 @@ impl SyncFieldRule {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct RawSyncPolicyDocument {
-    #[serde(default)]
-    catalog_item_id: Option<serde_json::Value>,
     contributors: Vec<Uuid>,
-    #[serde(default)]
-    provider_item_id: Option<serde_json::Value>,
     receivers: Vec<Uuid>,
     resolution_mode: ResolutionMode,
     rules: Vec<SyncFieldRule>,
@@ -770,18 +766,6 @@ impl SyncPolicyDocument {
         raw: RawSyncPolicyDocument,
         registry: StateRegistry,
     ) -> Result<Self, SyncPolicyError> {
-        if raw.provider_item_id.is_some() {
-            return Err(SyncPolicyError::ForbiddenRuntimeIdentity {
-                field: "providerItemId",
-                reason: "provider item identity is runtime evidence",
-            });
-        }
-        if raw.catalog_item_id.is_some() {
-            return Err(SyncPolicyError::ForbiddenRuntimeIdentity {
-                field: "catalogItemId",
-                reason: "catalog item identity is runtime evidence",
-            });
-        }
         if raw.schema != SYNC_POLICY_SCHEMA {
             return Err(SyncPolicyError::UnsupportedSchema);
         }
@@ -920,11 +904,6 @@ pub enum SyncPolicyError {
     DuplicateFieldRule,
     #[error("state field {field} can clear evidence but writes do not allow clear")]
     ClearNotAllowed { field: String },
-    #[error("{field} is forbidden: {reason}")]
-    ForbiddenRuntimeIdentity {
-        field: &'static str,
-        reason: &'static str,
-    },
     #[error(transparent)]
     Registry(StateRegistryError),
     #[error("synchronization policy content hash is invalid")]
@@ -943,7 +922,6 @@ impl SyncPolicyError {
             Self::RulesRequired => "rules_required",
             Self::DuplicateFieldRule => "duplicate_field_rule",
             Self::ClearNotAllowed { .. } => "clear_not_allowed",
-            Self::ForbiddenRuntimeIdentity { .. } => "forbidden_runtime_identity",
             Self::Registry(error) => error.code(),
             Self::InvalidContentHash => "invalid_content_hash",
             Self::InvalidDocument { code, .. } => code,

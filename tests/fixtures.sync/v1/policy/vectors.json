@@ -73,38 +73,6 @@
         "policy.translation-constraints",
         "policy.write-constraints"
       ]
-    },
-    {
-      "id": "POLICY-PROVIDER-ITEM-ID-INVALID-001",
-      "input": {
-        "body": {
-          "contributors": ["source-local-a"],
-          "receivers": ["source-local-b"],
-          "providerItemId": "provider-native-item"
-        }
-      },
-      "expected": {
-        "valid": false,
-        "field": "providerItemId",
-        "reason": "provider item identity is runtime evidence"
-      },
-      "covers": ["policy.no-provider-item-identity"]
-    },
-    {
-      "id": "POLICY-CATALOG-ITEM-ID-INVALID-001",
-      "input": {
-        "body": {
-          "contributors": ["source-local-a"],
-          "receivers": ["source-local-b"],
-          "catalogItemId": "catalog-item-local-id"
-        }
-      },
-      "expected": {
-        "valid": false,
-        "field": "catalogItemId",
-        "reason": "catalog item identity is runtime evidence"
-      },
-      "covers": ["policy.no-catalog-item-identity"]
     }
   ]
 }

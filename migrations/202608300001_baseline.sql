@@ -187,7 +187,7 @@ CREATE TABLE workspace_sources (
     workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     source_id UUID NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
     attached_at TIMESTAMPTZ NOT NULL,
-    mapping_root_namespace_allowlist TEXT[],
+    mapping_root_namespace_allowlist TEXT [],
     mapping_root_policy_generation BIGINT NOT NULL DEFAULT 1 CHECK (
         mapping_root_policy_generation > 0
     ),

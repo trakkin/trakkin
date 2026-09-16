@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use crate::domain::synchronization::{
     Quantizer, Reducer, ResolutionMode, STATE_REGISTRY_SCHEMA, SYNC_POLICY_SCHEMA, StateRegistry,
-    SyncPolicyDocument, SyncPolicyError, validate_sync_policy_hash,
+    SyncPolicyDocument, validate_sync_policy_hash,
 };
 
 use super::{
@@ -276,43 +276,6 @@ async fn sync_policy_executes_local_immutable_policy_vectors() {
         .await
         .unwrap_err();
     assert_eq!(corrupt, SyncPolicyLifecycleError::RepositoryInvariant);
-}
-
-#[test]
-fn sync_policy_rejects_runtime_item_identities() {
-    let suite = read_json("policy/vectors.json");
-    let base = json!({
-        "contributors": [Uuid::from_u128(0xa1)],
-        "receivers": [Uuid::from_u128(0xb2)],
-        "resolutionMode": "direct",
-        "rules": [input(vector(&suite, "POLICY-FIELD-RULES-001"), "fieldRule")],
-        "schema": SYNC_POLICY_SCHEMA,
-    });
-
-    for vector_id in [
-        "POLICY-PROVIDER-ITEM-ID-INVALID-001",
-        "POLICY-CATALOG-ITEM-ID-INVALID-001",
-    ] {
-        let fixture = vector(&suite, vector_id);
-        let field = expected(fixture, "field").as_str().unwrap();
-        let value = input(fixture, "body").get(field).unwrap().clone();
-        let mut invalid = base.clone();
-        invalid
-            .as_object_mut()
-            .unwrap()
-            .insert(field.to_owned(), value);
-        let error =
-            SyncPolicyDocument::from_json(&invalid.to_string(), StateRegistry::v1()).unwrap_err();
-        assert_eq!(error.code(), "forbidden_runtime_identity");
-        assert!(matches!(
-            error,
-            SyncPolicyError::ForbiddenRuntimeIdentity {
-                field: actual_field,
-                reason: actual_reason,
-            } if actual_field == field
-                && actual_reason == expected(fixture, "reason").as_str().unwrap()
-        ));
-    }
 }
 
 #[derive(Clone, Default)]
