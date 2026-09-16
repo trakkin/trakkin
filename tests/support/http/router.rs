@@ -11,12 +11,9 @@ use tower::ServiceExt;
 use trakkin::{
     application::{
         adapter_runtime::{
-            AdapterAccount, AdapterAuthenticationMethod, AdapterAuthenticationPrompt,
-            AdapterAuthenticationStatus, AdapterAuthenticationStep, AdapterBinaryAsset,
-            AdapterConfigurationField, AdapterConfigurationOption, AdapterConnectionDescription,
-            AdapterConnectionValidation, AdapterKey, AdapterLookupCandidate, AdapterLookupEvidence,
-            AdapterLookupOutcome, AdapterPortableReferenceLookup, AdapterSecretPatch, AdapterTerm,
-            AdapterValue, AdapterValueKind,
+            AdapterAuthenticationMethod, AdapterAuthenticationStep, AdapterBinaryAsset,
+            AdapterConnectionDescription, AdapterConnectionValidation, AdapterLookupCandidate,
+            AdapterLookupEvidence, AdapterLookupOutcome, AdapterPortableReferenceLookup,
         },
         assets::{AssetFuture, BinaryAssetInteraction, ReadPublishedBinaryAsset},
         connection::{
@@ -38,6 +35,11 @@ use trakkin::{
         BinaryAssetKey, BinaryAssetReference, PortableReference, ProviderItem, ProviderItemKey,
         Term,
     },
+};
+use trakkin_provider_sdk::v1::{
+    AccountSnapshot, AuthenticationPrompt, AuthenticationStatus, ConfigurationField,
+    ConfigurationOption, ConfigurationValueKind, Key as ProtocolKey, SecretPatch,
+    Term as ProtocolTerm, Value as ProtocolValue, secret_patch, value as protocol_value,
 };
 use uuid::Uuid;
 
@@ -134,7 +136,7 @@ impl ConnectionInteraction for StaticConnectionInteraction {
                 authentication_methods: vec![AdapterAuthenticationMethod {
                     key: "fixture/device".to_owned(),
                     display_name: "Device".to_owned(),
-                    interactions: vec![AdapterTerm {
+                    interactions: vec![ProtocolTerm {
                         namespace: "fixture".to_owned(),
                         name: "browser".to_owned(),
                     }],
@@ -162,23 +164,22 @@ impl ConnectionInteraction for StaticConnectionInteraction {
                     }
                     .to_owned(),
                     status: if cancellable {
-                        AdapterAuthenticationStatus::Waiting
+                        AuthenticationStatus::Waiting
                     } else {
-                        AdapterAuthenticationStatus::InputRequired
-                    },
-                    prompt: (!cancellable).then(|| AdapterAuthenticationPrompt {
+                        AuthenticationStatus::InputRequired
+                    } as i32,
+                    prompt: (!cancellable).then(|| AuthenticationPrompt {
                         message: "Enter the fixture authentication code".to_owned(),
                         verification_url: "https://example.invalid/fixture".to_owned(),
                         user_code: "FIXTURE".to_owned(),
                         fields: Vec::new(),
                     }),
                     accounts: Vec::new(),
-                    secret_patches: vec![AdapterSecretPatch {
+                    secret_patches: vec![SecretPatch {
                         key: "token".to_owned(),
-                        value: Some(b"response-secret".to_vec()),
+                        patch: Some(secret_patch::Patch::Set(b"response-secret".to_vec())),
                     }],
                     retry_after: None,
-                    error: None,
                 },
             })
         })
@@ -191,21 +192,20 @@ impl ConnectionInteraction for StaticConnectionInteraction {
         Box::pin(async {
             Ok(AdapterAuthenticationStep {
                 authentication_id: "provider-device-auth".to_owned(),
-                status: AdapterAuthenticationStatus::Completed,
+                status: AuthenticationStatus::Completed as i32,
                 prompt: None,
-                accounts: vec![AdapterAccount {
-                    key: AdapterKey {
+                accounts: vec![AccountSnapshot {
+                    key: Some(ProtocolKey {
                         namespace: "fixture".to_owned(),
                         value: b"authenticated".to_vec(),
-                    },
+                    }),
                     display_name: "Authenticated".to_owned(),
                 }],
-                secret_patches: vec![AdapterSecretPatch {
+                secret_patches: vec![SecretPatch {
                     key: "token".to_owned(),
-                    value: Some(b"response-secret".to_vec()),
+                    patch: Some(secret_patch::Patch::Set(b"response-secret".to_vec())),
                 }],
                 retry_after: None,
-                error: None,
             })
         })
     }
@@ -305,19 +305,25 @@ fn lookup_candidate(index: usize, matched_reference: PortableReference) -> Adapt
     }
 }
 
-fn secret_configuration_field() -> AdapterConfigurationField {
-    AdapterConfigurationField {
+fn secret_configuration_field() -> ConfigurationField {
+    ConfigurationField {
         key: "token".to_owned(),
         display_name: "Token".to_owned(),
-        value_kind: AdapterValueKind::Text,
+        value_kind: ConfigurationValueKind::Text as i32,
         required: true,
         secret: true,
-        options: vec![AdapterConfigurationOption {
-            value: AdapterValue::Text("secret-option".to_owned()),
+        options: vec![ConfigurationOption {
+            value: Some(protocol_text("secret-option")),
             display_name: "Secret option".to_owned(),
         }],
-        default_value: Some(AdapterValue::Text("secret-default".to_owned())),
+        default_value: Some(protocol_text("secret-default")),
         placeholder: "Token".to_owned(),
+    }
+}
+
+fn protocol_text(value: &str) -> ProtocolValue {
+    ProtocolValue {
+        value: Some(protocol_value::Value::Text(value.to_owned())),
     }
 }
 

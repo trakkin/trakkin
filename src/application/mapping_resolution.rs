@@ -13,12 +13,15 @@ use tokio::time::timeout;
 use trakkin_mapping::{PortableEndpoint, PortableSelector, Selection};
 use uuid::Uuid;
 
-use crate::domain::acquisition::CoordinateBacking as ProviderCoordinateBacking;
+use crate::domain::acquisition::{
+    CoordinateBacking as ProviderCoordinateBacking, PortableReference,
+};
 
 use super::{
     adapter_runtime::{
-        AdapterEndpointLookupOutcome, AdapterPortableEndpointResolution, AdapterSession,
-        ResolveAdapterPortableEndpoints,
+        AdapterEndpointLookupCandidate, AdapterEndpointLookupOutcome, AdapterLookupOutcome,
+        AdapterPortableEndpointResolution, AdapterPortableReferenceLookup, AdapterSession,
+        LookupAdapterPortableReferences, ResolveAdapterPortableEndpoints,
     },
     connection::ConnectionSessionRegistry,
     error::{ApplicationError, ApplicationErrorCode, IntoApplicationError},
@@ -345,33 +348,41 @@ fn plan_mapping_endpoint_lookups(
         if supported.is_empty() {
             continue;
         }
-        let maximum_batch_size = supported
-            .iter()
-            .map(|endpoint| target.batch_size(endpoint))
-            .min()
-            .filter(|maximum| *maximum > 0)
-            .ok_or_else(|| {
-                ApplicationError::new(
-                    ApplicationErrorCode::InvalidProviderData,
-                    "stored endpoint lookup capability is invalid",
-                )
-            })?;
-        if target.maximum_response_bytes == 0 {
-            return Err(ApplicationError::new(
-                ApplicationErrorCode::InvalidProviderData,
-                "stored endpoint lookup capability is invalid",
-            ));
-        }
-
         let mut batches = Vec::new();
         let mut next_work_key = None;
-        for batch in supported.chunks(maximum_batch_size as usize) {
-            if scheduled_calls == maximum_calls {
-                next_work_key = Some(format!("lookup-call:{}", batch[0]));
+        for selected in [false, true] {
+            let compatible = supported
+                .iter()
+                .filter(|endpoint| endpoint.selector().is_some() == selected)
+                .cloned()
+                .collect::<Vec<_>>();
+            if compatible.is_empty() {
+                continue;
+            }
+            let maximum_batch_size = target.batch_size(&compatible[0]);
+            if maximum_batch_size == 0 {
+                return Err(ApplicationError::new(
+                    ApplicationErrorCode::InvalidProviderData,
+                    "stored endpoint lookup capability is invalid",
+                ));
+            }
+            if selected && target.maximum_response_bytes == 0 {
+                return Err(ApplicationError::new(
+                    ApplicationErrorCode::InvalidProviderData,
+                    "stored endpoint lookup capability is invalid",
+                ));
+            }
+            for batch in compatible.chunks(maximum_batch_size as usize) {
+                if scheduled_calls == maximum_calls {
+                    next_work_key = Some(format!("lookup-call:{}", batch[0]));
+                    break;
+                }
+                scheduled_calls += 1;
+                batches.push(batch.to_vec());
+            }
+            if next_work_key.is_some() {
                 break;
             }
-            scheduled_calls += 1;
-            batches.push(batch.to_vec());
         }
         if !batches.is_empty() {
             planned_targets.push(PlannedMappingEndpointLookup { target, batches });
@@ -531,18 +542,46 @@ where
                     } else {
                         "resolve"
                     };
-                    let result = session
-                        .resolve_portable_endpoints(ResolveAdapterPortableEndpoints {
-                            operation_id: format!(
-                                "mapping:{}:{}:{}:{operation_kind}:{chunk_index}",
-                                request.workspace_id, target.connection_id, target.source_id,
-                            )
-                            .into_bytes(),
-                            source_key: target.source_key.clone(),
-                            endpoints,
-                            maximum_response_bytes: target.maximum_response_bytes,
-                        })
-                        .await;
+                    let operation_id = format!(
+                        "mapping:{}:{}:{}:{operation_kind}:{chunk_index}",
+                        request.workspace_id, target.connection_id, target.source_id,
+                    )
+                    .into_bytes();
+                    let result = if endpoints[0].selector().is_none() {
+                        let references = endpoints
+                            .iter()
+                            .map(|endpoint| {
+                                PortableReference::new(
+                                    endpoint.namespace(),
+                                    endpoint.value().to_vec(),
+                                )
+                                .expect("portable endpoint is a valid portable reference")
+                            })
+                            .collect();
+                        match session
+                            .lookup_portable_references(LookupAdapterPortableReferences {
+                                operation_id,
+                                source_key: target.source_key.clone(),
+                                references,
+                            })
+                            .await
+                        {
+                            Ok(Ok(lookups)) => {
+                                Ok(Ok(reference_endpoint_results(endpoints, lookups)))
+                            }
+                            Ok(Err(error)) => Ok(Err(error)),
+                            Err(error) => Err(error),
+                        }
+                    } else {
+                        session
+                            .resolve_portable_endpoints(ResolveAdapterPortableEndpoints {
+                                operation_id,
+                                source_key: target.source_key.clone(),
+                                endpoints,
+                                maximum_response_bytes: target.maximum_response_bytes,
+                            })
+                            .await
+                    };
                     match result {
                         Ok(Ok(results)) => append_lookup_results(
                             &mut batch,
@@ -601,6 +640,45 @@ where
             Ok(batch)
         })
     }
+}
+
+fn reference_endpoint_results(
+    endpoints: Vec<PortableEndpoint>,
+    lookups: Vec<AdapterPortableReferenceLookup>,
+) -> Vec<AdapterPortableEndpointResolution> {
+    debug_assert_eq!(endpoints.len(), lookups.len());
+    endpoints
+        .into_iter()
+        .zip(lookups)
+        .map(|(requested, lookup)| {
+            debug_assert_eq!(requested.namespace(), lookup.requested.namespace());
+            debug_assert_eq!(requested.value(), lookup.requested.value());
+            let outcome = match lookup.outcome {
+                AdapterLookupOutcome::Matched(candidate) => AdapterEndpointLookupOutcome::Matched(
+                    Box::new(AdapterEndpointLookupCandidate {
+                        provider_item: candidate.provider_item,
+                        binding: None,
+                        evidence: candidate.evidence,
+                    }),
+                ),
+                AdapterLookupOutcome::NotFound => AdapterEndpointLookupOutcome::NotFound,
+                AdapterLookupOutcome::Ambiguous(candidates) => {
+                    AdapterEndpointLookupOutcome::Ambiguous(
+                        candidates
+                            .into_iter()
+                            .map(|candidate| AdapterEndpointLookupCandidate {
+                                provider_item: candidate.provider_item,
+                                binding: None,
+                                evidence: candidate.evidence,
+                            })
+                            .collect(),
+                    )
+                }
+                AdapterLookupOutcome::Unsupported => AdapterEndpointLookupOutcome::Unsupported,
+            };
+            AdapterPortableEndpointResolution { requested, outcome }
+        })
+        .collect()
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2602,6 +2680,47 @@ mod tests {
         );
         assert_eq!(
             overflow.next_work_key.as_deref(),
+            Some("lookup-call:example.media://b[episode:1]")
+        );
+    }
+
+    #[test]
+    fn adapter_lookup_plan_splits_reference_and_endpoint_rpcs() {
+        let bare = PortableEndpoint::parse("example.media://a").expect("bare endpoint is valid");
+        let selected = PortableEndpoint::parse("example.media://b[episode:1]")
+            .expect("selected endpoint is valid");
+        let target = MappingEndpointLookupTarget {
+            source_id: Uuid::from_u128(2),
+            connection_id: Uuid::from_u128(1),
+            source_key: crate::application::adapter_runtime::AdapterKey {
+                namespace: "fixture".to_owned(),
+                value: b"source-a".to_vec(),
+            },
+            mapping_root_policy: MappingRootPolicy::ProviderRecommended,
+            bare_reference_namespaces: vec!["example.media".to_owned()],
+            maximum_bare_batch_size: 10,
+            reference_namespaces: vec!["example.media".to_owned()],
+            coordinate_ids: vec!["episode".to_owned()],
+            maximum_batch_size: 10,
+            maximum_response_bytes: 1024,
+        };
+
+        let exact = plan_mapping_endpoint_lookups(
+            vec![target.clone()],
+            &[bare.clone(), selected.clone()],
+            2,
+        )
+        .expect("two calls cover both capability paths");
+        assert_eq!(
+            exact.targets[0].batches,
+            vec![vec![bare.clone()], vec![selected.clone()]]
+        );
+
+        let bounded = plan_mapping_endpoint_lookups(vec![target], &[bare.clone(), selected], 1)
+            .expect("one call returns a bounded plan");
+        assert_eq!(bounded.targets[0].batches, vec![vec![bare]]);
+        assert_eq!(
+            bounded.next_work_key.as_deref(),
             Some("lookup-call:example.media://b[episode:1]")
         );
     }

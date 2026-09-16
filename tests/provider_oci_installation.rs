@@ -4,9 +4,7 @@ use tempfile::tempdir;
 use time::OffsetDateTime;
 use trakkin::{
     application::{
-        adapter_runtime::{
-            AdapterHealthStatus, AdapterLauncher, AdapterRetirement, AdapterSession, LaunchAdapter,
-        },
+        adapter_runtime::{AdapterLauncher, AdapterRetirement, AdapterSession, LaunchAdapter},
         providers::{
             InstallProvider, ProviderLaunchResolver, ProviderRegistryApi, ProviderUpdatePolicy,
             TrustProviderSource,
@@ -18,6 +16,7 @@ use trakkin::{
         provider_registry::{PostgresProviderRegistry, ProbedProviderRegistry},
     },
 };
+use trakkin_provider_sdk::v1::HealthStatus;
 use uuid::Uuid;
 
 const SOURCE_ID: Uuid = Uuid::from_u128(1);
@@ -27,8 +26,8 @@ const SOURCE_ID: Uuid = Uuid::from_u128(1);
 async fn trusted_oci_source_installs_and_launches_provider() {
     let repository_url = std::env::var("TRAKKIN_TEST_PROVIDER_REPOSITORY_URL")
         .expect("TRAKKIN_TEST_PROVIDER_REPOSITORY_URL is set");
-    let provider_id = std::env::var("TRAKKIN_TEST_PROVIDER_ID")
-        .expect("TRAKKIN_TEST_PROVIDER_ID is set");
+    let provider_id =
+        std::env::var("TRAKKIN_TEST_PROVIDER_ID").expect("TRAKKIN_TEST_PROVIDER_ID is set");
     let version = std::env::var("TRAKKIN_TEST_PROVIDER_VERSION")
         .expect("TRAKKIN_TEST_PROVIDER_VERSION is set");
     let directory = tempdir().expect("temporary directory");
@@ -84,7 +83,7 @@ async fn trusted_oci_source_installs_and_launches_provider() {
     assert_eq!(session.identity().adapter_key, installed.provider_id);
     assert_eq!(
         session.health().await.expect("provider health").status,
-        AdapterHealthStatus::Ready
+        HealthStatus::Ready as i32
     );
     assert_eq!(
         session.retire().await.expect("provider retires"),

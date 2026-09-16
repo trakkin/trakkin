@@ -6,9 +6,8 @@ use uuid::Uuid;
 
 use crate::application::{
     adapter_runtime::{
-        AdapterFuture, AdapterRetirement, AdapterRetirementFuture, AdapterSession,
-        AdapterTargetedStateWriteIntent, AdapterTargetedStateWriteOperation,
-        WriteAdapterTargetedState,
+        AdapterRetirement, AdapterSession, AdapterTargetedStateWriteIntent,
+        AdapterTargetedStateWriteOperation, WriteAdapterTargetedState,
     },
     connection::ConnectionSessionRegistry,
     sync_action_attempt::{
@@ -25,21 +24,18 @@ use crate::domain::acquisition::StateValue;
 const SYNC_ACTION_TASK_KINDS: [TaskKind; 1] = [TaskKind::SyncAction];
 const CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-pub trait SyncActionAdapterSession: Send {
+#[trait_variant::make(Send)]
+pub trait SyncActionAdapterSession {
     type Error;
 
-    fn write_sync_action(
+    async fn write_sync_action(
         &mut self,
         command: WriteAdapterTargetedState,
-    ) -> AdapterFuture<
-        '_,
-        crate::application::adapter_runtime::AdapterTargetedStateWriteOutcome,
-        Self::Error,
-    >;
+    ) -> Result<crate::application::adapter_runtime::AdapterTargetedStateWriteOutcome, Self::Error>;
 
-    fn cancel_sync_action(&mut self, operation_id: Vec<u8>) -> AdapterFuture<'_, (), Self::Error>;
+    async fn cancel_sync_action(&mut self, operation_id: Vec<u8>) -> Result<(), Self::Error>;
 
-    fn retire_sync_action(self) -> AdapterRetirementFuture<AdapterRetirement, Self::Error>;
+    async fn retire_sync_action(self) -> Result<AdapterRetirement, Self::Error>;
 }
 
 impl<S> SyncActionAdapterSession for S
@@ -48,23 +44,20 @@ where
 {
     type Error = S::Error;
 
-    fn write_sync_action(
+    async fn write_sync_action(
         &mut self,
         command: WriteAdapterTargetedState,
-    ) -> AdapterFuture<
-        '_,
-        crate::application::adapter_runtime::AdapterTargetedStateWriteOutcome,
-        Self::Error,
-    > {
-        self.write_targeted_state(command)
+    ) -> Result<crate::application::adapter_runtime::AdapterTargetedStateWriteOutcome, Self::Error>
+    {
+        self.write_targeted_state(command).await
     }
 
-    fn cancel_sync_action(&mut self, operation_id: Vec<u8>) -> AdapterFuture<'_, (), Self::Error> {
-        self.cancel_operation(operation_id)
+    async fn cancel_sync_action(&mut self, operation_id: Vec<u8>) -> Result<(), Self::Error> {
+        self.cancel_operation(operation_id).await
     }
 
-    fn retire_sync_action(self) -> AdapterRetirementFuture<AdapterRetirement, Self::Error> {
-        self.retire()
+    async fn retire_sync_action(self) -> Result<AdapterRetirement, Self::Error> {
+        self.retire().await
     }
 }
 

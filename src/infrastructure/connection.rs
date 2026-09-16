@@ -12,14 +12,20 @@ use sqlx::{FromRow, PgPool, Postgres, Transaction};
 use thiserror::Error;
 use time::OffsetDateTime;
 use tokio::sync::Notify;
+use trakkin_provider_sdk::v1::{
+    AuthenticationStatus, ConfigurationField, ConfigurationValueKind,
+    ConnectionCapabilities as ProtocolConnectionCapabilities, Key as ProtocolKey, SecretPatch,
+    SourceAvailability as ProtocolSourceAvailability,
+    SourceCapabilities as ProtocolSourceCapabilities, StateFieldQuantizer,
+    TargetedStateWriteIdempotencyMode, TargetedStateWritePreconditionMode, Value as ProtocolValue,
+    secret_patch, value as protocol_value,
+};
 use uuid::Uuid;
 
 use crate::application::{
     adapter_runtime::{
-        AdapterAuthenticationStatus, AdapterAuthenticationStep, AdapterConfigurationField,
-        AdapterConnectionCapabilities, AdapterIdentity, AdapterKey, AdapterSecret,
-        AdapterSecretPatch, AdapterSession, AdapterSetting, AdapterSourceAvailability,
-        AdapterSourceCapabilities, AdapterValue,
+        AdapterAuthenticationStep, AdapterIdentity, AdapterSecret, AdapterSecretPatch,
+        AdapterSession, AdapterSetting, AdapterSourceAvailability, AdapterValue,
     },
     connection::{
         BeginConnectionDeletion, ConnectionDeletionImpact, ConnectionFuture, ConnectionRepository,
@@ -220,7 +226,13 @@ SET
 WHERE id = $3
 ",
         )
-        .bind(encode_connection_capabilities(&command.opened.capabilities))
+        .bind(encode_connection_capabilities(
+            command
+                .opened
+                .capabilities
+                .as_ref()
+                .expect("validated connection capabilities"),
+        ))
         .bind(command.published_at)
         .bind(command.connection_id)
         .execute(&mut *transaction)
@@ -238,7 +250,8 @@ WHERE connection_id = $1
         let existing_account_ids = existing_provider_ids(existing_accounts);
         let mut account_ids = HashMap::new();
         for account in command.opened.accounts {
-            let provider_key = provider_key(&account.key);
+            let account_key = account.key.expect("validated account key");
+            let provider_key = protocol_provider_key(&account_key);
             let account_id = existing_account_ids
                 .get(&provider_key)
                 .copied()
@@ -257,8 +270,8 @@ removed_at = NULL
             )
             .bind(account_id)
             .bind(command.connection_id)
-            .bind(&account.key.namespace)
-            .bind(&account.key.value)
+            .bind(&account_key.namespace)
+            .bind(&account_key.value)
             .bind(account.display_name)
             .bind(command.published_at)
             .execute(&mut *transaction)
@@ -292,20 +305,30 @@ WHERE connection_id = $1
         let existing_source_ids = existing_provider_ids(existing_sources);
         let mut seen_source_keys = HashSet::new();
         for source in command.discovered.sources {
-            let source_provider_key = provider_key(&source.key);
+            let source_key = source.key.expect("validated source key");
+            let account_key = source.account_key.expect("validated source account key");
+            let source_kind = source.kind.expect("validated source kind");
+            let capabilities = source.capabilities.expect("validated source capabilities");
+            let source_provider_key = protocol_provider_key(&source_key);
             let source_id = existing_source_ids
                 .get(&source_provider_key)
                 .copied()
                 .unwrap_or(generate_uuid()?);
             let account_id = account_ids
-                .get(&provider_key(&source.account_key))
+                .get(&protocol_provider_key(&account_key))
                 .copied()
                 .ok_or(ConnectionPersistenceError::UnknownSourceAccount)?;
-            let (availability, removed_at) = match source.availability {
-                AdapterSourceAvailability::Available => ("available", None),
-                AdapterSourceAvailability::Unavailable => ("unavailable", None),
-                AdapterSourceAvailability::Removed => ("removed", Some(command.published_at)),
-            };
+            let (availability, removed_at) =
+                match ProtocolSourceAvailability::try_from(source.availability)
+                    .expect("validated source availability")
+                {
+                    ProtocolSourceAvailability::Available => ("available", None),
+                    ProtocolSourceAvailability::Unavailable => ("unavailable", None),
+                    ProtocolSourceAvailability::Removed => ("removed", Some(command.published_at)),
+                    ProtocolSourceAvailability::Unspecified => {
+                        unreachable!("validated source availability")
+                    }
+                };
             sqlx::query(
                 "INSERT INTO sources (
     id, connection_id, account_id, provider_key_namespace,
@@ -330,13 +353,13 @@ removed_at = excluded.removed_at
             .bind(source_id)
             .bind(command.connection_id)
             .bind(account_id)
-            .bind(&source.key.namespace)
-            .bind(&source.key.value)
+            .bind(&source_key.namespace)
+            .bind(&source_key.value)
             .bind(source.display_name)
-            .bind(source.kind.namespace)
-            .bind(source.kind.name)
+            .bind(source_kind.namespace)
+            .bind(source_kind.name)
             .bind(availability)
-            .bind(encode_source_capabilities(&source.capabilities))
+            .bind(encode_source_capabilities(&capabilities))
             .bind(command.published_at)
             .bind(removed_at)
             .execute(&mut *transaction)
@@ -382,7 +405,7 @@ WHERE id = $2
             &mut transaction,
             &self.master_key,
             command.connection_id,
-            patches,
+            protocol_secret_patches(patches),
             command.published_at,
         )
         .await?;
@@ -478,7 +501,7 @@ WHERE authentication_sessions.connection_id = excluded.connection_id
             &mut transaction,
             &self.master_key,
             command.connection_id,
-            command.step.secret_patches,
+            protocol_secret_patches(command.step.secret_patches),
             command.updated_at,
         )
         .await?;
@@ -1118,12 +1141,21 @@ fn validate_connection_input(command: &CreateConnection) -> Result<(), Connectio
 fn validate_snapshot(
     command: &PublishConnectionSnapshot,
 ) -> Result<(), ConnectionPersistenceError> {
+    if command.opened.capabilities.is_none() {
+        return Err(ConnectionPersistenceError::InvalidConnection);
+    }
     let account_keys = command
         .opened
         .accounts
         .iter()
-        .map(|account| provider_key(&account.key))
-        .collect::<HashSet<_>>();
+        .map(|account| {
+            account
+                .key
+                .as_ref()
+                .map(protocol_provider_key)
+                .ok_or(ConnectionPersistenceError::InvalidConnection)
+        })
+        .collect::<Result<HashSet<_>, _>>()?;
     if account_keys.len() != command.opened.accounts.len() {
         return Err(ConnectionPersistenceError::DuplicateProviderKey("account"));
     }
@@ -1131,8 +1163,24 @@ fn validate_snapshot(
         .discovered
         .sources
         .iter()
-        .map(|source| provider_key(&source.key))
-        .collect::<HashSet<_>>();
+        .map(|source| {
+            let key = source
+                .key
+                .as_ref()
+                .ok_or(ConnectionPersistenceError::InvalidConnection)?;
+            if source.account_key.is_none()
+                || source.kind.is_none()
+                || source.capabilities.is_none()
+                || matches!(
+                    ProtocolSourceAvailability::try_from(source.availability),
+                    Err(_) | Ok(ProtocolSourceAvailability::Unspecified)
+                )
+            {
+                return Err(ConnectionPersistenceError::InvalidConnection);
+            }
+            Ok(protocol_provider_key(key))
+        })
+        .collect::<Result<HashSet<_>, _>>()?;
     if source_keys.len() != command.discovered.sources.len() {
         return Err(ConnectionPersistenceError::DuplicateProviderKey("source"));
     }
@@ -1353,10 +1401,6 @@ fn generate_uuid() -> Result<Uuid, ConnectionPersistenceError> {
     Ok(Uuid::from_bytes(bytes))
 }
 
-fn provider_key(key: &AdapterKey) -> (String, Vec<u8>) {
-    (key.namespace.clone(), key.value.clone())
-}
-
 fn existing_provider_ids(rows: Vec<ExistingProviderRow>) -> HashMap<(String, Vec<u8>), Uuid> {
     rows.into_iter()
         .map(|row| ((row.provider_key_namespace, row.provider_key_value), row.id))
@@ -1417,7 +1461,7 @@ fn decode_value(value: Value) -> Result<AdapterValue, ConnectionPersistenceError
     }
 }
 
-fn encode_connection_capabilities(capabilities: &AdapterConnectionCapabilities) -> Value {
+fn encode_connection_capabilities(capabilities: &ProtocolConnectionCapabilities) -> Value {
     json!({
         "referenceLookup": capabilities.reference_lookup.as_ref().map(|lookup| json!({
             "referenceNamespaces": lookup.reference_namespaces,
@@ -1432,7 +1476,7 @@ fn encode_connection_capabilities(capabilities: &AdapterConnectionCapabilities) 
     })
 }
 
-fn encode_source_capabilities(capabilities: &AdapterSourceCapabilities) -> Value {
+fn encode_source_capabilities(capabilities: &ProtocolSourceCapabilities) -> Value {
     json!({
         "catalog": capabilities.catalog.as_ref().map(|read| json!({
             "full": read.full,
@@ -1443,12 +1487,15 @@ fn encode_source_capabilities(capabilities: &AdapterSourceCapabilities) -> Value
             "incremental": read.incremental,
         })),
         "stateFields": capabilities.state_fields.iter().map(|field| json!({
-            "field": {"namespace": field.field.namespace, "name": field.field.name},
+            "field": field.field.as_ref().map(|field| json!({
+                "namespace": field.namespace,
+                "name": field.name,
+            })),
             "unit": field.unit.as_ref().map(|unit| json!({
                 "namespace": unit.namespace,
                 "name": unit.name,
             })),
-            "valueKind": format!("{:?}", field.value_kind).to_lowercase(),
+            "valueKind": format!("{:?}", ConfigurationValueKind::try_from(field.value_kind).expect("validated state field value kind")).to_lowercase(),
             "ratingScale": field.rating_scale.as_ref().map(|scale| json!({
                 "minimum": scale.minimum,
                 "maximum": scale.maximum,
@@ -1459,13 +1506,19 @@ fn encode_source_capabilities(capabilities: &AdapterSourceCapabilities) -> Value
                 "maximum": range.maximum,
                 "step": range.step,
             })),
-            "quantizer": field.quantizer.map(|quantizer| quantizer.as_str()),
+            "quantizer": match StateFieldQuantizer::try_from(field.quantizer).expect("validated state field quantizer") {
+                StateFieldQuantizer::Exact => "exact",
+                StateFieldQuantizer::Nearest => "nearest",
+                StateFieldQuantizer::Floor => "floor",
+                StateFieldQuantizer::Ceiling => "ceiling",
+                StateFieldQuantizer::Unspecified => unreachable!("validated state field quantizer"),
+            },
         })).collect::<Vec<_>>(),
         "assets": capabilities.assets.as_ref().map(|assets| json!({
             "maximumBytes": assets.maximum_bytes,
             "contentTypes": assets.content_types,
         })),
-        "coordinateIds": capabilities.coordinate_ids,
+        "coordinateIds": capabilities.coordinates.as_ref().map_or(&[][..], |coordinates| coordinates.coordinate_ids.as_slice()),
         "targetedStateRead": capabilities.targeted_state_read.as_ref().map(|read| json!({
             "maximumFields": read.maximum_fields,
             "maximumResponseBytes": read.maximum_response_bytes,
@@ -1473,25 +1526,27 @@ fn encode_source_capabilities(capabilities: &AdapterSourceCapabilities) -> Value
         "targetedStateWrite": capabilities.targeted_state_write.as_ref().map(|write| json!({
             "fields": write.fields.iter().map(|field| json!({
                 "field": {
-                    "namespace": field.field.field().namespace(),
-                    "name": field.field.field().name(),
+                    "namespace": field.field.as_ref().expect("validated targeted state field").field.as_ref().expect("validated targeted state term").namespace,
+                    "name": field.field.as_ref().expect("validated targeted state field").field.as_ref().expect("validated targeted state term").name,
                 },
-                "unit": field.field.unit().map(|unit| json!({
-                    "namespace": unit.namespace(),
-                    "name": unit.name(),
+                "unit": field.field.as_ref().expect("validated targeted state field").unit.as_ref().map(|unit| json!({
+                    "namespace": unit.namespace,
+                    "name": unit.name,
                 })),
                 "setSupported": field.set_supported,
                 "clearSupported": field.clear_supported,
             })).collect::<Vec<_>>(),
             "mayCreateSourceMembership": write.may_create_source_membership,
-            "preconditionMode": write.precondition_mode.map(|mode| match mode {
-                crate::application::adapter_runtime::AdapterTargetedStateWritePreconditionMode::ProviderToken => "provider_token",
-                crate::application::adapter_runtime::AdapterTargetedStateWritePreconditionMode::HostRecheckOnly => "host_recheck_only",
-            }),
-            "idempotencyMode": write.idempotency_mode.map(|mode| match mode {
-                crate::application::adapter_runtime::AdapterTargetedStateWriteIdempotencyMode::NotSupported => "not_supported",
-                crate::application::adapter_runtime::AdapterTargetedStateWriteIdempotencyMode::StableKey => "stable_key",
-            }),
+            "preconditionMode": match TargetedStateWritePreconditionMode::try_from(write.precondition_mode).expect("validated targeted state precondition mode") {
+                TargetedStateWritePreconditionMode::ProviderToken => "provider_token",
+                TargetedStateWritePreconditionMode::HostRecheckOnly => "host_recheck_only",
+                TargetedStateWritePreconditionMode::Unspecified => unreachable!("validated targeted state precondition mode"),
+            },
+            "idempotencyMode": match TargetedStateWriteIdempotencyMode::try_from(write.idempotency_mode).expect("validated targeted state idempotency mode") {
+                TargetedStateWriteIdempotencyMode::NotSupported => "not_supported",
+                TargetedStateWriteIdempotencyMode::StableKey => "stable_key",
+                TargetedStateWriteIdempotencyMode::Unspecified => unreachable!("validated targeted state idempotency mode"),
+            },
             "maximumFields": write.maximum_fields,
             "maximumRequestBytes": write.maximum_request_bytes,
             "maximumResponseBytes": write.maximum_response_bytes,
@@ -1500,27 +1555,26 @@ fn encode_source_capabilities(capabilities: &AdapterSourceCapabilities) -> Value
     })
 }
 
-fn authentication_status(status: AdapterAuthenticationStatus) -> &'static str {
-    match status {
-        AdapterAuthenticationStatus::Waiting => "waiting",
-        AdapterAuthenticationStatus::InputRequired => "input_required",
-        AdapterAuthenticationStatus::Completed => "completed",
-        AdapterAuthenticationStatus::Cancelled => "cancelled",
-        AdapterAuthenticationStatus::Expired => "expired",
-        AdapterAuthenticationStatus::Failed => "failed",
+fn authentication_status(status: i32) -> &'static str {
+    match AuthenticationStatus::try_from(status).expect("validated authentication status") {
+        AuthenticationStatus::Waiting => "waiting",
+        AuthenticationStatus::InputRequired => "input_required",
+        AuthenticationStatus::Completed => "completed",
+        AuthenticationStatus::Cancelled => "cancelled",
+        AuthenticationStatus::Expired => "expired",
+        AuthenticationStatus::Failed => "failed",
+        AuthenticationStatus::Unspecified => unreachable!("validated authentication status"),
     }
 }
 
-fn parse_authentication_status(
-    status: &str,
-) -> Result<AdapterAuthenticationStatus, ConnectionPersistenceError> {
+fn parse_authentication_status(status: &str) -> Result<i32, ConnectionPersistenceError> {
     match status {
-        "waiting" => Ok(AdapterAuthenticationStatus::Waiting),
-        "input_required" => Ok(AdapterAuthenticationStatus::InputRequired),
-        "completed" => Ok(AdapterAuthenticationStatus::Completed),
-        "cancelled" => Ok(AdapterAuthenticationStatus::Cancelled),
-        "expired" => Ok(AdapterAuthenticationStatus::Expired),
-        "failed" => Ok(AdapterAuthenticationStatus::Failed),
+        "waiting" => Ok(AuthenticationStatus::Waiting as i32),
+        "input_required" => Ok(AuthenticationStatus::InputRequired as i32),
+        "completed" => Ok(AuthenticationStatus::Completed as i32),
+        "cancelled" => Ok(AuthenticationStatus::Cancelled as i32),
+        "expired" => Ok(AuthenticationStatus::Expired as i32),
+        "failed" => Ok(AuthenticationStatus::Failed as i32),
         _ => Err(ConnectionPersistenceError::InvalidAuthenticationStatus),
     }
 }
@@ -1537,47 +1591,65 @@ fn encode_authentication_step(step: &AdapterAuthenticationStep) -> Value {
         })),
         "accounts": step.accounts.iter().map(|account| json!({
             "key": {
-                "namespace": account.key.namespace,
-                "value": hex::encode(&account.key.value),
+                "namespace": account.key.as_ref().expect("validated authentication account key").namespace,
+                "value": hex::encode(&account.key.as_ref().expect("validated authentication account key").value),
             },
             "displayName": account.display_name,
         })).collect::<Vec<_>>(),
         "appliedSecretPatchKeys": step.secret_patches.iter().map(|patch| &patch.key).collect::<Vec<_>>(),
         "retryAfter": step.retry_after.as_ref().map(|retry_after| json!({
             "seconds": retry_after.seconds,
-            "nanoseconds": retry_after.nanoseconds,
-        })),
-        "error": step.error.as_ref().map(|error| json!({
-            "code": error.code,
-            "safeMessage": error.safe_message,
-            "retryable": error.retryable,
-            "retryAfter": error.retry_after.as_ref().map(|retry_after| json!({
-                "seconds": retry_after.seconds,
-                "nanoseconds": retry_after.nanoseconds,
-            })),
-            "fieldProblems": error.field_problems.iter().map(|problem| json!({
-                "path": problem.path,
-                "code": problem.code,
-                "message": problem.message,
-            })).collect::<Vec<_>>(),
+            "nanoseconds": retry_after.nanos,
         })),
     })
 }
 
-fn encode_configuration_field(field: &AdapterConfigurationField) -> Value {
+fn encode_configuration_field(field: &ConfigurationField) -> Value {
     json!({
         "key": field.key,
         "displayName": field.display_name,
-        "valueKind": format!("{:?}", field.value_kind).to_lowercase(),
+        "valueKind": format!("{:?}", ConfigurationValueKind::try_from(field.value_kind).expect("validated configuration value kind")).to_lowercase(),
         "required": field.required,
         "secret": field.secret,
         "options": field.options.iter().map(|option| json!({
-            "value": encode_value(option.value.clone()),
+            "value": encode_protocol_value(option.value.as_ref().expect("validated configuration option value")),
             "displayName": option.display_name,
         })).collect::<Vec<_>>(),
-        "defaultValue": field.default_value.clone().map(encode_value),
+        "defaultValue": field.default_value.as_ref().map(encode_protocol_value),
         "placeholder": field.placeholder,
     })
+}
+
+fn encode_protocol_value(value: &ProtocolValue) -> Value {
+    match value.value.as_ref().expect("validated configuration value") {
+        protocol_value::Value::Boolean(value) => json!({"kind": "boolean", "value": value}),
+        protocol_value::Value::Integer(value) => json!({"kind": "integer", "value": value}),
+        protocol_value::Value::Decimal(value) => json!({"kind": "decimal", "value": value.value}),
+        protocol_value::Value::Text(value) => json!({"kind": "text", "value": value}),
+        protocol_value::Value::Bytes(value) => {
+            json!({"kind": "bytes", "value": hex::encode(value)})
+        }
+        protocol_value::Value::Timestamp(value) => {
+            json!({"kind": "timestamp_milliseconds", "value": value.milliseconds})
+        }
+    }
+}
+
+fn protocol_secret_patches(patches: Vec<SecretPatch>) -> Vec<AdapterSecretPatch> {
+    patches
+        .into_iter()
+        .map(|patch| AdapterSecretPatch {
+            key: patch.key,
+            value: match patch.patch.expect("validated secret patch") {
+                secret_patch::Patch::Set(value) => Some(value),
+                secret_patch::Patch::Remove(_) => None,
+            },
+        })
+        .collect()
+}
+
+fn protocol_provider_key(key: &ProtocolKey) -> (String, Vec<u8>) {
+    (key.namespace.clone(), key.value.clone())
 }
 
 #[derive(FromRow)]

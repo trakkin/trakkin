@@ -2563,46 +2563,35 @@ struct ConcurrencyRecordingSession {
 impl SyncActionAdapterSession for ConcurrencyRecordingSession {
     type Error = std::convert::Infallible;
 
-    fn write_sync_action(
+    async fn write_sync_action(
         &mut self,
         command: WriteAdapterTargetedState,
-    ) -> trakkin::application::adapter_runtime::AdapterFuture<
-        '_,
-        AdapterTargetedStateWriteOutcome,
-        Self::Error,
-    > {
+    ) -> Result<AdapterTargetedStateWriteOutcome, Self::Error> {
         let probe = Arc::clone(&self.probe);
         let source_key = command.source_key.value;
         let (release, outcome) = self
             .writes
             .pop_front()
             .expect("concurrency write outcome is configured");
-        Box::pin(async move {
-            probe.started(source_key.clone());
-            release
-                .acquire()
-                .await
-                .expect("concurrency release remains open")
-                .forget();
-            probe.finished(source_key);
-            Ok(outcome)
-        })
+        probe.started(source_key.clone());
+        release
+            .acquire()
+            .await
+            .expect("concurrency release remains open")
+            .forget();
+        probe.finished(source_key);
+        Ok(outcome)
     }
 
-    fn cancel_sync_action(
+    async fn cancel_sync_action(
         &mut self,
         _operation_id: Vec<u8>,
-    ) -> trakkin::application::adapter_runtime::AdapterFuture<'_, (), Self::Error> {
-        Box::pin(async { Ok(()) })
+    ) -> Result<(), Self::Error> {
+        Ok(())
     }
 
-    fn retire_sync_action(
-        self,
-    ) -> trakkin::application::adapter_runtime::AdapterRetirementFuture<
-        AdapterRetirement,
-        Self::Error,
-    > {
-        Box::pin(async { Ok(AdapterRetirement::Graceful) })
+    async fn retire_sync_action(self) -> Result<AdapterRetirement, Self::Error> {
+        Ok(AdapterRetirement::Graceful)
     }
 }
 

@@ -12,9 +12,9 @@ use time::{OffsetDateTime, macros::datetime};
 use trakkin::{
     application::{
         adapter_runtime::{
-            AdapterFuture, AdapterIdentity, AdapterRetirement, AdapterRetirementFuture,
-            AdapterSourceMembership, AdapterStatePresence, AdapterTargetedStateField,
-            AdapterTargetedStateMatch, AdapterTargetedStateReadOutcome, ReadAdapterTargetedState,
+            AdapterIdentity, AdapterRetirement, AdapterSourceMembership, AdapterStatePresence,
+            AdapterTargetedStateField, AdapterTargetedStateMatch, AdapterTargetedStateReadOutcome,
+            ReadAdapterTargetedState,
         },
         connection::ConnectionSessionRegistry,
         sync_workflow::{
@@ -137,19 +137,16 @@ struct TestPreflightSession {
 impl SyncReceiverPreflightAdapterSession for TestPreflightSession {
     type Error = Infallible;
 
-    fn read_sync_receiver_preflight(
+    async fn read_sync_receiver_preflight(
         &mut self,
         command: ReadAdapterTargetedState,
-    ) -> AdapterFuture<'_, AdapterTargetedStateReadOutcome, Self::Error> {
+    ) -> Result<AdapterTargetedStateReadOutcome, Self::Error> {
         self.reads.lock().expect("targeted read lock").push(command);
-        let outcome = self.outcome.clone();
-        Box::pin(async move { Ok(outcome) })
+        Ok(self.outcome.clone())
     }
 
-    fn retire_sync_receiver_preflight(
-        self,
-    ) -> AdapterRetirementFuture<AdapterRetirement, Self::Error> {
-        Box::pin(async move { Ok(AdapterRetirement::Graceful) })
+    async fn retire_sync_receiver_preflight(self) -> Result<AdapterRetirement, Self::Error> {
+        Ok(AdapterRetirement::Graceful)
     }
 }
 

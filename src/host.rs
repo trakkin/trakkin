@@ -466,6 +466,11 @@ async fn run_dispatcher<R, H>(
                             .as_ref()
                             .map(|failure| failure.code.as_str())
                             .unwrap_or("unavailable"),
+                        failure.message = task
+                            .failure
+                            .as_ref()
+                            .map(|failure| failure.message.as_str())
+                            .unwrap_or("unavailable"),
                         failure.retryable = task
                             .failure
                             .as_ref()

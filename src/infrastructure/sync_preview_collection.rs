@@ -7,9 +7,8 @@ use uuid::Uuid;
 use crate::{
     application::{
         adapter_runtime::{
-            AdapterFuture, AdapterKey, AdapterRetirement, AdapterRetirementFuture, AdapterSession,
-            AdapterTargetedStateReadCapability, AdapterTargetedStateReadOutcome,
-            ReadAdapterTargetedState,
+            AdapterKey, AdapterRetirement, AdapterSession, AdapterTargetedStateReadCapability,
+            AdapterTargetedStateReadOutcome, ReadAdapterTargetedState,
         },
         connection::ConnectionSessionRegistry,
         error::{ApplicationError, ApplicationErrorCode},
@@ -24,17 +23,16 @@ use crate::{
     domain::synchronization::{Quantizer, StateUnit},
 };
 
-pub trait SyncReceiverPreflightAdapterSession: Send {
+#[trait_variant::make(Send)]
+pub trait SyncReceiverPreflightAdapterSession {
     type Error;
 
-    fn read_sync_receiver_preflight(
+    async fn read_sync_receiver_preflight(
         &mut self,
         command: ReadAdapterTargetedState,
-    ) -> AdapterFuture<'_, AdapterTargetedStateReadOutcome, Self::Error>;
+    ) -> Result<AdapterTargetedStateReadOutcome, Self::Error>;
 
-    fn retire_sync_receiver_preflight(
-        self,
-    ) -> AdapterRetirementFuture<AdapterRetirement, Self::Error>;
+    async fn retire_sync_receiver_preflight(self) -> Result<AdapterRetirement, Self::Error>;
 }
 
 impl<S> SyncReceiverPreflightAdapterSession for S
@@ -43,17 +41,15 @@ where
 {
     type Error = S::Error;
 
-    fn read_sync_receiver_preflight(
+    async fn read_sync_receiver_preflight(
         &mut self,
         command: ReadAdapterTargetedState,
-    ) -> AdapterFuture<'_, AdapterTargetedStateReadOutcome, Self::Error> {
-        self.read_targeted_state(command)
+    ) -> Result<AdapterTargetedStateReadOutcome, Self::Error> {
+        self.read_targeted_state(command).await
     }
 
-    fn retire_sync_receiver_preflight(
-        self,
-    ) -> AdapterRetirementFuture<AdapterRetirement, Self::Error> {
-        self.retire()
+    async fn retire_sync_receiver_preflight(self) -> Result<AdapterRetirement, Self::Error> {
+        self.retire().await
     }
 }
 

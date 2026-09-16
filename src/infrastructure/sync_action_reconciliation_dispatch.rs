@@ -3,8 +3,8 @@ use uuid::Uuid;
 
 use crate::application::{
     adapter_runtime::{
-        AdapterCallError, AdapterFuture, AdapterRetirement, AdapterRetirementFuture,
-        AdapterSession, AdapterTargetedStateReadOutcome, ReadAdapterTargetedState,
+        AdapterCallError, AdapterRetirement, AdapterSession, AdapterTargetedStateReadOutcome,
+        ReadAdapterTargetedState,
     },
     connection::ConnectionSessionRegistry,
     sync_action_reconciliation::{
@@ -18,17 +18,16 @@ use crate::application::{
 
 const RECONCILIATION_TASK_KINDS: [TaskKind; 1] = [TaskKind::SyncActionReconciliation];
 
-pub trait SyncActionReconciliationAdapterSession: Send {
+#[trait_variant::make(Send)]
+pub trait SyncActionReconciliationAdapterSession {
     type Error;
 
-    fn read_sync_action_reconciliation(
+    async fn read_sync_action_reconciliation(
         &mut self,
         command: ReadAdapterTargetedState,
-    ) -> AdapterFuture<'_, AdapterTargetedStateReadOutcome, Self::Error>;
+    ) -> Result<AdapterTargetedStateReadOutcome, Self::Error>;
 
-    fn retire_sync_action_reconciliation(
-        self,
-    ) -> AdapterRetirementFuture<AdapterRetirement, Self::Error>;
+    async fn retire_sync_action_reconciliation(self) -> Result<AdapterRetirement, Self::Error>;
 }
 
 impl<S> SyncActionReconciliationAdapterSession for S
@@ -37,17 +36,15 @@ where
 {
     type Error = S::Error;
 
-    fn read_sync_action_reconciliation(
+    async fn read_sync_action_reconciliation(
         &mut self,
         command: ReadAdapterTargetedState,
-    ) -> AdapterFuture<'_, AdapterTargetedStateReadOutcome, Self::Error> {
-        self.read_targeted_state(command)
+    ) -> Result<AdapterTargetedStateReadOutcome, Self::Error> {
+        self.read_targeted_state(command).await
     }
 
-    fn retire_sync_action_reconciliation(
-        self,
-    ) -> AdapterRetirementFuture<AdapterRetirement, Self::Error> {
-        self.retire()
+    async fn retire_sync_action_reconciliation(self) -> Result<AdapterRetirement, Self::Error> {
+        self.retire().await
     }
 }
 

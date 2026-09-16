@@ -1,13 +1,15 @@
 use serde::{Deserialize, Serialize};
+use trakkin_provider_sdk::v1::{
+    AuthenticationMethod, AuthenticationPrompt, AuthenticationStatus, ConfigurationField,
+    ConfigurationOption, ConfigurationValueKind, FieldProblem, Value, value,
+};
 use utoipa::ToSchema;
 
 use crate::{
     application::{
         adapter_runtime::{
-            AdapterAuthenticationMethod, AdapterAuthenticationPrompt, AdapterAuthenticationStatus,
-            AdapterAuthenticationStep, AdapterCallError, AdapterConfigurationField,
-            AdapterConfigurationOption, AdapterFieldProblem, AdapterRetryAfter,
-            AdapterSourceAvailability, AdapterValue, AdapterValueKind,
+            AdapterAuthenticationStep, AdapterCallError, AdapterFieldProblem, AdapterRetryAfter,
+            AdapterSourceAvailability, AdapterValue,
         },
         connection::{
             ConnectionDeletionImpact, ConnectionInspection, ConnectionSourceSummary,
@@ -19,7 +21,7 @@ use crate::{
 };
 
 use super::{
-    sources::{KeyResponse, TermResponse, key_from_adapter, term_from_adapter},
+    sources::{KeyResponse, TermResponse},
     timestamp,
 };
 
@@ -289,18 +291,30 @@ impl AuthenticationStepResponse {
     pub fn from_step(authentication_id: uuid::Uuid, step: AdapterAuthenticationStep) -> Self {
         Self {
             id: authentication_id.to_string(),
-            status: AuthenticationStatusResponse::from(step.status),
+            status: AuthenticationStatusResponse::from(
+                AuthenticationStatus::try_from(step.status)
+                    .expect("validated authentication status"),
+            ),
             prompt: step.prompt.map(AuthenticationPromptResponse::from),
             accounts: step
                 .accounts
                 .into_iter()
-                .map(|account| AuthenticationAccountResponse {
-                    key: key_from_adapter(account.key),
-                    display_name: account.display_name,
+                .map(|account| {
+                    let key = account.key.expect("validated authentication account key");
+                    AuthenticationAccountResponse {
+                        key: KeyResponse {
+                            namespace: key.namespace,
+                            value: key.value,
+                        },
+                        display_name: account.display_name,
+                    }
                 })
                 .collect(),
-            retry_after: step.retry_after.map(RetryAfterResponse::from),
-            error: step.error.map(AdapterCallErrorResponse::from),
+            retry_after: step.retry_after.map(|retry_after| RetryAfterResponse {
+                seconds: retry_after.seconds,
+                nanoseconds: retry_after.nanos,
+            }),
+            error: None,
         }
     }
 
@@ -316,8 +330,8 @@ impl AuthenticationStepResponse {
     }
 }
 
-impl From<AdapterConfigurationField> for AdapterConfigurationFieldResponse {
-    fn from(field: AdapterConfigurationField) -> Self {
+impl From<ConfigurationField> for AdapterConfigurationFieldResponse {
+    fn from(field: ConfigurationField) -> Self {
         let (options, default_value) = if field.secret {
             (Vec::new(), None)
         } else {
@@ -327,13 +341,16 @@ impl From<AdapterConfigurationField> for AdapterConfigurationFieldResponse {
                     .into_iter()
                     .map(AdapterConfigurationOptionResponse::from)
                     .collect(),
-                field.default_value.map(AdapterValueResponse::from),
+                field.default_value.map(value_response),
             )
         };
         Self {
             key: field.key,
             display_name: field.display_name,
-            value_kind: AdapterValueKindResponse::from(field.value_kind),
+            value_kind: AdapterValueKindResponse::from(
+                ConfigurationValueKind::try_from(field.value_kind)
+                    .expect("validated configuration value kind"),
+            ),
             required: field.required,
             secret: field.secret,
             options,
@@ -343,10 +360,10 @@ impl From<AdapterConfigurationField> for AdapterConfigurationFieldResponse {
     }
 }
 
-impl From<AdapterConfigurationOption> for AdapterConfigurationOptionResponse {
-    fn from(option: AdapterConfigurationOption) -> Self {
+impl From<ConfigurationOption> for AdapterConfigurationOptionResponse {
+    fn from(option: ConfigurationOption) -> Self {
         Self {
-            value: AdapterValueResponse::from(option.value),
+            value: value_response(option.value.expect("validated configuration option value")),
             display_name: option.display_name,
         }
     }
@@ -365,15 +382,18 @@ impl From<AdapterValue> for AdapterValueResponse {
     }
 }
 
-impl From<AdapterAuthenticationMethod> for AuthenticationMethodResponse {
-    fn from(method: AdapterAuthenticationMethod) -> Self {
+impl From<AuthenticationMethod> for AuthenticationMethodResponse {
+    fn from(method: AuthenticationMethod) -> Self {
         Self {
             key: method.key,
             display_name: method.display_name,
             interactions: method
                 .interactions
                 .into_iter()
-                .map(term_from_adapter)
+                .map(|term| TermResponse {
+                    namespace: term.namespace,
+                    name: term.name,
+                })
                 .collect(),
             fields: method
                 .fields
@@ -384,8 +404,8 @@ impl From<AdapterAuthenticationMethod> for AuthenticationMethodResponse {
     }
 }
 
-impl From<AdapterAuthenticationPrompt> for AuthenticationPromptResponse {
-    fn from(prompt: AdapterAuthenticationPrompt) -> Self {
+impl From<AuthenticationPrompt> for AuthenticationPromptResponse {
+    fn from(prompt: AuthenticationPrompt) -> Self {
         Self {
             message: prompt.message,
             verification_url: prompt.verification_url,
@@ -434,28 +454,57 @@ impl From<AdapterFieldProblem> for FieldProblemResponse {
     }
 }
 
-impl From<AdapterAuthenticationStatus> for AuthenticationStatusResponse {
-    fn from(status: AdapterAuthenticationStatus) -> Self {
-        match status {
-            AdapterAuthenticationStatus::Waiting => Self::Waiting,
-            AdapterAuthenticationStatus::InputRequired => Self::InputRequired,
-            AdapterAuthenticationStatus::Completed => Self::Completed,
-            AdapterAuthenticationStatus::Cancelled => Self::Cancelled,
-            AdapterAuthenticationStatus::Expired => Self::Expired,
-            AdapterAuthenticationStatus::Failed => Self::Failed,
+impl From<FieldProblem> for FieldProblemResponse {
+    fn from(problem: FieldProblem) -> Self {
+        Self {
+            path: problem.path,
+            code: problem.code,
+            message: problem.message,
         }
     }
 }
 
-impl From<AdapterValueKind> for AdapterValueKindResponse {
-    fn from(kind: AdapterValueKind) -> Self {
+impl From<AuthenticationStatus> for AuthenticationStatusResponse {
+    fn from(status: AuthenticationStatus) -> Self {
+        match status {
+            AuthenticationStatus::Waiting => Self::Waiting,
+            AuthenticationStatus::InputRequired => Self::InputRequired,
+            AuthenticationStatus::Completed => Self::Completed,
+            AuthenticationStatus::Cancelled => Self::Cancelled,
+            AuthenticationStatus::Expired => Self::Expired,
+            AuthenticationStatus::Failed => Self::Failed,
+            AuthenticationStatus::Unspecified => {
+                unreachable!("validated authentication status")
+            }
+        }
+    }
+}
+
+impl From<ConfigurationValueKind> for AdapterValueKindResponse {
+    fn from(kind: ConfigurationValueKind) -> Self {
         match kind {
-            AdapterValueKind::Text => Self::Text,
-            AdapterValueKind::Integer => Self::Integer,
-            AdapterValueKind::Decimal => Self::Decimal,
-            AdapterValueKind::Boolean => Self::Boolean,
-            AdapterValueKind::Timestamp => Self::Timestamp,
-            AdapterValueKind::Bytes => Self::Bytes,
+            ConfigurationValueKind::Text => Self::Text,
+            ConfigurationValueKind::Integer => Self::Integer,
+            ConfigurationValueKind::Decimal => Self::Decimal,
+            ConfigurationValueKind::Boolean => Self::Boolean,
+            ConfigurationValueKind::Timestamp => Self::Timestamp,
+            ConfigurationValueKind::Bytes => Self::Bytes,
+            ConfigurationValueKind::Unspecified => {
+                unreachable!("validated configuration value kind")
+            }
+        }
+    }
+}
+
+fn value_response(value: Value) -> AdapterValueResponse {
+    match value.value.expect("validated configuration value") {
+        value::Value::Boolean(value) => AdapterValueResponse::Boolean(value),
+        value::Value::Integer(value) => AdapterValueResponse::Integer(value),
+        value::Value::Decimal(value) => AdapterValueResponse::Decimal(value.value),
+        value::Value::Text(value) => AdapterValueResponse::Text(value),
+        value::Value::Bytes(value) => AdapterValueResponse::Bytes(value),
+        value::Value::Timestamp(value) => {
+            AdapterValueResponse::TimestampMilliseconds(value.milliseconds)
         }
     }
 }

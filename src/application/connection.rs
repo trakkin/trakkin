@@ -1,15 +1,15 @@
 use std::{convert::Infallible, future::Future, pin::Pin};
 
 use time::OffsetDateTime;
+use trakkin_provider_sdk::v1::{AuthenticationStatus, HealthStatus};
 use uuid::Uuid;
 
 use super::adapter_runtime::{
     AdapterAuthenticationMethod, AdapterAuthenticationStep, AdapterCallError,
-    AdapterConnectionDescription, AdapterConnectionValidation, AdapterHealth, AdapterHealthStatus,
-    AdapterIdentity, AdapterLauncher, AdapterRetirement, AdapterSecret, AdapterSession,
-    AdapterSetting, ContinueAdapterAuthentication, DiscoveredAdapterSources, LaunchAdapter,
-    OpenAdapterConnection, OpenedAdapterConnection, StartAdapterAuthentication,
-    ValidateAdapterConnection,
+    AdapterConnectionDescription, AdapterConnectionValidation, AdapterIdentity, AdapterLauncher,
+    AdapterRetirement, AdapterSecret, AdapterSession, AdapterSetting,
+    ContinueAdapterAuthentication, DiscoveredAdapterSources, LaunchAdapter, OpenAdapterConnection,
+    OpenedAdapterConnection, StartAdapterAuthentication, ValidateAdapterConnection,
 };
 use super::{
     error::{ApplicationError, ApplicationErrorCode, IntoApplicationError},
@@ -104,7 +104,7 @@ pub struct FinishConnectionDeletion {
     pub connection_id: Uuid,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PublishConnectionSnapshot {
     pub connection_id: Uuid,
     pub opened: OpenedAdapterConnection,
@@ -118,7 +118,7 @@ pub struct MarkConnectionUnavailable {
     pub updated_at: OffsetDateTime,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SaveAuthenticationStep {
     pub authentication_id: Uuid,
     pub connection_id: Uuid,
@@ -134,7 +134,7 @@ pub struct StoredAuthenticationSession {
     pub connection_id: Uuid,
     pub provider_authentication_id: String,
     pub method: String,
-    pub status: super::adapter_runtime::AdapterAuthenticationStatus,
+    pub status: i32,
     pub expires_at: OffsetDateTime,
 }
 
@@ -246,7 +246,7 @@ pub struct InspectConnection {
     pub process_instance_id: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ConnectionInspection {
     pub description: AdapterConnectionDescription,
     pub validation: AdapterConnectionValidation,
@@ -266,7 +266,7 @@ pub struct StartConnectionAuthentication {
     pub started_at: OffsetDateTime,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct StartedConnectionAuthentication {
     pub authentication_id: Uuid,
     pub step: AdapterAuthenticationStep,
@@ -388,9 +388,9 @@ fn source_discovery_failure<RepositoryError, AdapterError>(
 ) -> TaskFailure {
     match error {
         ConnectionCoordinatorError::Rejected(error)
-        | ConnectionCoordinatorError::AdapterNotReady(AdapterHealth {
-            error: Some(error), ..
-        }) => TaskFailure::from_adapter(&error),
+        | ConnectionCoordinatorError::AdapterNotReady(Some(error)) => {
+            TaskFailure::from_adapter(&error)
+        }
         _ => TaskFailure::coded("connection_discovery_failed", false),
     }
 }
@@ -498,7 +498,7 @@ where
             let _ = session.retire().await;
             return Err(ConnectionCoordinatorError::Repository(error));
         }
-        if step.status.active() {
+        if authentication_status_active(step.status) {
             self.install_authentication_session(command.connection_id, session)
                 .await?;
         } else {
@@ -526,7 +526,8 @@ where
         if stored.connection_id != command.connection_id {
             return Err(ConnectionCoordinatorError::AuthenticationNotFound);
         }
-        if !stored.status.active() || stored.expires_at <= command.continued_at {
+        if !authentication_status_active(stored.status) || stored.expires_at <= command.continued_at
+        {
             return Err(ConnectionCoordinatorError::AuthenticationNotActive);
         }
         let mut session = self
@@ -565,7 +566,7 @@ where
             let _ = session.retire().await;
             return Err(ConnectionCoordinatorError::Repository(error));
         }
-        if step.status.active() {
+        if authentication_status_active(step.status) {
             self.install_authentication_session(stored.connection_id, session)
                 .await?;
         } else {
@@ -590,7 +591,7 @@ where
         if stored.connection_id != command.connection_id {
             return Err(ConnectionCoordinatorError::AuthenticationNotFound);
         }
-        if !stored.status.active() {
+        if !authentication_status_active(stored.status) {
             return Err(ConnectionCoordinatorError::AuthenticationNotActive);
         }
         let mut session = self
@@ -679,11 +680,12 @@ where
                 return Err(ConnectionCoordinatorError::Adapter(error));
             }
         };
-        if health.status != AdapterHealthStatus::Ready {
+        if HealthStatus::try_from(health.status) != Ok(HealthStatus::Ready) {
+            let error = health.error.map(AdapterCallError::from);
             let _ = session.retire().await;
             self.mark_unavailable(command.connection_id, command.opened_at)
                 .await?;
-            return Err(ConnectionCoordinatorError::AdapterNotReady(health));
+            return Err(ConnectionCoordinatorError::AdapterNotReady(error));
         }
         let opened = match session
             .open_connection(OpenAdapterConnection {
@@ -821,9 +823,10 @@ where
                 return Err(ConnectionCoordinatorError::Adapter(error));
             }
         };
-        if health.status != AdapterHealthStatus::Ready {
+        if HealthStatus::try_from(health.status) != Ok(HealthStatus::Ready) {
+            let error = health.error.map(AdapterCallError::from);
             let _ = session.retire().await;
-            return Err(ConnectionCoordinatorError::AdapterNotReady(health));
+            return Err(ConnectionCoordinatorError::AdapterNotReady(error));
         }
         Ok((stored, session))
     }
@@ -853,11 +856,18 @@ where
     }
 }
 
+fn authentication_status_active(status: i32) -> bool {
+    matches!(
+        AuthenticationStatus::try_from(status),
+        Ok(AuthenticationStatus::Waiting | AuthenticationStatus::InputRequired)
+    )
+}
+
 #[derive(Debug)]
 pub enum ConnectionCoordinatorError<RepositoryError, AdapterError> {
     ConnectionNotFound,
     AdapterIdentityMismatch,
-    AdapterNotReady(AdapterHealth),
+    AdapterNotReady(Option<AdapterCallError>),
     Rejected(AdapterCallError),
     ConcurrentSession,
     AuthenticationNotFound,
@@ -879,10 +889,9 @@ where
                 ApplicationErrorCode::ConnectionNotFound,
                 "connection was not found",
             ),
-            Self::AdapterNotReady(AdapterHealth {
-                error: Some(error), ..
-            })
-            | Self::Rejected(error) => error.into_application_error(),
+            Self::AdapterNotReady(Some(error)) | Self::Rejected(error) => {
+                error.into_application_error()
+            }
             Self::AdapterNotReady(_) => ApplicationError::new(
                 ApplicationErrorCode::ConnectionUnavailable,
                 "connection adapter is unavailable",
@@ -1018,9 +1027,8 @@ mod tests {
             diagnostic_id: "provider:authentication:1".to_owned(),
         };
 
-        let failure = source_discovery_failure(ConnectionCoordinatorError::<(), ()>::Rejected(
-            rejection,
-        ));
+        let failure =
+            source_discovery_failure(ConnectionCoordinatorError::<(), ()>::Rejected(rejection));
 
         assert_eq!(failure.code, "remote_authentication_failed");
         assert_eq!(failure.message, "remote authentication failed");

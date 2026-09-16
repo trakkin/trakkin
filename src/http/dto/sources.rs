@@ -5,7 +5,7 @@ use crate::{
     application::{
         adapter_runtime::{
             AdapterKey, AdapterLookupCandidate, AdapterLookupOutcome,
-            AdapterPortableReferenceLookup, AdapterTerm,
+            AdapterPortableReferenceLookup,
         },
         catalog_queries::{CatalogEntry, CatalogPage, SourceStateInspection},
         error::ApplicationError,
@@ -23,13 +23,6 @@ pub(super) fn key_from_adapter(key: AdapterKey) -> KeyResponse {
     KeyResponse {
         namespace: key.namespace,
         value: key.value,
-    }
-}
-
-pub(super) fn term_from_adapter(term: AdapterTerm) -> TermResponse {
-    TermResponse {
-        namespace: term.namespace,
-        name: term.name,
     }
 }
 
@@ -293,13 +286,11 @@ impl LookupProviderItemResponse {
                 .portable_reference_candidates()
                 .iter()
                 .map(|reference| {
-                    let provider_recommended =
-                        item.recommended_mapping_roots().contains(reference);
+                    let provider_recommended = item.recommended_mapping_roots().contains(reference);
                     portable_reference_candidate_response(
                         reference,
                         provider_recommended,
-                        mapping_root_policy
-                            .selects(reference.namespace(), provider_recommended),
+                        mapping_root_policy.selects(reference.namespace(), provider_recommended),
                     )
                 })
                 .collect(),

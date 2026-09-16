@@ -1,23 +1,28 @@
-use std::{future::Future, pin::Pin};
-
 use time::OffsetDateTime;
 use trakkin_mapping::PortableEndpoint;
-
-use crate::domain::acquisition::{
-    CatalogBatch, CoordinateBinding, PortableReference, ProviderItem, StateBatch, StateField,
-    StateSubject, StateValue,
+use trakkin_provider_sdk::v1::{
+    AuthenticationMethod, AuthenticationProgress, DescribeConnectionResult, DiscoverSourcesResult,
+    HealthResponse, OpenConnectionResult, OperationFailure, OperationFailureCategory,
+    RetryDisposition, ValidateConnectionResult,
 };
-use crate::domain::synchronization::Quantizer;
 
 use super::acquisition::ReadMode;
 use super::error::{
     ApplicationError, ApplicationErrorCode, ApplicationFieldProblem, ApplicationRetryAdvice,
     ApplicationRetryAfter, IntoApplicationError,
 };
+use crate::domain::acquisition::{
+    CatalogBatch, CoordinateBinding, PortableReference, ProviderItem, StateBatch, StateField,
+    StateSubject, StateValue,
+};
 
-pub type AdapterFuture<'a, T, E> = Pin<Box<dyn Future<Output = Result<T, E>> + Send + 'a>>;
-pub type AdapterRetirementFuture<T, E> = Pin<Box<dyn Future<Output = Result<T, E>> + Send>>;
 pub type AdapterOperationResult<T> = Result<T, AdapterCallError>;
+pub type AdapterAuthenticationMethod = AuthenticationMethod;
+pub type AdapterAuthenticationStep = AuthenticationProgress;
+pub type AdapterConnectionDescription = DescribeConnectionResult;
+pub type AdapterConnectionValidation = ValidateConnectionResult;
+pub type DiscoveredAdapterSources = DiscoverSourcesResult;
+pub type OpenedAdapterConnection = OpenConnectionResult;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LaunchAdapter {
@@ -32,19 +37,6 @@ pub struct AdapterIdentity {
     pub process_instance_id: String,
     pub protocol_major: u32,
     pub protocol_minor: u32,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AdapterHealthStatus {
-    Ready,
-    Degraded,
-    NotReady,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdapterHealth {
-    pub status: AdapterHealthStatus,
-    pub error: Option<AdapterCallError>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -126,6 +118,57 @@ impl IntoApplicationError for AdapterCallError {
     }
 }
 
+impl From<OperationFailure> for AdapterCallError {
+    fn from(error: OperationFailure) -> Self {
+        let category = match OperationFailureCategory::try_from(error.category)
+            .expect("validated operation failure category")
+        {
+            OperationFailureCategory::InvalidInput => AdapterFailureCategory::InvalidInput,
+            OperationFailureCategory::Authentication => AdapterFailureCategory::Authentication,
+            OperationFailureCategory::Authorization => AdapterFailureCategory::Authorization,
+            OperationFailureCategory::RateLimited => AdapterFailureCategory::RateLimited,
+            OperationFailureCategory::Unavailable => AdapterFailureCategory::Unavailable,
+            OperationFailureCategory::Conflict => AdapterFailureCategory::Conflict,
+            OperationFailureCategory::Unsupported => AdapterFailureCategory::Unsupported,
+            OperationFailureCategory::InvalidRemoteData => {
+                AdapterFailureCategory::InvalidRemoteData
+            }
+            OperationFailureCategory::Internal => AdapterFailureCategory::Internal,
+            OperationFailureCategory::Unspecified => {
+                unreachable!("validated operation failure category")
+            }
+        };
+        let retry = error
+            .retry
+            .expect("validated operation failure retry advice");
+        let disposition =
+            RetryDisposition::try_from(retry.disposition).expect("validated retry disposition");
+        Self {
+            category,
+            code: error.code,
+            safe_message: error.safe_message,
+            retryable: matches!(
+                disposition,
+                RetryDisposition::Retryable | RetryDisposition::RetryAfter
+            ),
+            retry_after: retry.after.map(|retry_after| AdapterRetryAfter {
+                seconds: retry_after.seconds,
+                nanoseconds: retry_after.nanos,
+            }),
+            field_problems: error
+                .field_problems
+                .into_iter()
+                .map(|problem| AdapterFieldProblem {
+                    path: problem.path,
+                    code: problem.code,
+                    message: problem.message,
+                })
+                .collect(),
+            diagnostic_id: error.diagnostic_id,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AdapterValue {
     Boolean(bool),
@@ -140,24 +183,6 @@ pub enum AdapterValue {
 pub struct AdapterSetting {
     pub key: String,
     pub value: AdapterValue,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdapterConfigurationOption {
-    pub value: AdapterValue,
-    pub display_name: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdapterConfigurationField {
-    pub key: String,
-    pub display_name: String,
-    pub value_kind: AdapterValueKind,
-    pub required: bool,
-    pub secret: bool,
-    pub options: Vec<AdapterConfigurationOption>,
-    pub default_value: Option<AdapterValue>,
-    pub placeholder: String,
 }
 
 #[derive(Clone, Eq, PartialEq)]
@@ -183,27 +208,9 @@ pub struct OpenAdapterConnection {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdapterConnectionDescription {
-    pub fields: Vec<AdapterConfigurationField>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidateAdapterConnection {
     pub settings: Vec<AdapterSetting>,
     pub secrets: Vec<AdapterSecret>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdapterConnectionValidation {
-    pub field_problems: Vec<AdapterFieldProblem>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdapterAuthenticationMethod {
-    pub key: String,
-    pub display_name: String,
-    pub interactions: Vec<AdapterTerm>,
-    pub fields: Vec<AdapterConfigurationField>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -216,41 +223,6 @@ pub struct StartAdapterAuthentication {
 pub struct ContinueAdapterAuthentication {
     pub authentication_id: String,
     pub values: Vec<AdapterSetting>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AdapterAuthenticationStatus {
-    Waiting,
-    InputRequired,
-    Completed,
-    Cancelled,
-    Expired,
-    Failed,
-}
-
-impl AdapterAuthenticationStatus {
-    pub fn active(self) -> bool {
-        matches!(self, Self::Waiting | Self::InputRequired)
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdapterAuthenticationPrompt {
-    pub message: String,
-    pub verification_url: String,
-    pub user_code: String,
-    pub fields: Vec<AdapterConfigurationField>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdapterAuthenticationStep {
-    pub authentication_id: String,
-    pub status: AdapterAuthenticationStatus,
-    pub prompt: Option<AdapterAuthenticationPrompt>,
-    pub accounts: Vec<AdapterAccount>,
-    pub secret_patches: Vec<AdapterSecretPatch>,
-    pub retry_after: Option<AdapterRetryAfter>,
-    pub error: Option<AdapterCallError>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -266,95 +238,9 @@ pub struct AdapterTerm {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdapterAccount {
-    pub key: AdapterKey,
-    pub display_name: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AdapterSecretPatch {
     pub key: String,
     pub value: Option<Vec<u8>>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdapterReadCapability {
-    pub full: bool,
-    pub incremental: bool,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdapterLookupCapability {
-    pub reference_namespaces: Vec<String>,
-    pub maximum_batch_size: u32,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdapterEndpointLookupCapability {
-    pub reference_namespaces: Vec<String>,
-    pub coordinate_ids: Vec<String>,
-    pub maximum_batch_size: u32,
-    pub maximum_response_bytes: u64,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdapterConnectionCapabilities {
-    pub reference_lookup: Option<AdapterLookupCapability>,
-    pub endpoint_lookup: Option<AdapterEndpointLookupCapability>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AdapterEndpointResolutionOperation {
-    ReferenceLookup,
-    EndpointLookup,
-    Unsupported,
-}
-
-pub fn endpoint_resolution_operation(
-    capabilities: &AdapterConnectionCapabilities,
-    endpoint: &PortableEndpoint,
-) -> AdapterEndpointResolutionOperation {
-    if endpoint.selector().is_none() {
-        return capabilities
-            .reference_lookup
-            .as_ref()
-            .filter(|lookup| {
-                lookup.maximum_batch_size > 0
-                    && lookup
-                        .reference_namespaces
-                        .iter()
-                        .any(|namespace| namespace == endpoint.namespace())
-            })
-            .map_or(AdapterEndpointResolutionOperation::Unsupported, |_| {
-                AdapterEndpointResolutionOperation::ReferenceLookup
-            });
-    }
-
-    capabilities
-        .endpoint_lookup
-        .as_ref()
-        .filter(|lookup| {
-            lookup.maximum_batch_size > 0
-                && lookup.maximum_response_bytes > 0
-                && lookup
-                    .reference_namespaces
-                    .iter()
-                    .any(|namespace| namespace == endpoint.namespace())
-                && endpoint.selector().is_some_and(|selector| {
-                    selector.as_str().split('/').all(|component| {
-                        let coordinate_id = component
-                            .split_once(':')
-                            .map_or(component, |(coordinate_id, _)| coordinate_id);
-                        lookup
-                            .coordinate_ids
-                            .iter()
-                            .any(|supported| supported == coordinate_id)
-                    })
-                })
-        })
-        .map_or(AdapterEndpointResolutionOperation::Unsupported, |_| {
-            AdapterEndpointResolutionOperation::EndpointLookup
-        })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -365,47 +251,6 @@ pub enum AdapterValueKind {
     Boolean,
     Timestamp,
     Bytes,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdapterRatingScale {
-    pub minimum: String,
-    pub maximum: String,
-    pub step: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdapterStateNumericRange {
-    pub minimum: String,
-    pub maximum: String,
-    pub step: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdapterStateField {
-    pub field: AdapterTerm,
-    pub unit: Option<AdapterTerm>,
-    pub value_kind: AdapterValueKind,
-    pub rating_scale: Option<AdapterRatingScale>,
-    pub numeric_range: Option<AdapterStateNumericRange>,
-    pub quantizer: Option<Quantizer>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdapterAssetCapability {
-    pub maximum_bytes: u64,
-    pub content_types: Vec<String>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdapterSourceCapabilities {
-    pub catalog: Option<AdapterReadCapability>,
-    pub state: Option<AdapterReadCapability>,
-    pub state_fields: Vec<AdapterStateField>,
-    pub assets: Option<AdapterAssetCapability>,
-    pub coordinate_ids: Vec<String>,
-    pub targeted_state_read: Option<AdapterTargetedStateReadCapability>,
-    pub targeted_state_write: Option<AdapterTargetedStateWriteCapability>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -450,29 +295,6 @@ pub enum AdapterSourceAvailability {
     Available,
     Unavailable,
     Removed,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdapterSource {
-    pub key: AdapterKey,
-    pub account_key: AdapterKey,
-    pub display_name: String,
-    pub kind: AdapterTerm,
-    pub availability: AdapterSourceAvailability,
-    pub capabilities: AdapterSourceCapabilities,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct OpenedAdapterConnection {
-    pub accounts: Vec<AdapterAccount>,
-    pub capabilities: AdapterConnectionCapabilities,
-    pub secret_patches: Vec<AdapterSecretPatch>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DiscoveredAdapterSources {
-    pub sources: Vec<AdapterSource>,
-    pub secret_patches: Vec<AdapterSecretPatch>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -729,10 +551,11 @@ pub enum AdapterReadEvent<Batch> {
     Cancelled,
 }
 
-pub trait AdapterReadStream<Batch>: Send {
+#[trait_variant::make(Send)]
+pub trait AdapterReadStream<Batch> {
     type Error;
 
-    fn next_event(&mut self) -> AdapterFuture<'_, Option<AdapterReadEvent<Batch>>, Self::Error>;
+    async fn next_event(&mut self) -> Result<Option<AdapterReadEvent<Batch>>, Self::Error>;
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -741,139 +564,99 @@ pub enum AdapterRetirement {
     Forced,
 }
 
-pub trait AdapterLauncher: Send + Sync {
+#[trait_variant::make(Send)]
+pub trait AdapterLauncher: Sync {
     type Session: AdapterSession<Error = Self::Error>;
     type Error;
 
-    fn launch(&self, command: LaunchAdapter) -> AdapterFuture<'_, Self::Session, Self::Error>;
+    async fn launch(&self, command: LaunchAdapter) -> Result<Self::Session, Self::Error>;
 }
 
-pub trait AdapterSession: Send {
+#[trait_variant::make(Send)]
+pub trait AdapterSession {
     type Error;
     type CatalogReadStream: AdapterReadStream<CatalogBatch, Error = Self::Error>;
     type StateReadStream: AdapterReadStream<StateBatch, Error = Self::Error>;
 
     fn identity(&self) -> &AdapterIdentity;
 
-    fn health(&mut self) -> AdapterFuture<'_, AdapterHealth, Self::Error>;
+    async fn health(&mut self) -> Result<HealthResponse, Self::Error>;
 
-    fn describe_connection(
+    async fn describe_connection(
         &mut self,
-    ) -> AdapterFuture<'_, AdapterOperationResult<AdapterConnectionDescription>, Self::Error>;
+    ) -> Result<AdapterOperationResult<AdapterConnectionDescription>, Self::Error>;
 
-    fn validate_connection(
+    async fn validate_connection(
         &mut self,
         command: ValidateAdapterConnection,
-    ) -> AdapterFuture<'_, AdapterOperationResult<AdapterConnectionValidation>, Self::Error>;
+    ) -> Result<AdapterOperationResult<AdapterConnectionValidation>, Self::Error>;
 
-    fn list_authentication_methods(
+    async fn list_authentication_methods(
         &mut self,
-    ) -> AdapterFuture<'_, AdapterOperationResult<Vec<AdapterAuthenticationMethod>>, Self::Error>;
+    ) -> Result<AdapterOperationResult<Vec<AdapterAuthenticationMethod>>, Self::Error>;
 
-    fn start_authentication(
+    async fn start_authentication(
         &mut self,
         command: StartAdapterAuthentication,
-    ) -> AdapterFuture<'_, AdapterOperationResult<AdapterAuthenticationStep>, Self::Error>;
+    ) -> Result<AdapterOperationResult<AdapterAuthenticationStep>, Self::Error>;
 
-    fn continue_authentication(
+    async fn continue_authentication(
         &mut self,
         command: ContinueAdapterAuthentication,
-    ) -> AdapterFuture<'_, AdapterOperationResult<AdapterAuthenticationStep>, Self::Error>;
+    ) -> Result<AdapterOperationResult<AdapterAuthenticationStep>, Self::Error>;
 
-    fn cancel_authentication(
+    async fn cancel_authentication(
         &mut self,
         authentication_id: String,
-    ) -> AdapterFuture<'_, AdapterOperationResult<()>, Self::Error>;
+    ) -> Result<AdapterOperationResult<()>, Self::Error>;
 
-    fn open_connection(
+    async fn open_connection(
         &mut self,
         command: OpenAdapterConnection,
-    ) -> AdapterFuture<'_, AdapterOperationResult<OpenedAdapterConnection>, Self::Error>;
+    ) -> Result<AdapterOperationResult<OpenedAdapterConnection>, Self::Error>;
 
-    fn discover_sources(
+    async fn discover_sources(
         &mut self,
-    ) -> AdapterFuture<'_, AdapterOperationResult<DiscoveredAdapterSources>, Self::Error>;
+    ) -> Result<AdapterOperationResult<DiscoveredAdapterSources>, Self::Error>;
 
-    fn read_catalog(
-        &mut self,
-        command: ReadAdapterSource,
-    ) -> AdapterFuture<'_, Self::CatalogReadStream, Self::Error>;
-
-    fn read_state(
+    async fn read_catalog(
         &mut self,
         command: ReadAdapterSource,
-    ) -> AdapterFuture<'_, Self::StateReadStream, Self::Error>;
+    ) -> Result<Self::CatalogReadStream, Self::Error>;
 
-    fn read_targeted_state(
+    async fn read_state(
+        &mut self,
+        command: ReadAdapterSource,
+    ) -> Result<Self::StateReadStream, Self::Error>;
+
+    async fn read_targeted_state(
         &mut self,
         command: ReadAdapterTargetedState,
-    ) -> AdapterFuture<'_, AdapterTargetedStateReadOutcome, Self::Error>;
+    ) -> Result<AdapterTargetedStateReadOutcome, Self::Error>;
 
-    fn write_targeted_state(
+    async fn write_targeted_state(
         &mut self,
         command: WriteAdapterTargetedState,
-    ) -> AdapterFuture<'_, AdapterTargetedStateWriteOutcome, Self::Error>;
+    ) -> Result<AdapterTargetedStateWriteOutcome, Self::Error>;
 
-    fn lookup_portable_references(
+    async fn lookup_portable_references(
         &mut self,
         command: LookupAdapterPortableReferences,
-    ) -> AdapterFuture<'_, Result<Vec<AdapterPortableReferenceLookup>, AdapterCallError>, Self::Error>;
+    ) -> Result<Result<Vec<AdapterPortableReferenceLookup>, AdapterCallError>, Self::Error>;
 
-    fn resolve_portable_endpoints(
+    async fn resolve_portable_endpoints(
         &mut self,
         command: ResolveAdapterPortableEndpoints,
-    ) -> AdapterFuture<
-        '_,
-        Result<Vec<AdapterPortableEndpointResolution>, AdapterCallError>,
-        Self::Error,
-    >;
+    ) -> Result<Result<Vec<AdapterPortableEndpointResolution>, AdapterCallError>, Self::Error>;
 
-    fn read_asset(
+    async fn read_asset(
         &mut self,
         command: ReadAdapterAsset,
-    ) -> AdapterFuture<'_, Result<AdapterBinaryAsset, AdapterCallError>, Self::Error>;
+    ) -> Result<Result<AdapterBinaryAsset, AdapterCallError>, Self::Error>;
 
-    fn cancel_operation(&mut self, operation_id: Vec<u8>) -> AdapterFuture<'_, (), Self::Error>;
+    async fn cancel_operation(&mut self, operation_id: Vec<u8>) -> Result<(), Self::Error>;
 
-    fn retire(self) -> AdapterRetirementFuture<AdapterRetirement, Self::Error>
+    async fn retire(self) -> Result<AdapterRetirement, Self::Error>
     where
         Self: Sized;
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        AdapterConnectionCapabilities, AdapterEndpointLookupCapability,
-        AdapterEndpointResolutionOperation, AdapterLookupCapability, endpoint_resolution_operation,
-    };
-    use trakkin_mapping::PortableEndpoint;
-
-    #[test]
-    fn endpoint_resolution_uses_selector_compatible_capability() {
-        let capabilities = AdapterConnectionCapabilities {
-            reference_lookup: Some(AdapterLookupCapability {
-                reference_namespaces: vec!["example.media".to_owned()],
-                maximum_batch_size: 50,
-            }),
-            endpoint_lookup: Some(AdapterEndpointLookupCapability {
-                reference_namespaces: vec!["example.media".to_owned()],
-                coordinate_ids: vec!["segment".to_owned()],
-                maximum_batch_size: 50,
-                maximum_response_bytes: 65_536,
-            }),
-        };
-        let bare = PortableEndpoint::parse("example.media://media/quiet-signal")
-            .expect("bare endpoint is valid");
-        let selected = PortableEndpoint::parse("example.media://media/quiet-signal[segment:1..12]")
-            .expect("selected endpoint is valid");
-
-        assert_eq!(
-            endpoint_resolution_operation(&capabilities, &bare),
-            AdapterEndpointResolutionOperation::ReferenceLookup
-        );
-        assert_eq!(
-            endpoint_resolution_operation(&capabilities, &selected),
-            AdapterEndpointResolutionOperation::EndpointLookup
-        );
-    }
 }

@@ -461,71 +461,53 @@ struct ReconciliationRecordingSession {
 impl SyncActionAdapterSession for ReconciliationRecordingSession {
     type Error = ();
 
-    fn write_sync_action(
+    async fn write_sync_action(
         &mut self,
         command: WriteAdapterTargetedState,
-    ) -> trakkin::application::adapter_runtime::AdapterFuture<
-        '_,
-        AdapterTargetedStateWriteOutcome,
-        Self::Error,
-    > {
+    ) -> Result<AdapterTargetedStateWriteOutcome, Self::Error> {
         self.writes
             .lock()
             .expect("recorded writes lock")
             .push(command);
-        let outcome = self
+        Ok(self
             .write_outcomes
             .pop_front()
-            .expect("reconciliation write outcome is configured");
-        Box::pin(async move { Ok(outcome) })
+            .expect("reconciliation write outcome is configured"))
     }
 
-    fn cancel_sync_action(
+    async fn cancel_sync_action(
         &mut self,
         _operation_id: Vec<u8>,
-    ) -> trakkin::application::adapter_runtime::AdapterFuture<'_, (), Self::Error> {
-        Box::pin(async { Ok(()) })
+    ) -> Result<(), Self::Error> {
+        Ok(())
     }
 
-    fn retire_sync_action(
-        self,
-    ) -> trakkin::application::adapter_runtime::AdapterRetirementFuture<
-        AdapterRetirement,
-        Self::Error,
-    > {
-        Box::pin(async { Ok(AdapterRetirement::Graceful) })
+    async fn retire_sync_action(self) -> Result<AdapterRetirement, Self::Error> {
+        Ok(AdapterRetirement::Graceful)
     }
 }
 
 impl SyncActionReconciliationAdapterSession for ReconciliationRecordingSession {
     type Error = ();
 
-    fn read_sync_action_reconciliation(
+    async fn read_sync_action_reconciliation(
         &mut self,
         command: ReadAdapterTargetedState,
-    ) -> trakkin::application::adapter_runtime::AdapterFuture<
-        '_,
-        AdapterTargetedStateReadOutcome,
-        Self::Error,
-    > {
+    ) -> Result<AdapterTargetedStateReadOutcome, Self::Error> {
         self.reads
             .lock()
             .expect("recorded reads lock")
             .push(command);
-        let outcome = self
+        self
             .read_outcomes
             .pop_front()
-            .expect("reconciliation read outcome is configured");
-        Box::pin(async move { outcome })
+            .expect("reconciliation read outcome is configured")
     }
 
-    fn retire_sync_action_reconciliation(
+    async fn retire_sync_action_reconciliation(
         self,
-    ) -> trakkin::application::adapter_runtime::AdapterRetirementFuture<
-        AdapterRetirement,
-        Self::Error,
-    > {
-        Box::pin(async { Ok(AdapterRetirement::Graceful) })
+    ) -> Result<AdapterRetirement, Self::Error> {
+        Ok(AdapterRetirement::Graceful)
     }
 }
 
@@ -568,52 +550,41 @@ fn matched_reconciliation(
 impl SyncActionAdapterSession for RecordingSyncSession {
     type Error = std::convert::Infallible;
 
-    fn write_sync_action(
+    async fn write_sync_action(
         &mut self,
         command: WriteAdapterTargetedState,
-    ) -> trakkin::application::adapter_runtime::AdapterFuture<
-        '_,
-        AdapterTargetedStateWriteOutcome,
-        Self::Error,
-    > {
+    ) -> Result<AdapterTargetedStateWriteOutcome, Self::Error> {
         let writes = Arc::clone(&self.writes);
         let provider_mutations = Arc::clone(&self.provider_mutations);
         let outcome = self
             .outcomes
             .pop_front()
             .expect("recording sync outcome is configured");
-        Box::pin(async move {
-            writes.lock().expect("recorded writes lock").push(command);
-            match outcome {
-                Some(outcome) => {
-                    if outcome.status == AdapterTargetedStateWriteStatus::Applied {
-                        *provider_mutations.lock().expect("provider mutations lock") += 1;
-                    }
-                    Ok(outcome)
+        writes.lock().expect("recorded writes lock").push(command);
+        match outcome {
+            Some(outcome) => {
+                if outcome.status == AdapterTargetedStateWriteStatus::Applied {
+                    *provider_mutations.lock().expect("provider mutations lock") += 1;
                 }
-                None => std::future::pending().await,
+                Ok(outcome)
             }
-        })
+            None => std::future::pending().await,
+        }
     }
 
-    fn cancel_sync_action(
+    async fn cancel_sync_action(
         &mut self,
         operation_id: Vec<u8>,
-    ) -> trakkin::application::adapter_runtime::AdapterFuture<'_, (), Self::Error> {
+    ) -> Result<(), Self::Error> {
         self.cancelled_operations
             .lock()
             .expect("cancelled operations lock")
             .push(operation_id);
-        Box::pin(async { Ok(()) })
+        Ok(())
     }
 
-    fn retire_sync_action(
-        self,
-    ) -> trakkin::application::adapter_runtime::AdapterRetirementFuture<
-        AdapterRetirement,
-        Self::Error,
-    > {
-        Box::pin(async { Ok(AdapterRetirement::Graceful) })
+    async fn retire_sync_action(self) -> Result<AdapterRetirement, Self::Error> {
+        Ok(AdapterRetirement::Graceful)
     }
 }
 fn admission_command(

@@ -1,13 +1,11 @@
 use std::{env, error::Error, future::Future, io};
 
-use tracing_subscriber::{
-    EnvFilter, fmt::format::FmtSpan, layer::SubscriberExt, util::SubscriberInitExt,
-};
+use tracing_subscriber::filter::LevelFilter;
 use trakkin_provider_sdk::InvocationContext;
 use uuid::Uuid;
 
-pub const LOG_FILTER_ENV: &str = "TRAKKIN_LOG";
-pub const LOG_FORMAT_ENV: &str = "TRAKKIN_LOG_FORMAT";
+pub(crate) const LOG_LEVEL_ENV: &str = "TRAKKIN_LOG";
+const DEFAULT_LOG_LEVEL: &str = "info";
 
 tokio::task_local! {
     static ACTIVE_INVOCATION_CONTEXT: InvocationContext;
@@ -39,34 +37,16 @@ pub fn generate_correlation_id(prefix: &str) -> String {
     format!("{prefix}:unavailable")
 }
 
+pub(crate) fn configured_log_level() -> String {
+    env::var(LOG_LEVEL_ENV).unwrap_or_else(|_| DEFAULT_LOG_LEVEL.to_owned())
+}
+
 pub fn init() -> Result<(), Box<dyn Error + Send + Sync>> {
-    let filter =
-        env::var(LOG_FILTER_ENV).unwrap_or_else(|_| "trakkin=info,tower_http=info".to_owned());
-    let filter = EnvFilter::try_new(filter)?;
-    let format = env::var(LOG_FORMAT_ENV).unwrap_or_else(|_| "json".to_owned());
-    if format.eq_ignore_ascii_case("pretty") {
-        tracing_subscriber::registry()
-            .with(filter)
-            .with(
-                tracing_subscriber::fmt::layer()
-                    .with_ansi(false)
-                    .with_span_events(FmtSpan::CLOSE)
-                    .with_writer(io::stderr),
-            )
-            .try_init()?;
-    } else {
-        tracing_subscriber::registry()
-            .with(filter)
-            .with(
-                tracing_subscriber::fmt::layer()
-                    .json()
-                    .flatten_event(true)
-                    .with_ansi(false)
-                    .with_span_events(FmtSpan::CLOSE)
-                    .with_writer(io::stderr),
-            )
-            .try_init()?;
-    }
-    tracing::info!(event = "host.logging.initialized");
+    tracing_subscriber::fmt()
+        .json()
+        .flatten_event(true)
+        .with_max_level(configured_log_level().parse::<LevelFilter>()?)
+        .with_writer(io::stderr)
+        .try_init()?;
     Ok(())
 }
