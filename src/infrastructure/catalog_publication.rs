@@ -6,10 +6,13 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::{
-    application::acquisition::{
-        AbandonRead, BeginRead, ProviderSourceKey, PublicationRepository, PublishRead,
-        ReadAbandonment, ReadFence, ReadMode, RepositoryFuture, ResetSourceStream,
-        StageCatalogBatch, StageStateBatch,
+    application::{
+        acquisition::{
+            AbandonRead, BeginRead, ProviderSourceKey, PublicationRepository, PublishRead,
+            ReadAbandonment, ReadFence, ReadMode, RepositoryFuture, ResetSourceStream,
+            StageCatalogBatch, StageStateBatch,
+        },
+        task_manager::TaskFailure,
     },
     domain::acquisition::{
         CatalogBatch, CatalogItem, CatalogRelation, CatalogRelationKey, ProviderItemKey,
@@ -244,13 +247,8 @@ FOR UPDATE
                 if task.status != "running" || task.cancellation_requested {
                     return Err(PublicationError::TaskNotAbandonable);
                 }
-                (
-                    "failed",
-                    Some(json!({
-                        "code": failure.code,
-                        "retryable": failure.retryable,
-                    })),
-                )
+                let failure = TaskFailure::coded(&failure.code, failure.retryable);
+                ("failed", Some(super::task_manager::failure_json(&failure)))
             }
             ReadAbandonment::Cancelled => {
                 if task.status != "running" && task.status != "cancelling" {

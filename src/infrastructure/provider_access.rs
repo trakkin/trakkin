@@ -104,10 +104,10 @@ WHERE
     ) -> Result<ReferenceLookupTarget, ProviderAccessError> {
         let row = sqlx::query_as::<_, LookupTargetRow>(
             "SELECT
-            source.connection_id,
-            source.provider_key_namespace AS source_key_namespace,
-            source.provider_key_value AS source_key_value,
-            connection.capabilities
+    source.connection_id,
+    source.provider_key_namespace AS source_key_namespace,
+    source.provider_key_value AS source_key_value,
+    connection.capabilities
 FROM workspace_sources AS attachment
 INNER JOIN sources AS source ON source.id = attachment.source_id
 INNER JOIN connections AS connection ON connection.id = source.connection_id
@@ -143,12 +143,12 @@ WHERE
     ) -> Result<Vec<MappingEndpointLookupTarget>, ProviderAccessError> {
         let rows = sqlx::query_as::<_, EndpointLookupTargetRow>(
             "SELECT
-            source.id AS source_id,
-            connection.id AS connection_id,
-            source.provider_key_namespace AS source_key_namespace,
-            source.provider_key_value AS source_key_value,
-            attachment.mapping_root_namespace_allowlist,
-            connection.capabilities
+    source.id AS source_id,
+    connection.id AS connection_id,
+    source.provider_key_namespace AS source_key_namespace,
+    source.provider_key_value AS source_key_value,
+    attachment.mapping_root_namespace_allowlist,
+    connection.capabilities
 FROM workspace_sources AS attachment
 INNER JOIN sources AS source ON source.id = attachment.source_id
 INNER JOIN connections AS connection ON connection.id = source.connection_id

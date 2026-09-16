@@ -508,10 +508,7 @@ async fn adapter_failure_abandons_staged_catalog_atomically() {
         "abandoned"
     );
     assert_eq!(task_claim_owner(&database.pool(), TASK_ID).await, None);
-    assert_eq!(
-        task_failures(&database.pool()).await,
-        failure_json(&failure)
-    );
+    assert_task_failure(task_failures(&database.pool()).await, &failure);
 
     database
         .shutdown()
@@ -1444,9 +1441,9 @@ async fn task_failures(pool: &PgPool) -> serde_json::Value {
     task_failure.expect("failed task records failure evidence")
 }
 
-fn failure_json(failure: &ReadFailure) -> serde_json::Value {
-    json!({
-        "code": failure.code,
-        "retryable": failure.retryable,
-    })
+fn assert_task_failure(value: serde_json::Value, failure: &ReadFailure) {
+    assert_eq!(value["code"], failure.code);
+    assert_eq!(value["message"], failure.code.replace('_', " "));
+    assert_eq!(value["retryable"], failure.retryable);
+    assert!(value["id"].as_str().is_some_and(|id| !id.is_empty()));
 }

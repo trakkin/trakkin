@@ -1038,7 +1038,7 @@ impl IntoApplicationError for TaskManagerError {
                 ApplicationErrorCode::TaskCancellationUnsupported,
                 "task cancellation is not supported",
             ),
-            Self::MissingTaskDetail
+            error @ (Self::MissingTaskDetail
             | Self::MissingTaskConnection
             | Self::InvalidTaskDetail
             | Self::UnknownTaskKind(_)
@@ -1048,9 +1048,7 @@ impl IntoApplicationError for TaskManagerError {
             | Self::InvalidFailure
             | Self::InvalidInvocationContext
             | Self::EmptyTaskKindSelection
-            | Self::Database(_) => {
-                ApplicationError::new(ApplicationErrorCode::Internal, "task operation failed")
-            }
+            | Self::Database(_)) => ApplicationError::internal("task operation failed", error),
         }
     }
 }
