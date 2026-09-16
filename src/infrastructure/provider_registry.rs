@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     fs::OpenOptions,
     path::{Path, PathBuf},
     sync::Arc,
@@ -9,21 +9,23 @@ use semver::Version;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::{FromRow, PgPool, types::Json};
-use time::OffsetDateTime;
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use uuid::Uuid;
 
 use crate::application::error::{ApplicationError, ApplicationErrorCode};
 use crate::application::providers::{
-    AvailableProviderSnapshot, ChangeProviderUpdatePolicy, InstallProvider, ProviderApiFuture,
-    ProviderFuture, ProviderLaunchError, ProviderLaunchResolver, ProviderLaunchTarget,
-    ProviderRegistryApi, ProviderSnapshot, ProviderSourceSnapshot, ProviderUpdatePolicy,
-    ProviderUpdateSnapshot, RefreshProviderSource, RemoveProvider, RemoveProviderSource,
-    TrustProviderSource, UpdateProvider,
+    AvailableProviderSnapshot, ChangeProviderUpdatePolicy, InspectProviderRelease, InstallProvider,
+    ProviderApiFuture, ProviderFuture, ProviderLaunchError, ProviderLaunchResolver,
+    ProviderLaunchTarget, ProviderMaintainerSnapshot, ProviderRegistryApi,
+    ProviderReleaseCompatibility, ProviderReleaseInspectionSnapshot, ProviderSnapshot,
+    ProviderSourceSnapshot, ProviderUpdatePolicy, ProviderUpdateSnapshot, RefreshProviderSource,
+    RemoveProvider, RemoveProviderSource, TrustProviderSource, UpdateProvider,
 };
 use crate::infrastructure::adapter_process::AdapterProcessLauncher;
 use crate::infrastructure::provider_oci::{
-    OciProviderSource, ProviderArtifactSource, ProviderMetadata, PulledProviderArtifact,
+    InspectedProviderArtifact, OciProviderSource, ProviderArtifactCompatibility,
+    ProviderArtifactSource, ProviderMetadata, PulledProviderArtifact, valid_provider_digest,
     valid_repository_url,
 };
 
@@ -95,6 +97,7 @@ impl ProbedProviderRegistry {
         command: InstallProvider,
     ) -> Result<ProviderSnapshot, ApplicationError> {
         let version = parse_provider_version(&command.version)?;
+        validate_index_digest(&command.index_digest)?;
         ensure_supported_platform(&self.registry.platform)?;
         let _lifecycle_lock = self
             .registry
@@ -102,10 +105,15 @@ impl ProbedProviderRegistry {
             .await
             .map_err(internal_error)?;
         let source = self.registry.source(command.source_id).await?;
-        ensure_available_release(&source, &command.provider_id, &version)?;
         let prepared = self
             .registry
-            .prepare_artifact(&source, &command.provider_id, &version, command.artifact_id)
+            .prepare_artifact(
+                &source,
+                &command.provider_id,
+                &version,
+                &command.index_digest,
+                command.artifact_id,
+            )
             .await?;
         if let Err(error) = self.probe(&prepared).await {
             let _ = remove_path_if_present(&self.registry.artifact_directory(prepared.artifact_id))
@@ -117,6 +125,7 @@ impl ProbedProviderRegistry {
 
     async fn update(&self, command: UpdateProvider) -> Result<ProviderSnapshot, ApplicationError> {
         let version = parse_provider_version(&command.version)?;
+        validate_index_digest(&command.index_digest)?;
         ensure_supported_platform(&self.registry.platform)?;
         let _lifecycle_lock = self
             .registry
@@ -125,20 +134,22 @@ impl ProbedProviderRegistry {
             .map_err(internal_error)?;
         let current = self.registry.update_target(&command.provider_id).await?;
         let current_version = Version::parse(&current.version).map_err(internal_error)?;
-        if version <= current_version {
-            return Err(ApplicationError::field(
-                ApplicationErrorCode::InvalidField,
-                "provider update request is invalid",
-                "version",
-                "provider_version_not_newer",
-                "provider update version must be newer than the installed version",
-            ));
-        }
+        validate_update_selection(
+            &current_version,
+            &current.index_digest,
+            &version,
+            &command.index_digest,
+        )?;
         let source = current.source_snapshot()?;
-        ensure_available_release(&source, &command.provider_id, &version)?;
         let prepared = match self
             .registry
-            .prepare_artifact(&source, &command.provider_id, &version, command.artifact_id)
+            .prepare_artifact(
+                &source,
+                &command.provider_id,
+                &version,
+                &command.index_digest,
+                command.artifact_id,
+            )
             .await
         {
             Ok(prepared) => prepared,
@@ -194,12 +205,12 @@ impl ProbedProviderRegistry {
             return Ok(provider);
         }
         let result = self
-            .update(UpdateProvider {
-                provider_id: command.provider_id.clone(),
-                artifact_id: random_uuid().map_err(internal_error)?,
-                version: update.version,
-                updated_at: command.updated_at,
-            })
+            .update_discovered_release(
+                command.provider_id.clone(),
+                provider.source_id,
+                update.version,
+                command.updated_at,
+            )
             .await;
         match result {
             Ok(provider) => Ok(provider),
@@ -227,12 +238,12 @@ impl ProbedProviderRegistry {
             let provider_id = update.provider_id.clone();
             let updated_at = command.checked_at;
             let result = self
-                .update(UpdateProvider {
-                    provider_id: update.provider_id,
-                    artifact_id: random_uuid().map_err(internal_error)?,
-                    version: update.version,
+                .update_discovered_release(
+                    update.provider_id,
+                    update.source_id,
+                    update.version,
                     updated_at,
-                })
+                )
                 .await;
             if let Err(error) = result {
                 let error_message = provider_update_error_message(&error);
@@ -247,6 +258,63 @@ impl ProbedProviderRegistry {
             }
         }
         Ok(source)
+    }
+
+    async fn inspect(
+        &self,
+        command: InspectProviderRelease,
+    ) -> Result<ProviderReleaseInspectionSnapshot, ApplicationError> {
+        let version = parse_provider_version(&command.version)?;
+        ensure_supported_platform(&self.registry.platform)?;
+        let source = self.registry.source(command.source_id).await?;
+        let inspection = self
+            .registry
+            .artifact_source
+            .inspect(
+                &source,
+                &command.provider_id,
+                &version,
+                &self.registry.platform,
+                &self.registry.host_version,
+            )
+            .await?;
+        inspection_snapshot(inspection, self.registry.platform.clone())
+    }
+
+    async fn update_discovered_release(
+        &self,
+        provider_id: String,
+        source_id: Uuid,
+        version: String,
+        updated_at: OffsetDateTime,
+    ) -> Result<ProviderSnapshot, ApplicationError> {
+        let requested_version = parse_provider_version(&version)?;
+        let current = self.registry.update_target(&provider_id).await?;
+        let current_version = Version::parse(&current.version).map_err(internal_error)?;
+        if requested_version <= current_version {
+            return Err(ApplicationError::field(
+                ApplicationErrorCode::InvalidField,
+                "provider update request is invalid",
+                "version",
+                "provider_version_not_newer",
+                "automatic provider update version must be newer than the installed version",
+            ));
+        }
+        let inspection = self
+            .inspect(InspectProviderRelease {
+                source_id,
+                provider_id: provider_id.clone(),
+                version: version.clone(),
+            })
+            .await?;
+        self.update(UpdateProvider {
+            provider_id,
+            artifact_id: random_uuid().map_err(internal_error)?,
+            version,
+            index_digest: inspection.index_digest,
+            updated_at,
+        })
+        .await
     }
 
     async fn probe(&self, prepared: &PreparedArtifact) -> Result<(), ApplicationError> {
@@ -333,12 +401,14 @@ FROM providers
             }
         }
         if !invalid_providers.is_empty() {
-            sqlx::query("DELETE FROM providers WHERE provider_id = ANY($1)
-")
-                .bind(&invalid_providers)
-                .execute(&self.pool)
-                .await
-                .map_err(internal_error)?;
+            sqlx::query(
+                "DELETE FROM providers WHERE provider_id = ANY($1)
+",
+            )
+            .bind(&invalid_providers)
+            .execute(&self.pool)
+            .await
+            .map_err(internal_error)?;
         }
 
         let artifacts = self.persistent_root.join("artifacts");
@@ -418,8 +488,13 @@ WHERE provider_id = $1
         let metadata = serde_json::from_value::<ProviderMetadata>(metadata)
             .map_err(|error| error.to_string())?;
         metadata
-            .validate(provider_id, &version, platform, &self.host_version)
+            .validate(provider_id, &version, platform)
             .map_err(|error| error.message)?;
+        if metadata.compatibility(true, &self.host_version)
+            != ProviderArtifactCompatibility::Compatible
+        {
+            return Err("provider release is incompatible with this Trakkin version".to_owned());
+        }
         Ok(())
     }
 
@@ -464,11 +539,13 @@ WHERE provider_id = $1
     }
 
     async fn source_ids(&self) -> Result<Vec<Uuid>, ApplicationError> {
-        sqlx::query_scalar("SELECT id FROM provider_sources ORDER BY repository_url, id
-")
-            .fetch_all(&self.pool)
-            .await
-            .map_err(internal_error)
+        sqlx::query_scalar(
+            "SELECT id FROM provider_sources ORDER BY repository_url, id
+",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal_error)
     }
 
     async fn sources(&self) -> Result<Vec<ProviderSourceSnapshot>, ApplicationError> {
@@ -588,6 +665,7 @@ RETURNING id
         source: &ProviderSourceSnapshot,
         provider_id: &str,
         version: &Version,
+        index_digest: &str,
         artifact_id: Uuid,
     ) -> Result<PreparedArtifact, ApplicationError> {
         let staging_root = self.persistent_root.join("staging");
@@ -596,10 +674,11 @@ RETURNING id
             .map_err(internal_error)?;
         let artifact = self
             .artifact_source
-            .pull(
+            .pull_pinned(
                 source,
                 provider_id,
                 version,
+                index_digest,
                 &self.platform,
                 &self.host_version,
             )
@@ -708,7 +787,7 @@ RETURNING id
     async fn update_target(&self, provider_id: &str) -> Result<UpdateTargetRow, ApplicationError> {
         sqlx::query_as::<_, UpdateTargetRow>(
             "SELECT
-    provider.artifact_id, provider.version,
+    provider.artifact_id, provider.version, provider.index_digest,
     source.id AS source_id, source.repository_url,
     source.available_providers,
     source.trusted_at, source.last_checked_at, source.last_error
@@ -893,6 +972,7 @@ WHERE provider_id = $1
             {
                 automatic.push(AutomaticUpdate {
                     provider_id: provider.provider_id,
+                    source_id: command.source_id,
                     version,
                 });
             }
@@ -969,12 +1049,14 @@ FOR UPDATE
                 "provider cannot be removed while connections use it",
             ));
         }
-        sqlx::query("DELETE FROM providers WHERE provider_id = $1
-")
-            .bind(&command.provider_id)
-            .execute(&mut *transaction)
-            .await
-            .map_err(internal_error)?;
+        sqlx::query(
+            "DELETE FROM providers WHERE provider_id = $1
+",
+        )
+        .bind(&command.provider_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(internal_error)?;
         transaction.commit().await.map_err(internal_error)?;
         let _ = remove_path_if_present(&self.artifact_directory(artifact_id)).await;
         let _ = remove_path_if_present(&self.runtime_root.join(artifact_id.to_string())).await;
@@ -1054,6 +1136,13 @@ impl ProviderRegistryApi for ProbedProviderRegistry {
 
     fn remove_provider_source(&self, command: RemoveProviderSource) -> ProviderApiFuture<'_, ()> {
         Box::pin(self.registry.remove_source(command))
+    }
+
+    fn inspect_provider_release(
+        &self,
+        command: InspectProviderRelease,
+    ) -> ProviderApiFuture<'_, ProviderReleaseInspectionSnapshot> {
+        Box::pin(self.inspect(command))
     }
 
     fn list_providers(&self) -> ProviderApiFuture<'_, Vec<ProviderSnapshot>> {
@@ -1200,6 +1289,7 @@ struct ReconciliationRow {
 struct UpdateTargetRow {
     artifact_id: Uuid,
     version: String,
+    index_digest: String,
     source_id: Uuid,
     repository_url: String,
     available_providers: Json<Vec<AvailableProviderSnapshot>>,
@@ -1237,6 +1327,7 @@ struct DiscoveryRow {
 
 struct AutomaticUpdate {
     provider_id: String,
+    source_id: Uuid,
     version: String,
 }
 
@@ -1284,26 +1375,139 @@ fn validate_source(command: &TrustProviderSource) -> Result<(), ApplicationError
     Ok(())
 }
 
-fn ensure_available_release(
-    source: &ProviderSourceSnapshot,
-    provider_id: &str,
-    version: &Version,
-) -> Result<(), ApplicationError> {
-    let version = version.to_string();
-    if source
-        .available_providers
-        .iter()
-        .any(|provider| provider.provider_id == provider_id && provider.versions.contains(&version))
-    {
+fn validate_index_digest(value: &str) -> Result<(), ApplicationError> {
+    if valid_provider_digest(value) {
         return Ok(());
     }
     Err(ApplicationError::field(
         ApplicationErrorCode::InvalidField,
-        "provider release is not available from this source",
-        "version",
-        "provider_release_not_discovered",
-        "refresh the source and select one of its available provider versions",
+        "provider request is invalid",
+        "indexDigest",
+        "invalid_provider_index_digest",
+        "provider index digest must be a lowercase SHA-256 digest",
     ))
+}
+
+fn validate_update_selection(
+    current_version: &Version,
+    current_index_digest: &str,
+    requested_version: &Version,
+    requested_index_digest: &str,
+) -> Result<(), ApplicationError> {
+    if requested_version < current_version {
+        return Err(ApplicationError::field(
+            ApplicationErrorCode::InvalidField,
+            "provider update request is invalid",
+            "version",
+            "provider_version_not_newer",
+            "provider update version must not be older than the installed version",
+        ));
+    }
+    if requested_version == current_version && requested_index_digest == current_index_digest {
+        return Err(ApplicationError::field(
+            ApplicationErrorCode::ProviderConflict,
+            "provider release is already installed",
+            "indexDigest",
+            "provider_digest_already_installed",
+            "select a release with a different index digest",
+        ));
+    }
+    Ok(())
+}
+
+fn inspection_snapshot(
+    inspection: InspectedProviderArtifact,
+    platform: String,
+) -> Result<ProviderReleaseInspectionSnapshot, ApplicationError> {
+    let InspectedProviderArtifact {
+        metadata,
+        metadata_value: _,
+        index_annotations,
+        index_digest,
+        manifest_digest,
+        metadata_digest,
+        binary_digest,
+        binary_size,
+        compatibility,
+    } = inspection;
+    let mut requirements = BTreeMap::new();
+    if let Some(requirement) = metadata.requires.trakkin {
+        requirements.insert("trakkin".to_owned(), requirement.to_string());
+    }
+    if let Some(requirement) = metadata.requires.provider_sdk {
+        requirements.insert("trakkin-provider-sdk".to_owned(), requirement.to_string());
+    }
+    if let Some(requirement) = metadata.requires.mapping {
+        requirements.insert("trakkin-mapping".to_owned(), requirement.to_string());
+    }
+    let published_at = index_annotations
+        .get("org.opencontainers.image.created")
+        .map(|value| OffsetDateTime::parse(value, &Rfc3339).map_err(invalid_provider_annotation))
+        .transpose()?;
+    let distributor = valid_annotation(&index_annotations, "org.opencontainers.image.vendor")?;
+    let revision = valid_annotation(&index_annotations, "org.opencontainers.image.revision")?;
+    let maintainer = metadata
+        .maintainer
+        .map(|maintainer| ProviderMaintainerSnapshot {
+            name: maintainer.name,
+            email: maintainer.email,
+            url: maintainer.url,
+        });
+
+    let compatibility = match compatibility {
+        ProviderArtifactCompatibility::Compatible => ProviderReleaseCompatibility::Compatible,
+        ProviderArtifactCompatibility::UnsupportedPlatform => {
+            ProviderReleaseCompatibility::UnsupportedPlatform
+        }
+        ProviderArtifactCompatibility::IncompatibleTrakkin => {
+            ProviderReleaseCompatibility::IncompatibleTrakkin
+        }
+    };
+    let platform_available = compatibility != ProviderReleaseCompatibility::UnsupportedPlatform;
+
+    Ok(ProviderReleaseInspectionSnapshot {
+        provider_id: metadata.id,
+        version: metadata.version.to_string(),
+        name: metadata.name,
+        description: metadata.description,
+        repository_url: metadata.repo,
+        homepage_url: metadata.homepage,
+        documentation_url: metadata.documentation,
+        license: metadata.license,
+        maintainer,
+        distributor,
+        published_at,
+        revision,
+        platforms: metadata.platforms,
+        requirements,
+        compatibility,
+        platform,
+        index_digest,
+        manifest_digest: platform_available.then_some(manifest_digest),
+        metadata_digest: platform_available.then_some(metadata_digest),
+        binary_digest: platform_available.then_some(binary_digest),
+        binary_size: platform_available.then_some(binary_size),
+    })
+}
+
+fn valid_annotation(
+    annotations: &BTreeMap<String, String>,
+    key: &str,
+) -> Result<Option<String>, ApplicationError> {
+    let Some(value) = annotations.get(key) else {
+        return Ok(None);
+    };
+    if value.is_empty() || value.len() > 2048 || value.contains(['\r', '\n']) {
+        return Err(invalid_provider_annotation("annotation value is invalid"));
+    }
+    Ok(Some(value.clone()))
+}
+
+fn invalid_provider_annotation(error: impl std::fmt::Display) -> ApplicationError {
+    ApplicationError::new(
+        ApplicationErrorCode::InvalidProviderData,
+        format!("provider OCI annotations are invalid: {error}"),
+    )
 }
 
 fn parse_provider_version(value: &str) -> Result<Version, ApplicationError> {
@@ -1550,6 +1754,35 @@ mod tests {
             latest_update(&releases, "dev.trakkin.fixture", &Version::new(1, 0, 0)),
             Some(Version::new(1, 0, 1))
         );
+    }
+
+    #[test]
+    fn explicit_updates_allow_same_version_digest_replacements() {
+        let version = Version::new(1, 2, 3);
+        validate_update_selection(&version, "sha256:installed", &version, "sha256:replacement")
+            .expect("different digest may replace the same version");
+
+        let error =
+            validate_update_selection(&version, "sha256:installed", &version, "sha256:installed")
+                .expect_err("the installed digest is not replaced");
+        assert_eq!(error.code, ApplicationErrorCode::ProviderConflict);
+        assert_eq!(
+            error.field_problems[0].code,
+            "provider_digest_already_installed"
+        );
+    }
+
+    #[test]
+    fn explicit_updates_reject_downgrades() {
+        let error = validate_update_selection(
+            &Version::new(1, 2, 3),
+            "sha256:installed",
+            &Version::new(1, 2, 2),
+            "sha256:older",
+        )
+        .expect_err("older version is rejected");
+        assert_eq!(error.code, ApplicationErrorCode::InvalidField);
+        assert_eq!(error.field_problems[0].code, "provider_version_not_newer");
     }
 
     #[tokio::test]

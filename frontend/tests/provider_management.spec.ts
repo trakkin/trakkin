@@ -1,10 +1,11 @@
 import { expect, test } from "@playwright/test";
-import type { Provider, ProviderSource } from "../src/lib/api/providers.ts";
+import type { Provider, ProviderReleaseInspection, ProviderSource } from "../src/lib/api/providers.ts";
 import { expectNoHorizontalOverflow, fallback, json, mockApi, timestamp, workspace } from "./support/api.ts";
 
 const communitySourceId = "00000000-0000-0000-0000-000000000001";
 const exampleSourceId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const providerId = "dev.trakkin.fixture";
+const inspectedIndexDigest = `sha256:${"c".repeat(64)}`;
 
 const communitySource: ProviderSource = {
   id: communitySourceId,
@@ -34,6 +35,33 @@ function provider(overrides: Partial<Provider> = {}): Provider {
   };
 }
 
+function inspection(overrides: Partial<ProviderReleaseInspection> = {}): ProviderReleaseInspection {
+  return {
+    providerId,
+    version: "1.0.0",
+    name: "Fixture provider",
+    description: "Deterministic provider",
+    repositoryUrl: "https://github.com/trakkin/trakkin-community-providers",
+    homepageUrl: "https://trakkin.dev",
+    documentationUrl: null,
+    license: "Apache-2.0",
+    maintainer: { name: "Trakkin", email: null, url: "https://trakkin.dev" },
+    distributor: "Trakkin",
+    publishedAt: timestamp,
+    revision: "0123456789abcdef",
+    platforms: ["linux/amd64", "linux/arm64"],
+    requirements: { trakkin: ">=0.0.0, <1.0.0" },
+    compatibility: "compatible",
+    platform: "linux/amd64",
+    indexDigest: inspectedIndexDigest,
+    manifestDigest: `sha256:${"d".repeat(64)}`,
+    metadataDigest: `sha256:${"e".repeat(64)}`,
+    binaryDigest: `sha256:${"f".repeat(64)}`,
+    binarySize: 1_500_000,
+    ...overrides,
+  };
+}
+
 test("trusts a local OCI source and installs one provider identity", async ({ page }) => {
   let sources = [communitySource];
   let providers: Provider[] = [];
@@ -45,6 +73,16 @@ test("trusts a local OCI source and installs one provider identity", async ({ pa
     if (url.pathname === "/api/v1/workspaces") return json(route, [workspace]);
     if (url.pathname === "/api/v1/provider-sources" && method === "GET") return json(route, sources);
     if (url.pathname === "/api/v1/providers" && method === "GET") return json(route, providers);
+    if (url.pathname.includes("/releases/") && method === "GET") {
+      return json(
+        route,
+        inspection({
+          providerId: "dev.example.calendar",
+          version: decodeURIComponent(url.pathname.split("/").at(-1) ?? ""),
+          name: "Calendar",
+        }),
+      );
+    }
     if (url.pathname === "/api/v1/provider-sources" && method === "POST") {
       trustedSourceRequest = route.request().postDataJSON();
       const source: ProviderSource = {
@@ -68,6 +106,7 @@ test("trusts a local OCI source and installs one provider identity", async ({ pa
         sourceId: exampleSourceId,
         name: "Calendar",
         version: "2.1.0",
+        indexDigest: inspectedIndexDigest,
         updatePolicy: "automatic",
       });
       providers = [installed];
@@ -91,21 +130,38 @@ test("trusts a local OCI source and installs one provider identity", async ({ pa
 
   const calendarRow = page.getByRole("listitem").filter({ hasText: "dev.example.calendar" });
   await calendarRow.getByRole("button", { name: "Install dev.example.calendar", exact: true }).click();
-  await calendarRow.getByLabel("Version for dev.example.calendar").click();
+  const releaseReview = page.getByRole("dialog", { name: "Install provider" });
+  await releaseReview.getByLabel("Version for dev.example.calendar").click();
   await page.getByRole("option", { name: "2.1.0" }).click();
-  await calendarRow.getByLabel("Update policy for dev.example.calendar").click();
+  await releaseReview.getByLabel("Update policy for dev.example.calendar").click();
   await page.getByRole("option", { name: "Automatic updates" }).click();
-  await page.locator("#confirm-provider-install").click();
+  await expect(releaseReview.getByRole("heading", { name: "Calendar", exact: true })).toBeVisible();
+  await expect(releaseReview.getByText("Trakkin", { exact: true }).first()).toBeVisible();
+  const releaseDetails = releaseReview.getByRole("region", {
+    name: "Release details for dev.example.calendar 2.1.0",
+  });
+  await expect
+    .poll(async () => ({
+      drawerFitsViewport: await releaseReview.evaluate(
+        (element) => element.getBoundingClientRect().width <= window.innerWidth,
+      ),
+      releaseHasHorizontalOverflow: await releaseDetails.evaluate(
+        (element) => element.scrollWidth > element.clientWidth,
+      ),
+    }))
+    .toEqual({ drawerFitsViewport: true, releaseHasHorizontalOverflow: false });
+  await releaseReview.locator("#confirm-provider-install").click();
 
   expect(installRequest).toEqual({
     sourceId: exampleSourceId,
     providerId: "dev.example.calendar",
     version: "2.1.0",
+    indexDigest: inspectedIndexDigest,
     updatePolicy: "automatic",
   });
   const installedCalendarRow = page.getByRole("listitem").filter({ hasText: "Calendar" });
   await expect(installedCalendarRow.getByText("Version 2.1.0", { exact: true })).toBeVisible();
-  await expect(installedCalendarRow.getByText(`Index ${"a".repeat(12)}...`, { exact: true })).toBeVisible();
+  await expect(installedCalendarRow.getByText(`Index ${"c".repeat(12)}...`, { exact: true })).toBeVisible();
   await expect(installedCalendarRow.locator(`time[datetime="${timestamp}"]`)).toBeVisible();
   await expectNoHorizontalOverflow(page);
 });
@@ -162,6 +218,9 @@ test("notifies and applies a manual update without creating another installation
     if (url.pathname === "/api/v1/workspaces") return json(route, [workspace]);
     if (url.pathname === "/api/v1/provider-sources") return json(route, [communitySource]);
     if (url.pathname === "/api/v1/providers" && method === "GET") return json(route, providers);
+    if (url.pathname.includes("/releases/") && method === "GET") {
+      return json(route, inspection({ version: "1.1.0" }));
+    }
     if (url.pathname === `/api/v1/providers/${encodeURIComponent(providerId)}/update` && method === "POST") {
       updateRequest = route.request().postDataJSON();
       await updateGate;
@@ -182,8 +241,9 @@ test("notifies and applies a manual update without creating another installation
   await expect(page.getByText("1.1.0 available", { exact: true })).toBeVisible();
   const updateButton = page.getByRole("button", { name: "Update", exact: true });
   await updateButton.click();
-  await expect(updateButton).toBeDisabled();
-  expect(updateRequest).toEqual({ version: "1.1.0" });
+  await expect(page.getByText("Immutable release digest", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Update provider", exact: true }).click();
+  expect(updateRequest).toEqual({ version: "1.1.0", indexDigest: inspectedIndexDigest });
   releaseUpdate();
 
   await expect(page.getByText("1.1.0 available", { exact: true })).toHaveCount(0);
@@ -191,6 +251,35 @@ test("notifies and applies a manual update without creating another installation
   await page.getByLabel("Update policy for Fixture provider").click();
   await page.getByRole("option", { name: "Automatic updates" }).click();
   await expect(page.getByText("Automatic updates", { exact: true }).first()).toBeVisible();
+  await expectNoHorizontalOverflow(page);
+});
+
+test("offers an explicit replacement when the current SemVer tag has a new digest", async ({ page }) => {
+  let providers = [provider()];
+  let updateRequest: unknown;
+  await mockApi(page, async (route) => {
+    const url = new URL(route.request().url());
+    const method = route.request().method();
+    if (url.pathname === "/api/v1/workspaces") return json(route, [workspace]);
+    if (url.pathname === "/api/v1/provider-sources") return json(route, [communitySource]);
+    if (url.pathname === "/api/v1/providers" && method === "GET") return json(route, providers);
+    if (url.pathname.includes("/releases/") && method === "GET") return json(route, inspection());
+    if (url.pathname === `/api/v1/providers/${encodeURIComponent(providerId)}/update` && method === "POST") {
+      updateRequest = route.request().postDataJSON();
+      const replacement = provider({ indexDigest: inspectedIndexDigest });
+      providers = [replacement];
+      return json(route, replacement);
+    }
+    return fallback(route);
+  });
+
+  await page.goto("/providers");
+  await page.getByRole("button", { name: "Review current release for Fixture provider" }).click();
+  await expect(page.getByRole("button", { name: "Replace provider", exact: true })).toBeEnabled();
+  await page.getByRole("button", { name: "Replace provider", exact: true }).click();
+
+  expect(updateRequest).toEqual({ version: "1.0.0", indexDigest: inspectedIndexDigest });
+  await expect(page.getByText(`Index ${"c".repeat(12)}...`, { exact: true })).toBeVisible();
   await expectNoHorizontalOverflow(page);
 });
 

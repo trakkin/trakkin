@@ -37,6 +37,8 @@ const MAXIMUM_TAGS: usize = 10_000;
 
 pub(crate) type ProviderArtifactFuture<'a> =
     Pin<Box<dyn Future<Output = Result<PulledProviderArtifact, ApplicationError>> + Send + 'a>>;
+pub(crate) type ProviderInspectionFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<InspectedProviderArtifact, ApplicationError>> + Send + 'a>>;
 pub(crate) type ProviderReleasesFuture<'a> = Pin<
     Box<dyn Future<Output = Result<Vec<AvailableProviderSnapshot>, ApplicationError>> + Send + 'a>,
 >;
@@ -46,14 +48,35 @@ pub(crate) trait ProviderArtifactSource: Send + Sync {
         &'a self,
         source: &'a ProviderSourceSnapshot,
     ) -> ProviderReleasesFuture<'a>;
-    fn pull<'a>(
+    fn inspect<'a>(
         &'a self,
-        source: &'a ProviderSourceSnapshot,
-        provider_id: &'a str,
-        version: &'a Version,
-        platform: &'a str,
-        host_version: &'a Version,
-    ) -> ProviderArtifactFuture<'a>;
+        _source: &'a ProviderSourceSnapshot,
+        _provider_id: &'a str,
+        _version: &'a Version,
+        _platform: &'a str,
+        _host_version: &'a Version,
+    ) -> ProviderInspectionFuture<'a> {
+        Box::pin(async {
+            Err(invalid_provider(
+                "provider artifact source does not support release inspection",
+            ))
+        })
+    }
+    fn pull_pinned<'a>(
+        &'a self,
+        _source: &'a ProviderSourceSnapshot,
+        _provider_id: &'a str,
+        _version: &'a Version,
+        _index_digest: &'a str,
+        _platform: &'a str,
+        _host_version: &'a Version,
+    ) -> ProviderArtifactFuture<'a> {
+        Box::pin(async {
+            Err(invalid_provider(
+                "provider artifact source does not support digest-pinned pulls",
+            ))
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -97,6 +120,42 @@ pub(crate) struct PulledProviderArtifact {
     pub binary_digest: String,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct InspectedProviderArtifact {
+    pub metadata: ProviderMetadata,
+    pub metadata_value: Value,
+    pub index_annotations: BTreeMap<String, String>,
+    pub index_digest: String,
+    pub manifest_digest: String,
+    pub metadata_digest: String,
+    pub binary_digest: String,
+    pub binary_size: usize,
+    pub compatibility: ProviderArtifactCompatibility,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ProviderArtifactCompatibility {
+    Compatible,
+    UnsupportedPlatform,
+    IncompatibleTrakkin,
+}
+
+struct ResolvedProviderArtifact {
+    inspection: InspectedProviderArtifact,
+    manifest_reference: Reference,
+    binary_descriptor: OciDescriptor,
+    protocol: RepositoryProtocol,
+}
+
+#[derive(Clone, Copy)]
+struct ProviderArtifactRequest<'a> {
+    source: &'a ProviderSourceSnapshot,
+    provider_id: &'a str,
+    version: &'a Version,
+    platform: &'a str,
+    host_version: &'a Version,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub(crate) struct ProviderMetadata {
     pub schema: String,
@@ -107,6 +166,11 @@ pub(crate) struct ProviderMetadata {
     pub platforms: Vec<String>,
     #[serde(default)]
     pub requires: ProviderRequirements,
+    pub repo: Option<String>,
+    pub homepage: Option<String>,
+    pub documentation: Option<String>,
+    pub license: Option<String>,
+    pub maintainer: Option<ProviderMaintainer>,
     #[serde(flatten)]
     _additional: BTreeMap<String, Value>,
 }
@@ -114,8 +178,19 @@ pub(crate) struct ProviderMetadata {
 #[derive(Clone, Debug, Default, Deserialize)]
 pub(crate) struct ProviderRequirements {
     pub trakkin: Option<VersionReq>,
+    #[serde(rename = "trakkin-provider-sdk")]
+    pub provider_sdk: Option<VersionReq>,
+    #[serde(rename = "trakkin-mapping")]
+    pub mapping: Option<VersionReq>,
     #[serde(flatten)]
     _additional: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub(crate) struct ProviderMaintainer {
+    pub name: String,
+    pub email: Option<String>,
+    pub url: Option<String>,
 }
 
 impl ProviderMetadata {
@@ -123,8 +198,7 @@ impl ProviderMetadata {
         &self,
         expected_provider_id: &str,
         expected_version: &Version,
-        platform: &str,
-        host_version: &Version,
+        artifact_platform: &str,
     ) -> Result<(), ApplicationError> {
         if self.schema != PROVIDER_SCHEMA {
             return Err(invalid_provider(
@@ -148,6 +222,47 @@ impl ProviderMetadata {
                 "provider metadata contains invalid display text",
             ));
         }
+        if [
+            self.repo.as_deref(),
+            self.homepage.as_deref(),
+            self.documentation.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|value| {
+            Url::parse(value).is_err()
+                || value.contains(['\r', '\n'])
+                || !value.starts_with("https://")
+        }) {
+            return Err(invalid_provider(
+                "provider metadata contains an invalid public URL",
+            ));
+        }
+        if self
+            .license
+            .as_ref()
+            .is_some_and(|value| value.is_empty() || value.contains(['\r', '\n']))
+        {
+            return Err(invalid_provider(
+                "provider metadata contains an invalid license",
+            ));
+        }
+        if self.maintainer.as_ref().is_some_and(|maintainer| {
+            maintainer.name.is_empty()
+                || maintainer.name.contains(['\r', '\n'])
+                || maintainer.email.as_ref().is_some_and(|email| {
+                    email.is_empty() || email.contains(['\r', '\n']) || !email.contains('@')
+                })
+                || maintainer.url.as_ref().is_some_and(|url| {
+                    Url::parse(url).is_err()
+                        || url.contains(['\r', '\n'])
+                        || !url.starts_with("https://")
+                })
+        }) {
+            return Err(invalid_provider(
+                "provider metadata contains an invalid maintainer",
+            ));
+        }
         if &self.version != expected_version {
             return Err(invalid_provider(
                 "provider metadata version does not match the requested release",
@@ -159,11 +274,25 @@ impl ProviderMetadata {
                 .platforms
                 .iter()
                 .any(|candidate| !matches!(candidate.as_str(), "linux/amd64" | "linux/arm64"))
-            || !self.platforms.iter().any(|candidate| candidate == platform)
+            || !self
+                .platforms
+                .iter()
+                .any(|candidate| candidate == artifact_platform)
         {
             return Err(invalid_provider(
                 "provider metadata does not declare the selected platform",
             ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn compatibility(
+        &self,
+        platform_available: bool,
+        host_version: &Version,
+    ) -> ProviderArtifactCompatibility {
+        if !platform_available {
+            return ProviderArtifactCompatibility::UnsupportedPlatform;
         }
         if self
             .requires
@@ -171,12 +300,9 @@ impl ProviderMetadata {
             .as_ref()
             .is_some_and(|requirement| !requirement.matches(host_version))
         {
-            return Err(ApplicationError::new(
-                ApplicationErrorCode::InvalidRequest,
-                "provider release is incompatible with this Trakkin version",
-            ));
+            return ProviderArtifactCompatibility::IncompatibleTrakkin;
         }
-        Ok(())
+        ProviderArtifactCompatibility::Compatible
     }
 }
 
@@ -204,16 +330,55 @@ impl ProviderArtifactSource for OciProviderSource {
         })
     }
 
-    fn pull<'a>(
+    fn inspect<'a>(
         &'a self,
         source: &'a ProviderSourceSnapshot,
         provider_id: &'a str,
         version: &'a Version,
         platform: &'a str,
         host_version: &'a Version,
+    ) -> ProviderInspectionFuture<'a> {
+        Box::pin(async move {
+            let reference = tagged_reference(source, provider_id, version)?;
+            let request = ProviderArtifactRequest {
+                source,
+                provider_id,
+                version,
+                platform,
+                host_version,
+            };
+            Ok(self
+                .resolve_artifact(request, reference, None, true)
+                .await?
+                .inspection)
+        })
+    }
+
+    fn pull_pinned<'a>(
+        &'a self,
+        source: &'a ProviderSourceSnapshot,
+        provider_id: &'a str,
+        version: &'a Version,
+        index_digest: &'a str,
+        platform: &'a str,
+        host_version: &'a Version,
     ) -> ProviderArtifactFuture<'a> {
         Box::pin(async move {
-            self.pull_artifact(source, provider_id, version, platform, host_version)
+            if !valid_provider_digest(index_digest) {
+                return Err(invalid_provider("provider index digest is invalid"));
+            }
+            let repository = parse_repository_url(&source.repository_url)?;
+            let reference = format!("{}@{index_digest}", repository.reference)
+                .parse::<Reference>()
+                .map_err(invalid_provider)?;
+            let request = ProviderArtifactRequest {
+                source,
+                provider_id,
+                version,
+                platform,
+                host_version,
+            };
+            self.pull_artifact(request, reference, Some(index_digest), false)
                 .await
         })
     }
@@ -229,17 +394,49 @@ impl OciProviderSource {
 
     async fn pull_artifact(
         &self,
-        source: &ProviderSourceSnapshot,
-        provider_id: &str,
-        version: &Version,
-        platform: &str,
-        host_version: &Version,
+        request: ProviderArtifactRequest<'_>,
+        reference: Reference,
+        expected_index_digest: Option<&str>,
+        allow_incompatible: bool,
     ) -> Result<PulledProviderArtifact, ApplicationError> {
-        let repository = parse_repository_url(&source.repository_url)?;
-        let tag = provider_release_tag(provider_id, version)?;
-        let reference = format!("{}:{tag}", repository.reference)
-            .parse::<Reference>()
-            .map_err(invalid_provider)?;
+        let resolved = self
+            .resolve_artifact(
+                request,
+                reference,
+                expected_index_digest,
+                allow_incompatible,
+            )
+            .await?;
+        let binary = self
+            .pull_blob(
+                self.client(resolved.protocol),
+                &resolved.manifest_reference,
+                &resolved.binary_descriptor,
+                MAXIMUM_BINARY_BYTES,
+                "provider binary",
+            )
+            .await?;
+        let inspection = resolved.inspection;
+
+        Ok(PulledProviderArtifact {
+            metadata: inspection.metadata,
+            metadata_value: inspection.metadata_value,
+            binary,
+            index_digest: inspection.index_digest,
+            manifest_digest: inspection.manifest_digest,
+            metadata_digest: inspection.metadata_digest,
+            binary_digest: inspection.binary_digest,
+        })
+    }
+
+    async fn resolve_artifact(
+        &self,
+        request: ProviderArtifactRequest<'_>,
+        reference: Reference,
+        expected_index_digest: Option<&str>,
+        allow_incompatible: bool,
+    ) -> Result<ResolvedProviderArtifact, ApplicationError> {
+        let repository = parse_repository_url(&request.source.repository_url)?;
         let (index_bytes, index_digest) = self
             .client(repository.protocol)
             .pull_manifest_raw(
@@ -251,6 +448,11 @@ impl OciProviderSource {
             .map_err(provider_source_error)?;
         ensure_bounded(index_bytes.len(), MAXIMUM_INDEX_BYTES, "provider OCI index")?;
         verify_digest(&index_bytes, &index_digest, "provider OCI index")?;
+        if expected_index_digest.is_some_and(|expected| expected != index_digest) {
+            return Err(invalid_provider(
+                "provider OCI index does not match the requested digest",
+            ));
+        }
         let index =
             match serde_json::from_slice::<OciManifest>(&index_bytes).map_err(invalid_provider)? {
                 OciManifest::ImageIndex(index) => index,
@@ -259,7 +461,9 @@ impl OciProviderSource {
                 }
             };
         validate_index(&index)?;
-        let descriptor = select_platform_manifest(&index, platform)?;
+        let index_annotations = index.annotations.clone().unwrap_or_default();
+        let (descriptor, platform_available, artifact_platform) =
+            select_release_manifest(&index, request.platform, allow_incompatible)?;
         let manifest_reference = reference.clone_with_digest(descriptor.digest.clone());
         let (manifest_bytes, manifest_digest) = self
             .client(repository.protocol)
@@ -306,29 +510,49 @@ impl OciProviderSource {
                 "provider metadata",
             )
             .await?;
-        let binary = self
-            .pull_blob(
-                self.client(repository.protocol),
-                &manifest_reference,
-                binary_descriptor,
-                MAXIMUM_BINARY_BYTES,
-                "provider binary",
-            )
-            .await?;
         let metadata_value =
             serde_json::from_slice::<Value>(&metadata_bytes).map_err(invalid_provider)?;
         let metadata = serde_json::from_value::<ProviderMetadata>(metadata_value.clone())
             .map_err(invalid_provider)?;
-        metadata.validate(provider_id, version, platform, host_version)?;
+        metadata.validate(request.provider_id, request.version, &artifact_platform)?;
+        let compatibility = metadata.compatibility(platform_available, request.host_version);
+        if !allow_incompatible {
+            match compatibility {
+                ProviderArtifactCompatibility::Compatible => {}
+                ProviderArtifactCompatibility::UnsupportedPlatform => {
+                    return Err(ApplicationError::new(
+                        ApplicationErrorCode::ProviderNotFound,
+                        "provider release does not contain an artifact for this platform",
+                    ));
+                }
+                ProviderArtifactCompatibility::IncompatibleTrakkin => {
+                    return Err(ApplicationError::new(
+                        ApplicationErrorCode::InvalidRequest,
+                        "provider release is incompatible with this Trakkin version",
+                    ));
+                }
+            }
+        }
 
-        Ok(PulledProviderArtifact {
-            metadata,
-            metadata_value,
-            binary,
-            index_digest,
-            manifest_digest,
-            metadata_digest: metadata_descriptor.digest.clone(),
-            binary_digest: binary_descriptor.digest.clone(),
+        Ok(ResolvedProviderArtifact {
+            inspection: InspectedProviderArtifact {
+                metadata,
+                metadata_value,
+                index_annotations,
+                index_digest,
+                manifest_digest,
+                metadata_digest: metadata_descriptor.digest.clone(),
+                binary_digest: binary_descriptor.digest.clone(),
+                binary_size: descriptor_size(
+                    binary_descriptor.size,
+                    MAXIMUM_BINARY_BYTES,
+                    "provider binary",
+                )?,
+                compatibility,
+            },
+            manifest_reference,
+            binary_descriptor: binary_descriptor.clone(),
+            protocol: repository.protocol,
         })
     }
 
@@ -362,10 +586,11 @@ fn validate_index(index: &OciImageIndex) -> Result<(), ApplicationError> {
     Ok(())
 }
 
-fn select_platform_manifest<'a>(
+fn select_release_manifest<'a>(
     index: &'a OciImageIndex,
     platform: &str,
-) -> Result<&'a oci_client::manifest::ImageIndexEntry, ApplicationError> {
+    allow_fallback: bool,
+) -> Result<(&'a oci_client::manifest::ImageIndexEntry, bool, String), ApplicationError> {
     let Some((os, architecture)) = platform.split_once('/') else {
         return Err(invalid_provider("host OCI platform is invalid"));
     };
@@ -381,18 +606,53 @@ fn select_platform_manifest<'a>(
                 })
         })
         .collect::<Vec<_>>();
-    let [descriptor] = matches.as_slice() else {
+    if matches.len() > 1 {
+        return Err(invalid_provider(
+            "provider release contains multiple artifacts for this platform",
+        ));
+    }
+    if let [descriptor] = matches.as_slice() {
+        descriptor_size(
+            descriptor.size,
+            MAXIMUM_MANIFEST_BYTES,
+            "provider OCI manifest",
+        )?;
+        return Ok((descriptor, true, platform.to_owned()));
+    }
+    if !allow_fallback {
         return Err(ApplicationError::new(
             ApplicationErrorCode::ProviderNotFound,
-            "provider release does not contain exactly one artifact for this platform",
+            "provider release does not contain an artifact for this platform",
         ));
-    };
+    }
+    let descriptor = index
+        .manifests
+        .iter()
+        .find(|descriptor| {
+            descriptor.media_type == OCI_IMAGE_MEDIA_TYPE
+                && descriptor.platform.as_ref().is_some_and(|candidate| {
+                    candidate.variant.is_none()
+                        && matches!(candidate.os.to_string().as_str(), "linux")
+                        && matches!(
+                            candidate.architecture.to_string().as_str(),
+                            "amd64" | "arm64"
+                        )
+                })
+        })
+        .ok_or_else(|| {
+            invalid_provider("provider release contains no supported platform artifacts")
+        })?;
     descriptor_size(
         descriptor.size,
         MAXIMUM_MANIFEST_BYTES,
         "provider OCI manifest",
     )?;
-    Ok(descriptor)
+    let descriptor_platform = descriptor
+        .platform
+        .as_ref()
+        .map(|candidate| format!("{}/{}", candidate.os, candidate.architecture))
+        .ok_or_else(|| invalid_provider("provider platform descriptor is incomplete"))?;
+    Ok((descriptor, false, descriptor_platform))
 }
 
 fn validate_manifest(
@@ -470,7 +730,12 @@ fn verify_descriptor_bytes(
 fn verify_digest(bytes: &[u8], digest: &str, label: &'static str) -> Result<(), ApplicationError> {
     let expected = digest
         .strip_prefix("sha256:")
-        .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .filter(|value| {
+            value.len() == 64
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        })
         .ok_or_else(|| invalid_provider(format!("{label} uses an unsupported digest")))?;
     if hex::encode(Sha256::digest(bytes)) != expected {
         return Err(invalid_provider(format!(
@@ -478,6 +743,15 @@ fn verify_digest(bytes: &[u8], digest: &str, label: &'static str) -> Result<(), 
         )));
     }
     Ok(())
+}
+
+pub(crate) fn valid_provider_digest(value: &str) -> bool {
+    value.strip_prefix("sha256:").is_some_and(|digest| {
+        digest.len() == 64
+            && digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    })
 }
 
 pub(crate) fn valid_repository_url(value: &str) -> bool {
@@ -603,6 +877,18 @@ fn provider_release_tag(provider_id: &str, version: &Version) -> Result<String, 
     Ok(tag)
 }
 
+fn tagged_reference(
+    source: &ProviderSourceSnapshot,
+    provider_id: &str,
+    version: &Version,
+) -> Result<Reference, ApplicationError> {
+    let repository = parse_repository_url(&source.repository_url)?;
+    let tag = provider_release_tag(provider_id, version)?;
+    format!("{}:{tag}", repository.reference)
+        .parse::<Reference>()
+        .map_err(invalid_provider)
+}
+
 fn valid_provider_id(value: &str) -> bool {
     !value.is_empty()
         && value.bytes().all(|byte| {
@@ -626,7 +912,171 @@ fn invalid_provider(error: impl std::fmt::Display) -> ApplicationError {
 
 #[cfg(test)]
 mod tests {
+    use std::{path::Path, process::Command};
+
+    use time::OffsetDateTime;
+    use uuid::Uuid;
+
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "set TRAKKIN_TEST_PROVIDER_MUTATION_REPOSITORY_URL to a disposable loopback OCI repository and provide oras on PATH"]
+    async fn digest_pinned_pull_survives_release_tag_mutation() {
+        let repository_url = std::env::var("TRAKKIN_TEST_PROVIDER_MUTATION_REPOSITORY_URL")
+            .expect("TRAKKIN_TEST_PROVIDER_MUTATION_REPOSITORY_URL is set");
+        let repository = parse_repository_url(&repository_url).expect("repository URL is valid");
+        assert!(matches!(repository.protocol, RepositoryProtocol::Http));
+
+        let directory = tempfile::tempdir().expect("temporary artifact directory");
+        let provider_id = "dev.trakkin.digest-mutation";
+        let version = Version::new(1, 0, 0);
+        let platform = "linux/amd64";
+        let release_tag = provider_release_tag(provider_id, &version).expect("release tag");
+        let metadata = serde_json::to_vec(&serde_json::json!({
+            "schema": PROVIDER_SCHEMA,
+            "id": provider_id,
+            "name": "Digest mutation fixture",
+            "version": version,
+            "platforms": [platform]
+        }))
+        .expect("provider metadata");
+        std::fs::write(directory.path().join("provider.json"), metadata)
+            .expect("provider metadata is written");
+        std::fs::write(directory.path().join("provider"), b"provider revision A")
+            .expect("first provider revision is written");
+
+        let first_manifest = push_test_provider_manifest(
+            directory.path(),
+            &repository.reference,
+            "digest-mutation-a",
+            platform,
+        );
+        let first_digest =
+            move_test_release_tag(&repository.reference, &release_tag, &first_manifest);
+        let source = ProviderSourceSnapshot {
+            id: Uuid::nil(),
+            repository_url,
+            available_providers: Vec::new(),
+            trusted_at: OffsetDateTime::UNIX_EPOCH,
+            last_checked_at: None,
+            last_error: None,
+        };
+        let artifact_source = OciProviderSource::default();
+        let first_inspection = artifact_source
+            .inspect(
+                &source,
+                provider_id,
+                &version,
+                platform,
+                &Version::new(0, 0, 0),
+            )
+            .await
+            .expect("first release is inspected");
+        assert_eq!(first_inspection.index_digest, first_digest);
+
+        std::fs::write(directory.path().join("provider"), b"provider revision B")
+            .expect("second provider revision is written");
+        let second_manifest = push_test_provider_manifest(
+            directory.path(),
+            &repository.reference,
+            "digest-mutation-b",
+            platform,
+        );
+        let second_digest =
+            move_test_release_tag(&repository.reference, &release_tag, &second_manifest);
+        let second_inspection = artifact_source
+            .inspect(
+                &source,
+                provider_id,
+                &version,
+                platform,
+                &Version::new(0, 0, 0),
+            )
+            .await
+            .expect("moved release tag is inspected");
+        assert_eq!(second_inspection.index_digest, second_digest);
+        assert_ne!(first_digest, second_digest);
+
+        let pulled = artifact_source
+            .pull_pinned(
+                &source,
+                provider_id,
+                &version,
+                &first_digest,
+                platform,
+                &Version::new(0, 0, 0),
+            )
+            .await
+            .expect("original digest remains pullable");
+        assert_eq!(pulled.index_digest, first_digest);
+        assert_eq!(pulled.binary, b"provider revision A");
+    }
+
+    fn push_test_provider_manifest(
+        directory: &Path,
+        repository: &str,
+        tag: &str,
+        platform: &str,
+    ) -> String {
+        run_oras(
+            Some(directory),
+            &[
+                "push".to_owned(),
+                "--plain-http".to_owned(),
+                "--format".to_owned(),
+                "go-template={{.digest}}".to_owned(),
+                "--artifact-type".to_owned(),
+                PROVIDER_ARTIFACT_TYPE.to_owned(),
+                "--artifact-platform".to_owned(),
+                platform.to_owned(),
+                format!("{repository}:{tag}"),
+                format!("provider.json:{PROVIDER_METADATA_MEDIA_TYPE}"),
+                format!("provider:{PROVIDER_BINARY_MEDIA_TYPE}"),
+            ],
+        )
+    }
+
+    fn move_test_release_tag(repository: &str, tag: &str, manifest_digest: &str) -> String {
+        run_oras(
+            None,
+            &[
+                "manifest".to_owned(),
+                "index".to_owned(),
+                "create".to_owned(),
+                "--plain-http".to_owned(),
+                "--artifact-type".to_owned(),
+                PROVIDER_ARTIFACT_TYPE.to_owned(),
+                format!("{repository}:{tag}"),
+                manifest_digest.to_owned(),
+            ],
+        );
+        run_oras(
+            None,
+            &[
+                "resolve".to_owned(),
+                "--plain-http".to_owned(),
+                format!("{repository}:{tag}"),
+            ],
+        )
+    }
+
+    fn run_oras(directory: Option<&Path>, arguments: &[String]) -> String {
+        let mut command = Command::new("oras");
+        command.args(arguments);
+        if let Some(directory) = directory {
+            command.current_dir(directory);
+        }
+        let output = command.output().expect("oras is available on PATH");
+        assert!(
+            output.status.success(),
+            "oras failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout)
+            .expect("oras output is UTF-8")
+            .trim()
+            .to_owned()
+    }
 
     #[test]
     fn metadata_requires_identity_platform_and_compatible_host() {
@@ -639,38 +1089,33 @@ mod tests {
             platforms: vec!["linux/amd64".to_owned()],
             requires: ProviderRequirements {
                 trakkin: Some(VersionReq::parse(">=0.1.0, <1.0.0").expect("requirement")),
+                provider_sdk: None,
+                mapping: None,
                 _additional: BTreeMap::new(),
             },
+            repo: Some("https://github.com/trakkin/trakkin-community-providers".to_owned()),
+            homepage: None,
+            documentation: None,
+            license: Some("Apache-2.0".to_owned()),
+            maintainer: Some(ProviderMaintainer {
+                name: "Trakkin".to_owned(),
+                email: None,
+                url: Some("https://trakkin.dev".to_owned()),
+            }),
             _additional: BTreeMap::new(),
         };
 
         metadata
-            .validate(
-                "dev.trakkin.fixture",
-                &Version::new(1, 2, 3),
-                "linux/amd64",
-                &Version::new(0, 2, 0),
-            )
+            .validate("dev.trakkin.fixture", &Version::new(1, 2, 3), "linux/amd64")
             .expect("metadata is compatible");
         assert!(
             metadata
-                .validate(
-                    "dev.trakkin.fixture",
-                    &Version::new(1, 2, 3),
-                    "linux/arm64",
-                    &Version::new(0, 2, 0),
-                )
+                .validate("dev.trakkin.fixture", &Version::new(1, 2, 3), "linux/arm64",)
                 .is_err()
         );
-        assert!(
-            metadata
-                .validate(
-                    "dev.trakkin.fixture",
-                    &Version::new(1, 2, 3),
-                    "linux/amd64",
-                    &Version::new(1, 0, 0),
-                )
-                .is_err()
+        assert_eq!(
+            metadata.compatibility(true, &Version::new(1, 0, 0)),
+            ProviderArtifactCompatibility::IncompatibleTrakkin
         );
     }
 
@@ -679,6 +1124,19 @@ mod tests {
         assert!(valid_provider_id("dev.trakkin.fixture"));
         assert!(!valid_provider_id("dev..fixture"));
         assert!(!valid_provider_id("Dev.trakkin.fixture"));
+    }
+
+    #[test]
+    fn provider_digests_require_lowercase_sha256() {
+        assert!(valid_provider_digest(&format!("sha256:{}", "a".repeat(64))));
+        assert!(!valid_provider_digest(&format!(
+            "sha256:{}",
+            "A".repeat(64)
+        )));
+        assert!(!valid_provider_digest(&format!(
+            "sha512:{}",
+            "a".repeat(64)
+        )));
     }
 
     #[test]

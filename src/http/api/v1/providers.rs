@@ -10,13 +10,14 @@ use uuid::Uuid;
 
 use crate::{
     application::providers::{
-        ChangeProviderUpdatePolicy, InstallProvider, RefreshProviderSource, RemoveProvider,
-        RemoveProviderSource, TrustProviderSource, UpdateProvider,
+        ChangeProviderUpdatePolicy, InspectProviderRelease, InstallProvider, RefreshProviderSource,
+        RemoveProvider, RemoveProviderSource, TrustProviderSource, UpdateProvider,
     },
     http::{
         dto::providers::{
-            ChangeProviderUpdatePolicyRequest, InstallProviderRequest, ProviderResponse,
-            ProviderSourceResponse, TrustProviderSourceRequest, UpdateProviderRequest,
+            ChangeProviderUpdatePolicyRequest, InstallProviderRequest,
+            ProviderReleaseInspectionResponse, ProviderResponse, ProviderSourceResponse,
+            TrustProviderSourceRequest, UpdateProviderRequest,
         },
         error::{ErrorResponse, HttpError},
     },
@@ -37,6 +38,10 @@ pub(super) fn router() -> Router<HttpState> {
         .route(
             "/api/v1/provider-sources/{source_id}/refresh",
             post(refresh_provider_source),
+        )
+        .route(
+            "/api/v1/provider-sources/{source_id}/providers/{provider_id}/releases/{version}",
+            get(inspect_provider_release),
         )
         .route(
             "/api/v1/providers",
@@ -121,6 +126,24 @@ pub(super) async fn remove_provider_source(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(get, path = "/api/v1/provider-sources/{source_id}/providers/{provider_id}/releases/{version}", params(("source_id" = Uuid, Path), ("provider_id" = String, Path), ("version" = String, Path)), responses((status = 200, body = ProviderReleaseInspectionResponse), (status = 400, body = ErrorResponse), (status = 404, body = ErrorResponse), (status = 502, body = ErrorResponse), (status = 503, body = ErrorResponse)), tag = "providers")]
+pub(super) async fn inspect_provider_release(
+    State(state): State<HttpState>,
+    Path(path): Path<ReleasePath>,
+) -> Result<Json<ProviderReleaseInspectionResponse>, HttpError> {
+    let inspection = state
+        .application
+        .inspect_provider_release(InspectProviderRelease {
+            source_id: parse_source_id(&path.source_id)?,
+            provider_id: path.provider_id,
+            version: path.version,
+        })
+        .await?;
+    Ok(Json(ProviderReleaseInspectionResponse::from_snapshot(
+        inspection,
+    )?))
+}
+
 #[utoipa::path(get, path = "/api/v1/providers", responses((status = 200, body = [ProviderResponse]), (status = 500, body = ErrorResponse)), tag = "providers")]
 pub(super) async fn list_providers(
     State(state): State<HttpState>,
@@ -150,6 +173,7 @@ pub(super) async fn install_provider(
             source_id: payload.source_id,
             provider_id: payload.provider_id,
             version: payload.version,
+            index_digest: payload.index_digest,
             update_policy: payload.update_policy.into(),
             installed_at: OffsetDateTime::now_utc(),
         })
@@ -174,6 +198,7 @@ pub(super) async fn update_provider(
             provider_id: path.provider_id,
             artifact_id: generate_uuid()?,
             version: payload.version,
+            index_digest: payload.index_digest,
             updated_at: OffsetDateTime::now_utc(),
         })
         .await?;
@@ -231,6 +256,13 @@ pub(super) struct ProviderPath {
 #[derive(Deserialize)]
 pub(super) struct SourcePath {
     source_id: String,
+}
+
+#[derive(Deserialize)]
+pub(super) struct ReleasePath {
+    source_id: String,
+    provider_id: String,
+    version: String,
 }
 
 #[cfg(test)]

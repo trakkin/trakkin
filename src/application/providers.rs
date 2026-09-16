@@ -1,4 +1,4 @@
-use std::{future::Future, path::PathBuf, pin::Pin, sync::Arc};
+use std::{collections::BTreeMap, future::Future, path::PathBuf, pin::Pin, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -69,6 +69,45 @@ pub struct ProviderSnapshot {
     pub updated_at: OffsetDateTime,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProviderReleaseCompatibility {
+    Compatible,
+    UnsupportedPlatform,
+    IncompatibleTrakkin,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProviderMaintainerSnapshot {
+    pub name: String,
+    pub email: Option<String>,
+    pub url: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProviderReleaseInspectionSnapshot {
+    pub provider_id: String,
+    pub version: String,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub repository_url: Option<String>,
+    pub homepage_url: Option<String>,
+    pub documentation_url: Option<String>,
+    pub license: Option<String>,
+    pub maintainer: Option<ProviderMaintainerSnapshot>,
+    pub distributor: Option<String>,
+    pub published_at: Option<OffsetDateTime>,
+    pub revision: Option<String>,
+    pub platforms: Vec<String>,
+    pub requirements: BTreeMap<String, String>,
+    pub compatibility: ProviderReleaseCompatibility,
+    pub platform: String,
+    pub index_digest: String,
+    pub manifest_digest: Option<String>,
+    pub metadata_digest: Option<String>,
+    pub binary_digest: Option<String>,
+    pub binary_size: Option<usize>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TrustProviderSource {
     pub source_id: Uuid,
@@ -88,11 +127,19 @@ pub struct RemoveProviderSource {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InspectProviderRelease {
+    pub source_id: Uuid,
+    pub provider_id: String,
+    pub version: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InstallProvider {
     pub artifact_id: Uuid,
     pub source_id: Uuid,
     pub provider_id: String,
     pub version: String,
+    pub index_digest: String,
     pub update_policy: ProviderUpdatePolicy,
     pub installed_at: OffsetDateTime,
 }
@@ -102,6 +149,7 @@ pub struct UpdateProvider {
     pub provider_id: String,
     pub artifact_id: Uuid,
     pub version: String,
+    pub index_digest: String,
     pub updated_at: OffsetDateTime,
 }
 
@@ -129,6 +177,10 @@ pub trait ProviderRegistryApi: Send + Sync {
         command: RefreshProviderSource,
     ) -> ProviderApiFuture<'_, ProviderSourceSnapshot>;
     fn remove_provider_source(&self, command: RemoveProviderSource) -> ProviderApiFuture<'_, ()>;
+    fn inspect_provider_release(
+        &self,
+        command: InspectProviderRelease,
+    ) -> ProviderApiFuture<'_, ProviderReleaseInspectionSnapshot>;
     fn list_providers(&self) -> ProviderApiFuture<'_, Vec<ProviderSnapshot>>;
     fn install_provider(&self, command: InstallProvider)
     -> ProviderApiFuture<'_, ProviderSnapshot>;

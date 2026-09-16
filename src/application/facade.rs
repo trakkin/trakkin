@@ -32,7 +32,8 @@ use super::{
         ExactMappingRevision, MappingResolution, MappingResolutionInteraction, ResolutionRequest,
     },
     providers::{
-        ChangeProviderUpdatePolicy, InstallProvider, ProviderSnapshot, ProviderSourceSnapshot,
+        ChangeProviderUpdatePolicy, InspectProviderRelease, InstallProvider,
+        ProviderReleaseInspectionSnapshot, ProviderSnapshot, ProviderSourceSnapshot,
         RefreshProviderSource, RemoveProvider, RemoveProviderSource, SharedProviderRegistry,
         TrustProviderSource, UpdateProvider,
     },
@@ -330,6 +331,10 @@ pub trait ApplicationApi: Send + Sync {
         command: RefreshProviderSource,
     ) -> ApplicationFuture<'_, ProviderSourceSnapshot>;
     fn remove_provider_source(&self, command: RemoveProviderSource) -> ApplicationFuture<'_, ()>;
+    fn inspect_provider_release(
+        &self,
+        command: InspectProviderRelease,
+    ) -> ApplicationFuture<'_, ProviderReleaseInspectionSnapshot>;
     fn list_providers(&self) -> ApplicationFuture<'_, Vec<ProviderSnapshot>>;
     fn install_provider(&self, command: InstallProvider)
     -> ApplicationFuture<'_, ProviderSnapshot>;
@@ -1143,6 +1148,13 @@ where
 
     fn remove_provider_source(&self, command: RemoveProviderSource) -> ApplicationFuture<'_, ()> {
         self.providers.remove_provider_source(command)
+    }
+
+    fn inspect_provider_release(
+        &self,
+        command: InspectProviderRelease,
+    ) -> ApplicationFuture<'_, ProviderReleaseInspectionSnapshot> {
+        self.providers.inspect_provider_release(command)
     }
 
     fn list_providers(&self) -> ApplicationFuture<'_, Vec<ProviderSnapshot>> {

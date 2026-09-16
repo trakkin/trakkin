@@ -23,9 +23,10 @@ use trakkin::{
         },
         error::{ApplicationError, ApplicationErrorCode},
         providers::{
-            ChangeProviderUpdatePolicy, InstallProvider, ProviderApiFuture, ProviderRegistryApi,
-            ProviderSnapshot, ProviderSourceSnapshot, RefreshProviderSource, RemoveProvider,
-            RemoveProviderSource, SharedProviderRegistry, TrustProviderSource, UpdateProvider,
+            ChangeProviderUpdatePolicy, InspectProviderRelease, InstallProvider, ProviderApiFuture,
+            ProviderRegistryApi, ProviderReleaseInspectionSnapshot, ProviderSnapshot,
+            ProviderSourceSnapshot, RefreshProviderSource, RemoveProvider, RemoveProviderSource,
+            SharedProviderRegistry, TrustProviderSource, UpdateProvider,
         },
         reference_lookup::{
             LookupPortableReferences, ReferenceLookupFuture, ReferenceLookupInteraction,
@@ -79,6 +80,13 @@ impl ProviderRegistryApi for StaticProviderRegistry {
     }
 
     fn remove_provider_source(&self, _command: RemoveProviderSource) -> ProviderApiFuture<'_, ()> {
+        unsupported_provider_operation()
+    }
+
+    fn inspect_provider_release(
+        &self,
+        _command: InspectProviderRelease,
+    ) -> ProviderApiFuture<'_, ProviderReleaseInspectionSnapshot> {
         unsupported_provider_operation()
     }
 

@@ -1,14 +1,39 @@
 <script lang="ts">
-import { Check, Download, PackageOpen, Plus, RefreshCw, ShieldCheck, Trash2, TriangleAlert, X } from "@lucide/svelte";
+import {
+  Check,
+  Download,
+  PackageOpen,
+  Plus,
+  RefreshCw,
+  Search,
+  ShieldCheck,
+  Trash2,
+  TriangleAlert,
+  X,
+} from "@lucide/svelte";
 import { onDestroy, onMount } from "svelte";
-import { AlertDialog, Button, Checkbox, Chip, PageHeader, Panel, Select, Spinner, TextInput } from "$lib";
+import {
+  AlertDialog,
+  Button,
+  Checkbox,
+  Chip,
+  Dialog,
+  IconButton,
+  PageHeader,
+  Panel,
+  Select,
+  Spinner,
+  TextInput,
+} from "$lib";
 import { ApiRequestError } from "$lib/api/client";
 import {
   changeProviderUpdatePolicy,
+  inspectProviderRelease,
   installProvider,
   listProviderSources,
   listProviders,
   type Provider,
+  type ProviderReleaseInspection,
   type ProviderSource,
   type ProviderUpdatePolicy,
   refreshProviderSource,
@@ -17,6 +42,7 @@ import {
   trustProviderSource,
   updateProvider,
 } from "$lib/api/providers";
+import ProviderReleaseReview from "./ProviderReleaseReview.svelte";
 
 type RemovalTarget = { kind: "provider"; provider: Provider } | { kind: "source"; source: ProviderSource };
 type SourceProviderEntry = { providerId: string; versions: string[]; installed?: Provider };
@@ -39,10 +65,16 @@ let installSourceId = $state("");
 let installProviderId = $state("");
 let providerVersion = $state("");
 let installPolicy = $state<ProviderUpdatePolicy>("manual");
+let releaseReviewOpen = $state(false);
+let releaseInspection = $state<ProviderReleaseInspection>();
+let inspectionLoading = $state(false);
+let inspectionErrorMessage = $state("");
 let removeOpen = $state(false);
 let pendingRemoval = $state<RemovalTarget>();
 let removalErrorMessage = $state("");
 let loadSequence = 0;
+let inspectionSequence = 0;
+let inspectionController: AbortController | undefined;
 const lifecycleController = new AbortController();
 
 let versionItems = $derived(
@@ -51,6 +83,9 @@ let versionItems = $derived(
     ?.availableProviders.find((available) => available.providerId === installProviderId)
     ?.versions.map((version) => ({ value: version, label: version })) ?? [],
 );
+let selectedInstalledProvider = $derived(
+  providers.find((provider) => provider.sourceId === installSourceId && provider.providerId === installProviderId),
+);
 
 onMount(() => {
   void loadProviders(lifecycleController.signal);
@@ -58,6 +93,8 @@ onMount(() => {
 
 onDestroy(() => {
   loadSequence += 1;
+  inspectionSequence += 1;
+  inspectionController?.abort();
   lifecycleController.abort();
 });
 
@@ -103,17 +140,31 @@ async function addSource() {
 }
 
 async function installSelectedProvider() {
-  if (!installSourceId || !installProviderId || !providerVersion) return;
-  await runMutation("provider:install", async (signal) => {
-    await installProvider(
-      {
-        sourceId: installSourceId,
-        providerId: installProviderId,
-        version: providerVersion,
-        updatePolicy: installPolicy,
-      },
-      signal,
-    );
+  const inspection = releaseInspection;
+  if (!installSourceId || !installProviderId || !providerVersion || !inspection) return;
+  if (inspection.compatibility !== "compatible") return;
+  const installed = providers.find((provider) => provider.providerId === installProviderId);
+  if (installed?.version === providerVersion && installed.indexDigest === inspection.indexDigest) return;
+  const key = installed ? `provider:${installed.providerId}` : "provider:install";
+  await runMutation(key, async (signal) => {
+    if (installed) {
+      await updateProvider(
+        installed.providerId,
+        { version: providerVersion, indexDigest: inspection.indexDigest },
+        signal,
+      );
+    } else {
+      await installProvider(
+        {
+          sourceId: installSourceId,
+          providerId: installProviderId,
+          version: providerVersion,
+          indexDigest: inspection.indexDigest,
+          updatePolicy: installPolicy,
+        },
+        signal,
+      );
+    }
     cancelProviderInstall();
   });
 }
@@ -122,12 +173,10 @@ async function refreshSource(source: ProviderSource) {
   await runMutation(`source:${source.id}`, (signal) => refreshProviderSource(source.id, signal));
 }
 
-async function applyUpdate(provider: Provider) {
+function requestProviderUpdate(provider: Provider) {
   const update = provider.availableUpdate;
   if (!update) return;
-  await runMutation(`provider:${provider.providerId}`, (signal) =>
-    updateProvider(provider.providerId, { version: update.version }, signal),
-  );
+  requestProviderRelease(provider.sourceId, provider.providerId, update.version);
 }
 
 async function changePolicy(provider: Provider, value: string) {
@@ -212,30 +261,97 @@ async function runMutation(
 }
 
 function requestProviderInstall(sourceId: string, providerId: string) {
+  requestProviderRelease(sourceId, providerId);
+}
+
+function requestProviderRelease(sourceId: string, providerId: string, version = "") {
   installSourceId = sourceId;
   installProviderId = providerId;
-  providerVersion = "";
+  providerVersion = version;
+  releaseReviewOpen = true;
   showSourceForm = false;
   synchronizeInstallSelection();
+  void inspectSelectedRelease();
 }
 
 function cancelProviderInstall() {
+  inspectionSequence += 1;
+  inspectionController?.abort();
+  inspectionController = undefined;
   installSourceId = "";
   installProviderId = "";
   providerVersion = "";
+  releaseReviewOpen = false;
+  releaseInspection = undefined;
+  inspectionLoading = false;
+  inspectionErrorMessage = "";
+}
+
+function changeReleaseReviewOpen(open: boolean) {
+  if (open) releaseReviewOpen = true;
+  else cancelProviderInstall();
 }
 
 function synchronizeInstallSelection() {
   if (!installSourceId || !installProviderId) return;
   const source = sources.find((candidate) => candidate.id === installSourceId);
   const availableProvider = source?.availableProviders.find((available) => available.providerId === installProviderId);
-  const alreadyInstalled = providers.some((provider) => provider.providerId === installProviderId);
-  if (!source || !availableProvider || alreadyInstalled) {
+  if (!source || !availableProvider) {
     cancelProviderInstall();
     return;
   }
   const versions = availableProvider.versions;
   if (!versions.includes(providerVersion)) providerVersion = versions[0] ?? "";
+}
+
+async function inspectSelectedRelease() {
+  const sourceId = installSourceId;
+  const providerId = installProviderId;
+  const version = providerVersion;
+  if (!sourceId || !providerId || !version) {
+    releaseInspection = undefined;
+    return;
+  }
+  const sequence = ++inspectionSequence;
+  inspectionController?.abort();
+  const controller = new AbortController();
+  inspectionController = controller;
+  releaseInspection = undefined;
+  inspectionErrorMessage = "";
+  inspectionLoading = true;
+  try {
+    const inspection = await inspectProviderRelease(sourceId, providerId, version, controller.signal);
+    if (sequence === inspectionSequence) releaseInspection = inspection;
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") return;
+    if (sequence === inspectionSequence) {
+      inspectionErrorMessage = messageFor(error, "Provider release could not be inspected");
+    }
+  } finally {
+    if (sequence === inspectionSequence) inspectionLoading = false;
+  }
+}
+
+function releaseActionLabel(installed: Provider | undefined): string {
+  if (!installed) return "Install provider";
+  if (!releaseInspection) return "Update provider";
+  if (installed.version === releaseInspection.version && installed.indexDigest === releaseInspection.indexDigest) {
+    return "Installed";
+  }
+  return installed.version === releaseInspection.version ? "Replace provider" : "Update provider";
+}
+
+function releaseActionDisabled(installed: Provider | undefined): boolean {
+  if (releaseInspection?.compatibility !== "compatible") return true;
+  return Boolean(
+    installed &&
+      installed.version === releaseInspection.version &&
+      installed.indexDigest === releaseInspection.indexDigest,
+  );
+}
+
+function releasePending(installed: Provider | undefined): boolean {
+  return Boolean(pending[installed ? `provider:${installed.providerId}` : "provider:install"]);
 }
 
 function sourceProviderEntries(source: ProviderSource): SourceProviderEntry[] {
@@ -594,7 +710,7 @@ function messageFor(error: unknown, fallback: string): string {
                 {:else}
                   <ul
                     aria-label={`Providers from ${source.repositoryUrl}`}
-                    class="max-h-96 overflow-y-auto overscroll-y-contain border-t border-border [scrollbar-gutter:stable]"
+                    class="max-h-96 overflow-y-auto overscroll-y-contain border-t border-border scrollbar-gutter-stable"
                   >
                     {#each sourceProviders as entry (entry.providerId)}
                       {@const installed = entry.installed}
@@ -668,7 +784,7 @@ function messageFor(error: unknown, fallback: string): string {
                               {#if installed.availableUpdate && installed.updatePolicy === "manual"}
                                 <Button
                                   disabled={Boolean(pending[`provider:${entry.providerId}`])}
-                                  onclick={() => applyUpdate(installed)}
+                                  onclick={() => requestProviderUpdate(installed)}
                                   size="sm"
                                   variant="primary"
                                 >
@@ -683,6 +799,20 @@ function messageFor(error: unknown, fallback: string): string {
                                   Update
                                 </Button>
                               {/if}
+                              <Button
+                                aria-label={`Review current release for ${installed.name ?? entry.providerId}`}
+                                class="max-sm:size-8 max-sm:px-1"
+                                disabled={Boolean(pending[`provider:${entry.providerId}`])}
+                                onclick={() => requestProviderRelease(installed.sourceId, installed.providerId, installed.version)}
+                                size="sm"
+                                variant="secondary"
+                              >
+                                <Search
+                                  aria-hidden="true"
+                                  size={14}
+                                />
+                                <span class="hidden sm:inline">Review</span>
+                              </Button>
                               <Select
                                 ariaLabel={`Update policy for ${installed.name ?? entry.providerId}`}
                                 disabled={Boolean(pending[`provider:${entry.providerId}`])}
@@ -742,56 +872,6 @@ function messageFor(error: unknown, fallback: string): string {
                             {/if}
                           </div>
                         </div>
-
-                        {#if installSourceId === source.id && installProviderId === entry.providerId}
-                          <form
-                            class="mt-3 grid gap-3 border-t border-border pt-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] md:items-end"
-                            onsubmit={(event) => {
-                              event.preventDefault();
-                              void installSelectedProvider();
-                            }}
-                          >
-                            <div class="grid gap-1.5 text-label text-text-muted">
-                              <span>Version</span>
-                              <Select
-                                ariaLabel={`Version for ${entry.providerId}`}
-                                disabled={versionItems.length === 0}
-                                items={versionItems}
-                                onValueChange={(value) => (providerVersion = value)}
-                                triggerClass="w-full"
-                                value={providerVersion}
-                              />
-                            </div>
-                            <div class="grid gap-1.5 text-label text-text-muted">
-                              <span>Update policy</span>
-                              <Select
-                                ariaLabel={`Update policy for ${entry.providerId}`}
-                                items={policyItems}
-                                onValueChange={(value) => {
-                                  installPolicy = value as ProviderUpdatePolicy;
-                                }}
-                                triggerClass="w-full"
-                                value={installPolicy}
-                              />
-                            </div>
-                            <Button
-                              disabled={pending["provider:install"] || !providerVersion}
-                              id="confirm-provider-install"
-                              type="submit"
-                              variant="primary"
-                            >
-                              {#if pending["provider:install"]}
-                                <Spinner size={14} />
-                              {:else}
-                                <PackageOpen
-                                  aria-hidden="true"
-                                  size={14}
-                                />
-                              {/if}
-                              Install provider
-                            </Button>
-                          </form>
-                        {/if}
                       </li>
                     {/each}
                   </ul>
@@ -803,6 +883,153 @@ function messageFor(error: unknown, fallback: string): string {
       </section>
     </div>
   </div>
+
+  <Dialog.Root
+    onOpenChange={changeReleaseReviewOpen}
+    bind:open={releaseReviewOpen}
+  >
+    <Dialog.Drawer style={releaseReviewOpen ? "translate: none" : undefined}>
+      <form
+        class="flex min-h-0 flex-1 flex-col"
+        onsubmit={(event) => {
+          event.preventDefault();
+          void installSelectedProvider();
+        }}
+      >
+        <header class="flex shrink-0 items-start justify-between gap-4 border-b border-border-strong px-4 py-4 sm:px-5">
+          <div class="min-w-0">
+            <Dialog.Title class="text-title font-semibold text-text-primary">
+              {selectedInstalledProvider ? "Review provider release" : "Install provider"}
+            </Dialog.Title>
+            <Dialog.Description
+              class="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 font-mono text-meta text-text-muted"
+            >
+              <span class="wrap-break-word">{installProviderId}</span>
+              {#if providerVersion}
+                <span aria-hidden="true">&middot;</span>
+                <span>v{providerVersion}</span>
+              {/if}
+            </Dialog.Description>
+          </div>
+          <IconButton
+            label="Close provider release review"
+            onclick={() => cancelProviderInstall()}
+            size="sm"
+            type="button"
+          >
+            <X
+              aria-hidden="true"
+              size={15}
+            />
+          </IconButton>
+        </header>
+
+        <div class="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto">
+          {#if !selectedInstalledProvider}
+            <section
+              class="grid gap-3 border-b border-border-subtle bg-surface-muted/35 px-4 py-4 sm:grid-cols-2 sm:px-5"
+            >
+              <div class="grid gap-1.5 text-label text-text-muted">
+                <span>Version</span>
+                <Select
+                  ariaLabel={`Version for ${installProviderId}`}
+                  disabled={versionItems.length === 0}
+                  items={versionItems}
+                  onValueChange={(value) => {
+                    providerVersion = value;
+                    void inspectSelectedRelease();
+                  }}
+                  triggerClass="w-full"
+                  value={providerVersion}
+                />
+              </div>
+              <div class="grid gap-1.5 text-label text-text-muted">
+                <span>Update policy</span>
+                <Select
+                  ariaLabel={`Update policy for ${installProviderId}`}
+                  items={policyItems}
+                  onValueChange={(value) => {
+                    installPolicy = value as ProviderUpdatePolicy;
+                  }}
+                  triggerClass="w-full"
+                  value={installPolicy}
+                />
+              </div>
+            </section>
+          {/if}
+
+          {#if inspectionLoading}
+            <div
+              class="flex min-h-64 items-center justify-center gap-2 px-4 text-label text-text-muted sm:px-5"
+              role="status"
+            >
+              <Spinner size={16} />
+              Inspecting release...
+            </div>
+          {:else if inspectionErrorMessage}
+            <div class="flex min-h-64 flex-col items-center justify-center gap-4 px-6 text-center">
+              <Panel
+                class="max-w-md px-4 py-3 text-label text-danger"
+                role="alert"
+                tone="danger"
+              >
+                {inspectionErrorMessage}
+              </Panel>
+              <Button
+                onclick={() => void inspectSelectedRelease()}
+                size="sm"
+                type="button"
+                variant="secondary"
+              >
+                <RefreshCw
+                  aria-hidden="true"
+                  size={14}
+                />
+                Retry inspection
+              </Button>
+            </div>
+          {:else if releaseInspection}
+            <div class="px-4 py-5 sm:px-5">
+              <ProviderReleaseReview inspection={releaseInspection} />
+            </div>
+          {/if}
+        </div>
+
+        <footer
+          class="flex shrink-0 items-center justify-end gap-2 border-t border-border-strong bg-surface-raised px-4 py-3 sm:px-5"
+        >
+          <Button
+            onclick={() => cancelProviderInstall()}
+            type="button"
+            variant="ghost"
+          >
+            Cancel
+          </Button>
+          <Button
+            disabled={releaseActionDisabled(selectedInstalledProvider) || releasePending(selectedInstalledProvider)}
+            id="confirm-provider-install"
+            type="submit"
+            variant="primary"
+          >
+            {#if releasePending(selectedInstalledProvider)}
+              <Spinner size={14} />
+            {:else if selectedInstalledProvider}
+              <Download
+                aria-hidden="true"
+                size={14}
+              />
+            {:else}
+              <PackageOpen
+                aria-hidden="true"
+                size={14}
+              />
+            {/if}
+            {releaseActionLabel(selectedInstalledProvider)}
+          </Button>
+        </footer>
+      </form>
+    </Dialog.Drawer>
+  </Dialog.Root>
 
   <AlertDialog.Root
     onOpenChange={changeRemoveOpen}

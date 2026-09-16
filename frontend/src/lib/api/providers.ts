@@ -3,6 +3,7 @@ import type { components, operations } from "./generated/schema.ts";
 
 export type ProviderSource = components["schemas"]["ProviderSourceResponse"];
 export type Provider = components["schemas"]["ProviderResponse"];
+export type ProviderReleaseInspection = components["schemas"]["ProviderReleaseInspectionResponse"];
 export type ProviderUpdatePolicy = components["schemas"]["ProviderUpdatePolicyValue"];
 export type TrustProviderSourceInput =
   operations["trust_provider_source"]["requestBody"]["content"]["application/json"];
@@ -32,6 +33,18 @@ export function removeProviderSource(sourceId: string, signal?: AbortSignal): Pr
 
 export function listProviders(signal?: AbortSignal): Promise<Provider[]> {
   return request("/api/v1/providers", { signal });
+}
+
+export function inspectProviderRelease(
+  sourceId: string,
+  providerId: string,
+  version: string,
+  signal?: AbortSignal,
+): Promise<ProviderReleaseInspection> {
+  return request(
+    `/api/v1/provider-sources/${encodeURIComponent(sourceId)}/providers/${encodeURIComponent(providerId)}/releases/${encodeURIComponent(version)}`,
+    { signal },
+  );
 }
 
 export function installProvider(input: InstallProviderInput, signal?: AbortSignal): Promise<Provider> {

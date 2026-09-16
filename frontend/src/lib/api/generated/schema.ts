@@ -260,6 +260,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/provider-sources/{source_id}/providers/{provider_id}/releases/{version}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["inspect_provider_release"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/provider-sources/{source_id}/refresh": {
         parameters: {
             query?: never;
@@ -1216,6 +1232,7 @@ export interface components {
             start: string;
         };
         InstallProviderRequest: {
+            indexDigest: string;
             providerId: string;
             /** Format: uuid */
             sourceId: string;
@@ -1416,6 +1433,38 @@ export interface components {
         };
         /** @enum {string} */
         PreviewMembershipEffectResponse: "create" | "update";
+        ProviderMaintainerResponse: {
+            email?: string | null;
+            name: string;
+            url?: string | null;
+        };
+        /** @enum {string} */
+        ProviderReleaseCompatibilityValue: "compatible" | "unsupportedPlatform" | "incompatibleTrakkin";
+        ProviderReleaseInspectionResponse: {
+            binaryDigest?: string | null;
+            binarySize?: number | null;
+            compatibility: components["schemas"]["ProviderReleaseCompatibilityValue"];
+            description?: string | null;
+            distributor?: string | null;
+            documentationUrl?: string | null;
+            homepageUrl?: string | null;
+            indexDigest: string;
+            license?: string | null;
+            maintainer?: null | components["schemas"]["ProviderMaintainerResponse"];
+            manifestDigest?: string | null;
+            metadataDigest?: string | null;
+            name?: string | null;
+            platform: string;
+            platforms: string[];
+            providerId: string;
+            publishedAt?: string | null;
+            repositoryUrl?: string | null;
+            requirements: {
+                [key: string]: string;
+            };
+            revision?: string | null;
+            version: string;
+        };
         ProviderResponse: {
             availableUpdate?: null | components["schemas"]["ProviderUpdateResponse"];
             binaryDigest: string;
@@ -1778,6 +1827,7 @@ export interface components {
             namespaces: string[] | null;
         };
         UpdateProviderRequest: {
+            indexDigest: string;
             version: string;
         };
         UpdateSyncPolicyRequest: {
@@ -2579,6 +2629,61 @@ export interface operations {
                 };
             };
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    inspect_provider_release: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source_id: string;
+                provider_id: string;
+                version: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderReleaseInspectionResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

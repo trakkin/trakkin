@@ -6,8 +6,8 @@ use trakkin::{
     application::{
         adapter_runtime::{AdapterLauncher, AdapterRetirement, AdapterSession, LaunchAdapter},
         providers::{
-            InstallProvider, ProviderLaunchResolver, ProviderRegistryApi, ProviderUpdatePolicy,
-            TrustProviderSource,
+            InspectProviderRelease, InstallProvider, ProviderLaunchResolver, ProviderRegistryApi,
+            ProviderUpdatePolicy, TrustProviderSource,
         },
     },
     database::DatabaseRuntime,
@@ -52,12 +52,21 @@ async fn trusted_oci_source_installs_and_launches_provider() {
         })
         .await
         .expect("provider source is trusted");
+    let inspection = management
+        .inspect_provider_release(InspectProviderRelease {
+            source_id: SOURCE_ID,
+            provider_id: provider_id.clone(),
+            version: version.clone(),
+        })
+        .await
+        .expect("provider release is inspected");
     let installed = management
         .install_provider(InstallProvider {
             artifact_id: Uuid::from_u128(2),
             source_id: SOURCE_ID,
             provider_id: provider_id.clone(),
             version: version.clone(),
+            index_digest: inspection.index_digest,
             update_policy: ProviderUpdatePolicy::Manual,
             installed_at: timestamp(2),
         })

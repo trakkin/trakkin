@@ -1507,11 +1507,11 @@ fn encode_source_capabilities(capabilities: &ProtocolSourceCapabilities) -> Valu
                 "step": range.step,
             })),
             "quantizer": match StateFieldQuantizer::try_from(field.quantizer).expect("validated state field quantizer") {
-                StateFieldQuantizer::Exact => "exact",
-                StateFieldQuantizer::Nearest => "nearest",
-                StateFieldQuantizer::Floor => "floor",
-                StateFieldQuantizer::Ceiling => "ceiling",
-                StateFieldQuantizer::Unspecified => unreachable!("validated state field quantizer"),
+                StateFieldQuantizer::Exact => Some("exact"),
+                StateFieldQuantizer::Nearest => Some("nearest"),
+                StateFieldQuantizer::Floor => Some("floor"),
+                StateFieldQuantizer::Ceiling => Some("ceiling"),
+                StateFieldQuantizer::Unspecified => None,
             },
         })).collect::<Vec<_>>(),
         "assets": capabilities.assets.as_ref().map(|assets| json!({
@@ -1907,5 +1907,31 @@ fn parse_source_availability(
         "unavailable" => Ok(AdapterSourceAvailability::Unavailable),
         "removed" => Ok(AdapterSourceAvailability::Removed),
         _ => Err(ConnectionPersistenceError::InvalidConnection),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use trakkin_provider_sdk::v1::{StateFieldDescriptor, Term};
+
+    use super::*;
+
+    #[test]
+    fn source_capabilities_encode_unspecified_quantizer_as_null() {
+        let capabilities = ProtocolSourceCapabilities {
+            state_fields: vec![StateFieldDescriptor {
+                field: Some(Term {
+                    namespace: "dev.trakkin.state".to_owned(),
+                    name: "watched".to_owned(),
+                }),
+                value_kind: ConfigurationValueKind::Boolean as i32,
+                ..StateFieldDescriptor::default()
+            }],
+            ..ProtocolSourceCapabilities::default()
+        };
+
+        let encoded = encode_source_capabilities(&capabilities);
+
+        assert_eq!(encoded["stateFields"][0]["quantizer"], Value::Null);
     }
 }

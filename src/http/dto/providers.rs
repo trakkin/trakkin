@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -5,7 +7,9 @@ use uuid::Uuid;
 use crate::application::{
     error::ApplicationError,
     providers::{
-        AvailableProviderSnapshot, ProviderSnapshot, ProviderSourceSnapshot, ProviderUpdatePolicy,
+        AvailableProviderSnapshot, ProviderMaintainerSnapshot, ProviderReleaseCompatibility,
+        ProviderReleaseInspectionSnapshot, ProviderSnapshot, ProviderSourceSnapshot,
+        ProviderUpdatePolicy,
     },
 };
 
@@ -48,6 +52,7 @@ pub struct InstallProviderRequest {
     pub source_id: Uuid,
     pub provider_id: String,
     pub version: String,
+    pub index_digest: String,
     pub update_policy: ProviderUpdatePolicyValue,
 }
 
@@ -55,6 +60,7 @@ pub struct InstallProviderRequest {
 #[serde(rename_all = "camelCase")]
 pub struct UpdateProviderRequest {
     pub version: String,
+    pub index_digest: String,
 }
 
 #[derive(Clone, Debug, Deserialize, ToSchema)]
@@ -103,6 +109,98 @@ impl ProviderSourceResponse {
             trusted_at: timestamp(snapshot.trusted_at)?,
             last_checked_at: snapshot.last_checked_at.map(timestamp).transpose()?,
             last_error: snapshot.last_error,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ProviderReleaseCompatibilityValue {
+    Compatible,
+    UnsupportedPlatform,
+    IncompatibleTrakkin,
+}
+
+impl From<ProviderReleaseCompatibility> for ProviderReleaseCompatibilityValue {
+    fn from(value: ProviderReleaseCompatibility) -> Self {
+        match value {
+            ProviderReleaseCompatibility::Compatible => Self::Compatible,
+            ProviderReleaseCompatibility::UnsupportedPlatform => Self::UnsupportedPlatform,
+            ProviderReleaseCompatibility::IncompatibleTrakkin => Self::IncompatibleTrakkin,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderMaintainerResponse {
+    pub name: String,
+    pub email: Option<String>,
+    pub url: Option<String>,
+}
+
+impl From<ProviderMaintainerSnapshot> for ProviderMaintainerResponse {
+    fn from(snapshot: ProviderMaintainerSnapshot) -> Self {
+        Self {
+            name: snapshot.name,
+            email: snapshot.email,
+            url: snapshot.url,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderReleaseInspectionResponse {
+    pub provider_id: String,
+    pub version: String,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub repository_url: Option<String>,
+    pub homepage_url: Option<String>,
+    pub documentation_url: Option<String>,
+    pub license: Option<String>,
+    pub maintainer: Option<ProviderMaintainerResponse>,
+    pub distributor: Option<String>,
+    pub published_at: Option<String>,
+    pub revision: Option<String>,
+    pub platforms: Vec<String>,
+    pub requirements: BTreeMap<String, String>,
+    pub compatibility: ProviderReleaseCompatibilityValue,
+    pub platform: String,
+    pub index_digest: String,
+    pub manifest_digest: Option<String>,
+    pub metadata_digest: Option<String>,
+    pub binary_digest: Option<String>,
+    pub binary_size: Option<usize>,
+}
+
+impl ProviderReleaseInspectionResponse {
+    pub fn from_snapshot(
+        snapshot: ProviderReleaseInspectionSnapshot,
+    ) -> Result<Self, ApplicationError> {
+        Ok(Self {
+            provider_id: snapshot.provider_id,
+            version: snapshot.version,
+            name: snapshot.name,
+            description: snapshot.description,
+            repository_url: snapshot.repository_url,
+            homepage_url: snapshot.homepage_url,
+            documentation_url: snapshot.documentation_url,
+            license: snapshot.license,
+            maintainer: snapshot.maintainer.map(ProviderMaintainerResponse::from),
+            distributor: snapshot.distributor,
+            published_at: snapshot.published_at.map(timestamp).transpose()?,
+            revision: snapshot.revision,
+            platforms: snapshot.platforms,
+            requirements: snapshot.requirements,
+            compatibility: snapshot.compatibility.into(),
+            platform: snapshot.platform,
+            index_digest: snapshot.index_digest,
+            manifest_digest: snapshot.manifest_digest,
+            metadata_digest: snapshot.metadata_digest,
+            binary_digest: snapshot.binary_digest,
+            binary_size: snapshot.binary_size,
         })
     }
 }
