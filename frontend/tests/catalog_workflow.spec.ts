@@ -90,6 +90,96 @@ test("links empty catalog onboarding directly to source attachment", async ({ pa
   await expectNoHorizontalOverflow(page);
 });
 
+test("explains catalog availability while the first scan is running", async ({ page }) => {
+  await mockApi(page, async (route) => {
+    const url = new URL(route.request().url());
+    const method = route.request().method();
+    if (url.pathname === "/api/v1/workspaces" && method === "GET") return json(route, [workspace]);
+    if (url.pathname === `/api/v1/workspaces/${workspaceId}` && method === "GET") return json(route, workspace);
+    if (url.pathname === "/api/v1/connections" && method === "GET") return json(route, [connection]);
+    if (url.pathname === `/api/v1/connections/${connectionId}/sources` && method === "GET") {
+      return json(route, [source]);
+    }
+    if (url.pathname === `/api/v1/workspaces/${workspaceId}/tasks` && method === "GET") {
+      return json(route, [task("running", false)]);
+    }
+    if (url.pathname === `/api/v1/workspaces/${workspaceId}/sources/${sourceId}/catalog` && method === "GET") {
+      return apiError(route, 409, "stream_unavailable", "published source stream is unavailable");
+    }
+    return fallback(route);
+  });
+
+  await page.goto(`/w/${workspaceId}/catalog`);
+  await expect(page.getByText("A catalog scan is in progress. Entries will appear when it finishes.")).toBeVisible();
+  await expect(page.getByText("published source stream is unavailable")).toHaveCount(0);
+});
+
+test("prompts for a first scan when no catalog has been published", async ({ page }) => {
+  await mockApi(page, async (route) => {
+    const url = new URL(route.request().url());
+    const method = route.request().method();
+    if (url.pathname === "/api/v1/workspaces" && method === "GET") return json(route, [workspace]);
+    if (url.pathname === `/api/v1/workspaces/${workspaceId}` && method === "GET") return json(route, workspace);
+    if (url.pathname === "/api/v1/connections" && method === "GET") return json(route, [connection]);
+    if (url.pathname === `/api/v1/connections/${connectionId}/sources` && method === "GET") {
+      return json(route, [source]);
+    }
+    if (url.pathname === `/api/v1/workspaces/${workspaceId}/tasks` && method === "GET") return json(route, []);
+    if (url.pathname === `/api/v1/workspaces/${workspaceId}/sources/${sourceId}/catalog` && method === "GET") {
+      return apiError(route, 409, "stream_unavailable", "published source stream is unavailable");
+    }
+    return fallback(route);
+  });
+
+  await page.goto(`/w/${workspaceId}/catalog`);
+  await expect(
+    page.getByText("This source has not published a catalog yet. Start a scan to load its entries."),
+  ).toBeVisible();
+  await expect(page.getByText("published source stream is unavailable")).toHaveCount(0);
+});
+
+test("explains a failed catalog scan without exposing its task code", async ({ page }) => {
+  await mockApi(page, async (route) => {
+    const url = new URL(route.request().url());
+    const method = route.request().method();
+    if (url.pathname === "/api/v1/workspaces" && method === "GET") return json(route, [workspace]);
+    if (url.pathname === `/api/v1/workspaces/${workspaceId}` && method === "GET") return json(route, workspace);
+    if (url.pathname === "/api/v1/connections" && method === "GET") return json(route, [connection]);
+    if (url.pathname === `/api/v1/connections/${connectionId}/sources` && method === "GET") {
+      return json(route, [source]);
+    }
+    if (url.pathname === `/api/v1/workspaces/${workspaceId}/tasks` && method === "GET") return json(route, []);
+    if (url.pathname === `/api/v1/workspaces/${workspaceId}/sources/${sourceId}/catalog` && method === "GET") {
+      return json(route, rootCatalog());
+    }
+    if (url.pathname === `/api/v1/workspaces/${workspaceId}/sources/${sourceId}/reads` && method === "POST") {
+      return json(
+        route,
+        {
+          ...task("failed", true),
+          failure: {
+            id: "catalog-failure",
+            code: "catalog_publication_failed",
+            message: "catalog publication failed",
+            retryable: true,
+            retryAfter: null,
+            diagnosticId: null,
+          },
+        },
+        202,
+      );
+    }
+    return fallback(route);
+  });
+
+  await page.goto(`/w/${workspaceId}/catalog`);
+  await page.getByRole("button", { name: "Scan Fixture Catalog" }).click();
+  await expect(
+    page.getByText("The catalog scan did not finish. Check the source connection and try again."),
+  ).toBeVisible();
+  await expect(page.getByText("catalog_publication_failed")).toHaveCount(0);
+});
+
 test("browses published hierarchy, artwork, and refresh tasks", async ({ page }) => {
   const secondSourceId = "33333333-3333-3333-3333-444444444444";
   const secondSource = { ...source, id: secondSourceId, displayName: "Fixture Archive" };

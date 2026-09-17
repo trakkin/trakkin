@@ -8,6 +8,7 @@ import {
   formatTerm,
   getCatalog,
 } from "$lib/api/catalog";
+import { catalogPublicationIssue } from "$lib/features/catalog/catalogPublicationIssue";
 import {
   loadWorkspaceSourceDirectory,
   type WorkspaceSourceDirectory,
@@ -124,7 +125,16 @@ async function loadFirstPage(source: string, currentSearch: string, signal?: Abo
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") return;
     if (sequence !== loadSequence) return;
-    errorMessage = error instanceof Error ? error.message : "Catalog references could not be loaded";
+    const issue = await catalogPublicationIssue(error, workspaceId, source, signal);
+    if (sequence !== loadSequence) return;
+    errorMessage =
+      issue === "scan-active"
+        ? "A catalog scan is in progress. References will appear when it finishes."
+        : issue === "unpublished"
+          ? "This source has not published a catalog yet. Run a catalog scan before choosing references."
+          : error instanceof Error
+            ? error.message
+            : "Catalog references could not be loaded";
   } finally {
     if (sequence === loadSequence) loading = false;
   }

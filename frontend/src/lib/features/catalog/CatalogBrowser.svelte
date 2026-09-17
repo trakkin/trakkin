@@ -28,6 +28,7 @@ import {
   type ProviderKey,
 } from "$lib/api/catalog";
 import { pollCatalog, resetAndRefetch, waitForTask } from "$lib/api/operations";
+import { catalogPublicationIssue } from "./catalogPublicationIssue";
 import type { WorkspaceCatalog, WorkspaceCatalogSource } from "./workspaceCatalog";
 
 type BrowsePart = { key: ProviderKey; label: string };
@@ -164,10 +165,18 @@ async function loadFirstPage(
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") return;
     if (requestId !== requestSequence) return;
-    errorMessage = error instanceof Error ? error.message : "Catalog could not be loaded";
+    const message = await catalogLoadErrorMessage(error, source.source.id, signal);
+    if (requestId === requestSequence) errorMessage = message;
   } finally {
     if (requestId === requestSequence) loading = false;
   }
+}
+
+async function catalogLoadErrorMessage(error: unknown, sourceId: string, signal?: AbortSignal): Promise<string> {
+  const issue = await catalogPublicationIssue(error, data.workspace.id, sourceId, signal);
+  if (issue === "scan-active") return "A catalog scan is in progress. Entries will appear when it finishes.";
+  if (issue === "unpublished") return "This source has not published a catalog yet. Start a scan to load its entries.";
+  return error instanceof Error ? error.message : "Catalog could not be loaded";
 }
 
 async function showNextPage() {
@@ -268,7 +277,13 @@ async function refreshCatalog() {
       controller.signal,
     );
     if (!ownsOperation(sequence, activeWorkspaceId, sourceId)) return;
-    if (result.status !== "succeeded") throw new Error(result.failure?.code ?? "Catalog refresh failed");
+    if (result.status !== "succeeded") {
+      throw new Error(
+        result.status === "cancelled"
+          ? "The catalog scan was cancelled."
+          : "The catalog scan did not finish. Check the source connection and try again.",
+      );
+    }
     await onreload();
     if (!ownsOperation(sequence, activeWorkspaceId, sourceId)) return;
     reloadSequence += 1;
@@ -300,7 +315,13 @@ async function confirmReset() {
       controller.signal,
     );
     if (!ownsOperation(sequence, activeWorkspaceId, sourceId)) return;
-    if (result.status !== "succeeded") throw new Error(result.failure?.code ?? "Reset and refetch failed");
+    if (result.status !== "succeeded") {
+      throw new Error(
+        result.status === "cancelled"
+          ? "The catalog reset was cancelled."
+          : "The catalog reset or refetch did not finish. Check the source connection and try again.",
+      );
+    }
     resetOpen = false;
     browsePath = [];
     await onreload();

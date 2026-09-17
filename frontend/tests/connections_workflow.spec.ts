@@ -467,6 +467,48 @@ test("authenticates, discovers, and attaches a source", async ({ page }) => {
   await expectNoHorizontalOverflow(page);
 });
 
+test("explains failed source discovery during connection setup", async ({ page }) => {
+  await mockApi(page, async (route) => {
+    const url = new URL(route.request().url());
+    const method = route.request().method();
+    if (url.pathname === "/api/v1/workspaces" && method === "GET") return json(route, [workspace]);
+    if (url.pathname === "/api/v1/connections" && method === "GET") return json(route, [connection]);
+    if (url.pathname === `/api/v1/connections/${connectionId}/sources` && method === "GET") return json(route, []);
+    if (url.pathname === `/api/v1/connections/${connectionId}/inspection` && method === "GET") {
+      return json(route, authenticationInspection());
+    }
+    if (url.pathname === `/api/v1/workspaces/${workspaceId}/tasks` && method === "GET") return json(route, []);
+    if (url.pathname === `/api/v1/connections/${connectionId}/discovery-tasks` && method === "POST") {
+      return json(
+        route,
+        {
+          ...task("failed", true),
+          kind: "sourceDiscovery",
+          sourceId: null,
+          failure: {
+            id: "discovery-failure",
+            code: "connection_discovery_failed",
+            message: "connection discovery failed",
+            retryable: false,
+            retryAfter: null,
+            diagnosticId: null,
+          },
+        },
+        202,
+      );
+    }
+    return fallback(route);
+  });
+
+  await page.goto(`/connections?workspace=${workspaceId}`);
+  await page.getByRole("button", { name: "Expand Fixture account" }).first().click();
+  await page.getByRole("button", { name: "Discover", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText(
+    "Sources could not be discovered. Check the connection and try again.",
+  );
+  await expect(page.getByRole("alert")).not.toContainText("connection_discovery_failed");
+});
+
 test("connection authentication polling stops after navigation", async ({ page }) => {
   let continuationRequests = 0;
   let releaseContinuation: () => void = () => {};

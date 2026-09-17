@@ -9,12 +9,42 @@ import {
   mockApi,
   source,
   sourceId,
+  task,
   timestamp,
   workspace,
   workspaceId,
 } from "./support/api.ts";
 import { catalogEntry, catalogPage } from "./support/catalog.ts";
 import { mappingDetail, mappingRevision, mappingSummary } from "./support/mappings.ts";
+
+test("explains unavailable catalog references while a scan is running", async ({ page }) => {
+  await mockApi(page, async (route) => {
+    const url = new URL(route.request().url());
+    const method = route.request().method();
+    if (url.pathname === "/api/v1/workspaces" && method === "GET") return json(route, [workspace]);
+    if (url.pathname === `/api/v1/workspaces/${workspaceId}` && method === "GET") return json(route, workspace);
+    if (url.pathname === "/api/v1/connections" && method === "GET") return json(route, [connection]);
+    if (url.pathname === `/api/v1/connections/${connectionId}/sources` && method === "GET") {
+      return json(route, [source]);
+    }
+    if (url.pathname === `/api/v1/workspaces/${workspaceId}/tasks` && method === "GET") {
+      return json(route, [task("running", false)]);
+    }
+    if (url.pathname === `/api/v1/workspaces/${workspaceId}/sources/${sourceId}/catalog` && method === "GET") {
+      return apiError(route, 409, "stream_unavailable", "published source stream is unavailable");
+    }
+    if (url.pathname === `/api/v1/workspaces/${workspaceId}/mappings` && method === "GET") {
+      return json(route, { mappings: [], nextCursor: null });
+    }
+    return fallback(route);
+  });
+
+  await page.goto(`/w/${workspaceId}/mappings`);
+  await page.getByRole("button", { name: "New mapping" }).click();
+  await page.getByRole("button", { name: "Catalog references" }).click();
+  await expect(page.getByText("A catalog scan is in progress. References will appear when it finishes.")).toBeVisible();
+  await expect(page.getByText("published source stream is unavailable")).toHaveCount(0);
+});
 
 test("authors and activates portable mapping revisions", async ({ page }) => {
   const mappingId = "00000000-0000-0000-0000-000000000101";

@@ -521,7 +521,13 @@ async function scanCatalog(source: ConnectionSource) {
     async () => {
       const signal = lifecycleController.signal;
       const result = await waitForTask(workspace.id, await pollCatalog(workspace.id, source.id, signal), signal);
-      if (result.status !== "succeeded") throw new Error(result.failure?.code ?? "Catalog scan failed");
+      if (result.status !== "succeeded") {
+        throw new Error(
+          result.status === "cancelled"
+            ? "The catalog scan was cancelled."
+            : "The catalog scan did not finish. Check the source connection and try again.",
+        );
+      }
     },
     false,
     () => lifecycleActive() && selectedWorkspaceId === workspace.id,

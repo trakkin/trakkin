@@ -114,7 +114,11 @@ export async function discoverConnectionSources(
     task = await request(`/api/v1/connections/${connectionId}/tasks/${task.id}`, { signal });
   }
   if (task.status !== "succeeded") {
-    throw new Error(task.failure?.code ?? `Source discovery ${task.status}`);
+    throw new Error(
+      task.status === "cancelled"
+        ? "Source discovery was cancelled."
+        : "Sources could not be discovered. Check the connection and try again.",
+    );
   }
   return listConnectionSources(connectionId, signal);
 }
