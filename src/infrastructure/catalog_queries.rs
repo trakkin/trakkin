@@ -148,13 +148,8 @@ LIMIT $8
         let mut entries = Vec::with_capacity(rows.len());
         for row in rows {
             entries.push(
-                map_catalog_entry(
-                    &mut transaction,
-                    query.source_id,
-                    &mapping_root_policy,
-                    row,
-                )
-                .await?,
+                map_catalog_entry(&mut transaction, query.source_id, &mapping_root_policy, row)
+                    .await?,
             );
         }
         transaction.commit().await?;

@@ -158,12 +158,10 @@ test("explains a failed catalog scan without exposing its task code", async ({ p
         {
           ...task("failed", true),
           failure: {
-            id: "catalog-failure",
             code: "catalog_publication_failed",
             message: "catalog publication failed",
             retryable: true,
             retryAfter: null,
-            diagnosticId: null,
           },
         },
         202,

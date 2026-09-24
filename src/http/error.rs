@@ -19,8 +19,6 @@ pub struct ErrorResponse {
     pub provider_code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry: Option<RetryAdviceResponse>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub diagnostic_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, ToSchema)]
@@ -101,26 +99,8 @@ impl IntoResponse for HttpError {
         let mut error = self.0;
         let code = error.code;
         let status = status(code);
-        let diagnostic_id = error
-            .take_diagnostic_id()
-            .or_else(|| (code == ApplicationErrorCode::Internal).then(generate_diagnostic_id));
         let provider_code = error.take_provider_code();
         let retry = error.take_retry();
-        if code == ApplicationErrorCode::Internal {
-            tracing::error!(
-                event = "http.error.internal",
-                error.code = code.as_str(),
-                error.cause = error.internal_message().unwrap_or("unavailable"),
-                diagnostic.id = diagnostic_id.as_deref().unwrap_or("unavailable"),
-            );
-        } else if let Some(provider_code) = provider_code.as_deref() {
-            tracing::warn!(
-                event = "http.error.provider",
-                error.code = code.as_str(),
-                provider.error.code = provider_code,
-                diagnostic.id = diagnostic_id.as_deref().unwrap_or("unavailable"),
-            );
-        }
         let response = ErrorResponse {
             code: code.as_str().to_owned(),
             message: error.message,
@@ -131,7 +111,6 @@ impl IntoResponse for HttpError {
                 .collect(),
             provider_code,
             retry: retry.map(RetryAdviceResponse::from),
-            diagnostic_id,
         };
         (status, Json(response)).into_response()
     }
@@ -153,14 +132,6 @@ impl From<ApplicationRetryAfter> for RetryAfterResponse {
             nanoseconds: after.nanoseconds,
         }
     }
-}
-
-fn generate_diagnostic_id() -> String {
-    let mut bytes = [0_u8; 16];
-    if getrandom::fill(&mut bytes).is_err() {
-        return "diagnostic-id-unavailable".to_owned();
-    }
-    format!("host:{}", hex::encode(bytes))
 }
 
 impl From<ApplicationFieldProblem> for FieldProblemResponse {
@@ -234,12 +205,9 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn internal_cause_is_not_serialized() {
-        let response = HttpError(ApplicationError::internal(
-            "request could not be completed",
-            "database password=not-for-clients",
-        ))
-        .into_response();
+    async fn internal_error_uses_safe_message() {
+        let response =
+            HttpError(ApplicationError::internal("request could not be completed")).into_response();
 
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
         let body = to_bytes(response.into_body(), 16 * 1024).await.unwrap();
@@ -247,9 +215,5 @@ mod tests {
         let body: serde_json::Value = serde_json::from_str(&body_text).unwrap();
 
         assert_eq!(body["message"], "request could not be completed");
-        assert!(body["diagnosticId"].as_str().is_some());
-        assert!(body.get("internalMessage").is_none());
-        assert!(!body_text.contains("password"));
-        assert!(!body_text.contains("not-for-clients"));
     }
 }

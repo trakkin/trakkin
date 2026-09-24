@@ -293,7 +293,6 @@ mod tests {
                         disposition: RetryDisposition::NotRetryable as i32,
                         after: None,
                     }),
-                    diagnostic_id: "provider:auth:1".to_owned(),
                     ..OperationFailure::default()
                 },
             )),
@@ -302,6 +301,5 @@ mod tests {
         let outcome = map_start_authentication_response(response).unwrap();
         let error = outcome.expect_err("provider failure must not become a transport error");
         assert_eq!(error.code, "authentication_denied");
-        assert_eq!(error.diagnostic_id, "provider:auth:1");
     }
 }

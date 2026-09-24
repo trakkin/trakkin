@@ -1202,7 +1202,6 @@ export interface components {
         };
         ErrorResponse: {
             code: string;
-            diagnosticId?: string | null;
             fieldProblems: components["schemas"]["FieldProblemResponse"][];
             message: string;
             providerCode?: string | null;
@@ -1778,8 +1777,6 @@ export interface components {
         TargetedStateWriteStatusResponse: "applied" | "no_op" | "rejected" | "failed" | "indeterminate";
         TaskFailureResponse: {
             code: string;
-            diagnosticId?: string | null;
-            id: string;
             message: string;
             retryAfter?: null | components["schemas"]["TaskRetryAfterResponse"];
             retryable: boolean;

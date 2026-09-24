@@ -5,49 +5,39 @@ use std::{process::Stdio, time::Duration};
 use serde_json::{Value, json};
 use tempfile::tempdir;
 use tokio::{
-    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
     process::Command,
-    time::timeout,
+    time::{sleep, timeout},
 };
 
 #[tokio::test(flavor = "multi_thread")]
 async fn external_host_starts_with_user_controlled_provider_registry_and_stops_cleanly() {
     let directory = tempdir().expect("temporary data directory is created");
+    let address = available_address();
     let mut command = Command::new(env!("CARGO_BIN_EXE_trakkin"));
     command
-        .env("TRAKKIN_BIND", "127.0.0.1:0")
+        .env("TRAKKIN_BIND", &address)
         .env("TRAKKIN_DATA_DIR", directory.path())
         .env(
             "TRAKKIN_PROVIDER_RUNTIME_DIR",
             directory.path().join("provider-runtime"),
         )
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .kill_on_drop(true);
-    let mut child = command.spawn().expect("fresh host process starts");
-    let stdout = child.stdout.take().expect("host stdout is captured");
-    let mut stdout = BufReader::new(stdout).lines();
-    let readiness = timeout(Duration::from_secs(60), stdout.next_line())
-        .await
-        .expect("fresh host reports readiness before the deadline")
-        .expect("host readiness output can be read")
-        .expect("host emits a readiness line");
-    let readiness: Value = serde_json::from_str(&readiness).expect("readiness is JSON");
-    assert_eq!(readiness["status"], "ready");
-    let address = readiness["address"]
-        .as_str()
-        .expect("readiness includes the bound address");
+    let child = command.spawn().expect("fresh host process starts");
+    wait_until_listening(&address).await;
 
-    let sources = request(address, "GET", "/api/v1/provider-sources", None).await;
+    let sources = request(&address, "GET", "/api/v1/provider-sources", None).await;
     assert_eq!(sources, (200, json!([])));
 
-    let providers = request(address, "GET", "/api/v1/providers", None).await;
+    let providers = request(&address, "GET", "/api/v1/providers", None).await;
     assert_eq!(providers, (200, json!([])));
 
     let unavailable_connection = request(
-        address,
+        &address,
         "POST",
         "/api/v1/connections",
         Some(json!({
@@ -72,21 +62,32 @@ async fn external_host_starts_with_user_controlled_provider_registry_and_stops_c
         .expect("host process can be reaped");
     assert!(output.status.success());
     assert_eq!(
-        stdout
-            .next_line()
-            .await
-            .expect("shutdown output can be read")
-            .as_deref(),
-        None
-    );
-    let diagnostics = String::from_utf8(output.stderr).expect("host diagnostics are UTF-8");
-    assert!(diagnostics.contains("\"event\":\"host.stopped\""));
-    assert_eq!(
         std::fs::read(directory.path().join("master.key"))
             .expect("connection master key is persisted")
             .len(),
         32
     );
+}
+
+fn available_address() -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("test port is reserved");
+    listener
+        .local_addr()
+        .expect("test listener has an address")
+        .to_string()
+}
+
+async fn wait_until_listening(address: &str) {
+    timeout(Duration::from_secs(60), async {
+        loop {
+            if TcpStream::connect(address).await.is_ok() {
+                return;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("host listens before the deadline");
 }
 
 async fn request(address: &str, method: &str, path: &str, body: Option<Value>) -> (u16, Value) {

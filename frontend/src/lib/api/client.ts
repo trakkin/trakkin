@@ -1,5 +1,4 @@
 import type { components } from "./generated/schema.ts";
-import { apiStatus } from "./status.ts";
 
 export type FieldProblem = components["schemas"]["FieldProblemResponse"];
 export type ApiErrorBody = components["schemas"]["ErrorResponse"];
@@ -23,21 +22,14 @@ export class ApiRequestError extends Error {
 type RequestOptions = Omit<RequestInit, "body"> & { body?: unknown };
 
 export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  let response: Response;
-  try {
-    response = await fetch(path, {
-      ...options,
-      body: options.body === undefined ? undefined : JSON.stringify(options.body),
-      headers: {
-        ...(options.body === undefined ? {} : { "content-type": "application/json" }),
-        ...options.headers,
-      },
-    });
-    apiStatus.set("online");
-  } catch (error) {
-    if (!(error instanceof Error && error.name === "AbortError")) apiStatus.set("unavailable");
-    throw error;
-  }
+  const response = await fetch(path, {
+    ...options,
+    body: options.body === undefined ? undefined : JSON.stringify(options.body),
+    headers: {
+      ...(options.body === undefined ? {} : { "content-type": "application/json" }),
+      ...options.headers,
+    },
+  });
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
     const body: ApiErrorBody =

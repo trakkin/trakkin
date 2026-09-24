@@ -263,10 +263,7 @@ where
             ),
             Self::Repository(error) => error.into_application_error(),
             Self::Rejected(error) => error.into_application_error(),
-            Self::Adapter(error) => ApplicationError::internal(
-                "binary asset adapter operation failed",
-                format_args!("{error:?}"),
-            ),
+            Self::Adapter(_) => ApplicationError::internal("binary asset adapter operation failed"),
         }
     }
 }
@@ -280,13 +277,18 @@ mod tests {
     #[tokio::test]
     async fn binary_asset_reads_are_serialized_per_connection() {
         let service = BinaryAssetService::new((), (), 1);
-        let connection_id = Uuid::new_v4();
+        let connection_id = Uuid::from_u128(1);
         let first_lock = service.connection_lock(connection_id);
         let first_guard = first_lock.lock().await;
         let second_lock = service.connection_lock(connection_id);
 
         assert!(second_lock.try_lock().is_err());
-        assert!(service.connection_lock(Uuid::new_v4()).try_lock().is_ok());
+        assert!(
+            service
+                .connection_lock(Uuid::from_u128(2))
+                .try_lock()
+                .is_ok()
+        );
 
         drop(first_guard);
         assert!(second_lock.try_lock().is_ok());

@@ -14,9 +14,7 @@ use trakkin::{
     },
     database::DatabaseRuntime,
     infrastructure::task_manager::{PostgresTaskRepository, TaskManagerError},
-    observability,
 };
-use trakkin_provider_sdk::InvocationContext;
 use uuid::Uuid;
 
 const CONNECTION_ALPHA: Uuid = Uuid::from_u128(1);
@@ -42,17 +40,7 @@ async fn claims_are_connection_scoped_and_terminal_completion_releases_them() {
     seed_connection(&database.pool(), CONNECTION_ALPHA, "Alpha").await;
     seed_connection(&database.pool(), CONNECTION_BETA, "Beta").await;
     let manager = manager(database.pool());
-    let invocation_context = InvocationContext::new(
-        "request:task-repository",
-        Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"),
-        Some("vendor=value"),
-    )
-    .unwrap();
-    observability::in_invocation_context(
-        invocation_context,
-        admit_discovery(&manager, TASK_ALPHA_ONE, CONNECTION_ALPHA, timestamp(0)),
-    )
-    .await;
+    admit_discovery(&manager, TASK_ALPHA_ONE, CONNECTION_ALPHA, timestamp(0)).await;
     admit_discovery(&manager, TASK_ALPHA_TWO, CONNECTION_ALPHA, timestamp(1)).await;
     admit_discovery(&manager, TASK_BETA, CONNECTION_BETA, timestamp(2)).await;
 
@@ -69,15 +57,6 @@ async fn claims_are_connection_scoped_and_terminal_completion_releases_them() {
     assert_eq!(alpha.task.id, TASK_ALPHA_ONE);
     assert_eq!(alpha.task.status, TaskStatus::Running);
     assert_eq!(alpha.attempt_ordinal, 0);
-    assert_eq!(
-        alpha.invocation_context.correlation_id(),
-        "request:task-repository"
-    );
-    assert_eq!(
-        alpha.invocation_context.traceparent(),
-        Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
-    );
-    assert_eq!(alpha.invocation_context.tracestate(), Some("vendor=value"));
 
     let beta = manager
         .claim_next(ClaimNextTask {

@@ -1,9 +1,8 @@
 <script lang="ts">
-import { Activity, CircleCheck, CircleStop, TriangleAlert, WifiOff } from "@lucide/svelte";
+import { Activity, CircleCheck, CircleStop, TriangleAlert } from "@lucide/svelte";
 import { Popover } from "bits-ui";
 import { untrack } from "svelte";
 import { cancelTask, listTasks, type TaskRun } from "$lib/api/operations";
-import { apiStatus } from "$lib/api/status";
 import { IconButton, Spinner } from "$lib/components/ui";
 
 type Props = {
@@ -28,12 +27,10 @@ let recentTasks = $derived(
 );
 let visibleTasks = $derived([...activeTasks, ...recentTasks]);
 let taskLabel = $derived.by(() => {
-  if ($apiStatus === "connecting") return "Tasks, server connecting";
-  if ($apiStatus === "unavailable") return "Tasks, server unavailable";
   if (activeTasks.length > 0) {
-    return `Tasks, server online, ${activeTasks.length} active ${activeTasks.length === 1 ? "task" : "tasks"}`;
+    return `Tasks, ${activeTasks.length} active ${activeTasks.length === 1 ? "task" : "tasks"}`;
   }
-  return "Tasks, server online";
+  return "Tasks";
 });
 
 $effect(() => {
@@ -177,13 +174,11 @@ function taskStatus(task: TaskRun): string {
     {#snippet child({ props })}
       <IconButton
         {...props}
-        class={$apiStatus !== "online"
-          ? "border-warning/30 bg-warning/10 text-warning shadow-[0_0_0_3px_color-mix(in_oklab,var(--warning)_10%,transparent)]"
-          : activeTasks.length > 0
-            ? "border-success/30 bg-success/10 text-success shadow-[0_0_0_3px_color-mix(in_oklab,var(--success)_10%,transparent)]"
-            : popoverOpen
-              ? "border-border-strong bg-white/6 text-text-primary"
-              : "text-text-secondary"}
+        class={activeTasks.length > 0
+          ? "border-success/30 bg-success/10 text-success shadow-[0_0_0_3px_color-mix(in_oklab,var(--success)_10%,transparent)]"
+          : popoverOpen
+            ? "border-border-strong bg-white/6 text-text-primary"
+            : "text-text-secondary"}
         label={taskLabel}
         size="sm"
         title="Task status"
@@ -192,7 +187,7 @@ function taskStatus(task: TaskRun): string {
           aria-hidden="true"
           size={15}
         />
-        {#if $apiStatus === "online" && activeTasks.length > 0}
+        {#if activeTasks.length > 0}
           <span
             aria-hidden="true"
             class="absolute top-0.5 right-0.5 size-1.5 rounded-full bg-success shadow-[0_0_0_2px_var(--surface-sidebar)]"
@@ -218,20 +213,7 @@ function taskStatus(task: TaskRun): string {
         {/if}
       </header>
 
-      {#if $apiStatus === "connecting"}
-        <div class="flex h-24 flex-col items-center justify-center gap-2 text-warning">
-          <Spinner size={18} />
-          <p class="text-label">Connecting to server</p>
-        </div>
-      {:else if $apiStatus === "unavailable"}
-        <div class="flex h-24 flex-col items-center justify-center gap-2 text-warning">
-          <WifiOff
-            aria-hidden="true"
-            size={18}
-          />
-          <p class="text-label">Server unavailable</p>
-        </div>
-      {:else if loading}
+      {#if loading}
         <div class="flex h-24 flex-col items-center justify-center gap-2 text-text-muted">
           <Spinner size={18} />
           <p class="text-label">Loading tasks</p>

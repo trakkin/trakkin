@@ -510,11 +510,10 @@ SET
     outcome_error_code = $9,
     outcome_error_retryable = $10,
     outcome_error_safe_message = $11,
-    outcome_error_diagnostic_id = $12,
-    outcome_error_retry_after_seconds = $13,
-    outcome_error_retry_after_nanoseconds = $14,
-    settled_at = $15
-WHERE task_attempt_id = $16 AND state = 'dispatched'
+    outcome_error_retry_after_seconds = $12,
+    outcome_error_retry_after_nanoseconds = $13,
+    settled_at = $14
+WHERE task_attempt_id = $15 AND state = 'dispatched'
 ",
         )
         .bind(write_status_name(command.outcome.status))
@@ -528,7 +527,6 @@ WHERE task_attempt_id = $16 AND state = 'dispatched'
         .bind(error.map(|error| &error.code))
         .bind(error.map(|error| error.retryable))
         .bind(error.map(|error| &error.safe_message))
-        .bind(error.map(|error| &error.diagnostic_id))
         .bind(retry_after.map(|retry_after| retry_after.seconds))
         .bind(retry_after.map(|retry_after| retry_after.nanoseconds))
         .bind(command.settled_at)
@@ -693,22 +691,17 @@ WHERE id = $2 AND status = 'running'
         if action.rows_affected() != 1 {
             return Err(SyncActionAttemptError::InvalidTransition);
         }
-        let invocation_context =
-            crate::observability::task_invocation_context(command.reconciliation_task_id);
         let task = sqlx::query(
             "INSERT INTO tasks (
     id, workspace_id, connection_id, kind, status, cancellation_supported,
-    invocation_context, created_at, updated_at
+    created_at, updated_at
 )
-VALUES ($1, $2, $3, 'sync_action_reconciliation', 'queued', FALSE, $4, $5, $5)
+VALUES ($1, $2, $3, 'sync_action_reconciliation', 'queued', FALSE, $4, $4)
 ",
         )
         .bind(command.reconciliation_task_id)
         .bind(claim.workspace_id)
         .bind(claim.connection_id)
-        .bind(super::task_manager::invocation_context_json(
-            &invocation_context,
-        ))
         .bind(command.settled_at)
         .execute(&mut *transaction)
         .await?;
@@ -1248,7 +1241,6 @@ pub(crate) async fn load_attempt(
     outcome_error_code,
     outcome_error_retryable,
     outcome_error_safe_message,
-    outcome_error_diagnostic_id,
     outcome_error_retry_after_seconds,
     outcome_error_retry_after_nanoseconds,
     prepared_at,
@@ -1399,7 +1391,6 @@ struct SyncActionAttemptRow {
     outcome_error_code: Option<String>,
     outcome_error_retryable: Option<bool>,
     outcome_error_safe_message: Option<String>,
-    outcome_error_diagnostic_id: Option<String>,
     outcome_error_retry_after_seconds: Option<i64>,
     outcome_error_retry_after_nanoseconds: Option<i32>,
     prepared_at: time::OffsetDateTime,
@@ -1511,37 +1502,31 @@ impl SyncActionAttemptRow {
             self.outcome_error_code.as_ref(),
             self.outcome_error_retryable,
             self.outcome_error_safe_message.as_ref(),
-            self.outcome_error_diagnostic_id.as_ref(),
         ) {
-            (None, None, None, None, None) if field_problems.is_empty() => None,
-            (
-                Some(category),
-                Some(code),
-                Some(retryable),
-                Some(safe_message),
-                Some(diagnostic_id),
-            ) => Some(AdapterCallError {
-                category: parse_failure_category(category)?,
-                code: code.clone(),
-                safe_message: safe_message.clone(),
-                retryable,
-                retry_after: match (
-                    self.outcome_error_retry_after_seconds,
-                    self.outcome_error_retry_after_nanoseconds,
-                ) {
-                    (Some(seconds), Some(nanoseconds)) => Some(AdapterRetryAfter {
-                        seconds,
-                        nanoseconds,
-                    }),
-                    (None, None) => None,
-                    _ => return Err(SyncActionAttemptError::CorruptAction),
-                },
-                field_problems: field_problems
-                    .into_iter()
-                    .map(ErrorFieldProblemRow::into_problem)
-                    .collect(),
-                diagnostic_id: diagnostic_id.clone(),
-            }),
+            (None, None, None, None) if field_problems.is_empty() => None,
+            (Some(category), Some(code), Some(retryable), Some(safe_message)) => {
+                Some(AdapterCallError {
+                    category: parse_failure_category(category)?,
+                    code: code.clone(),
+                    safe_message: safe_message.clone(),
+                    retryable,
+                    retry_after: match (
+                        self.outcome_error_retry_after_seconds,
+                        self.outcome_error_retry_after_nanoseconds,
+                    ) {
+                        (Some(seconds), Some(nanoseconds)) => Some(AdapterRetryAfter {
+                            seconds,
+                            nanoseconds,
+                        }),
+                        (None, None) => None,
+                        _ => return Err(SyncActionAttemptError::CorruptAction),
+                    },
+                    field_problems: field_problems
+                        .into_iter()
+                        .map(ErrorFieldProblemRow::into_problem)
+                        .collect(),
+                })
+            }
             _ => return Err(SyncActionAttemptError::CorruptAction),
         };
         Ok(Some(AdapterTargetedStateWriteOutcome {

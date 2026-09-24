@@ -1,6 +1,6 @@
 #[cfg(feature = "embedded-database")]
 use std::path::Path;
-use std::{future::Future, path::PathBuf, sync::Arc, time::Duration};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use thiserror::Error;
 use time::{Duration as TimeDuration, OffsetDateTime};
@@ -8,10 +8,8 @@ use tokio::{sync::watch, task::JoinHandle, time::sleep};
 use uuid::Uuid;
 
 use crate::{
-    application::task_lifecycle::{
-        InterruptActiveTasks, InterruptionSummary, TaskLifecycleRepository,
-    },
-    application::task_manager::{TaskManager, TaskRepository, TaskStatus},
+    application::task_lifecycle::{InterruptActiveTasks, TaskLifecycleRepository},
+    application::task_manager::{TaskManager, TaskRepository},
     application::{
         assets::BinaryAssetInteractionService,
         connection::{
@@ -79,7 +77,6 @@ const RETENTION_PASSES_PER_SWEEP: usize = 16;
 
 pub struct Host {
     database: DatabaseRuntime,
-    startup_recovery: InterruptionSummary,
     task_manager: TaskManager<PostgresTaskRepository>,
 }
 
@@ -99,10 +96,6 @@ impl Host {
     ) -> Result<Self, HostError> {
         let database = DatabaseRuntime::connect(database_url).await?;
         Self::compose(database, started_at).await
-    }
-
-    pub fn startup_recovery(&self) -> &InterruptionSummary {
-        &self.startup_recovery
     }
 
     pub fn task_manager(&self) -> &TaskManager<PostgresTaskRepository> {
@@ -145,26 +138,13 @@ impl Host {
         {
             let connection_id = connection.connection_id;
             let process_instance_id = format!("startup-recovery-{}", random_uuid()?);
-            match recovery
+            let _ = recovery
                 .open(OpenConnection {
                     connection_id,
                     process_instance_id,
                     opened_at: OffsetDateTime::now_utc(),
                 })
-                .await
-            {
-                Ok(opened) => tracing::info!(
-                    event = "connection.session.recovered",
-                    connection.id = %connection_id,
-                    connection.accounts = opened.account_count,
-                    connection.sources = opened.source_count,
-                ),
-                Err(error) => tracing::error!(
-                    event = "connection.session.recovery.failed",
-                    connection.id = %connection_id,
-                    error = ?error,
-                ),
-            }
+                .await;
         }
         let provider_management =
             ProbedProviderRegistry::new(provider_registry.clone(), env!("CARGO_PKG_VERSION"));
@@ -262,11 +242,7 @@ impl Host {
                     sessions.clone(),
                 )),
             );
-            workers.push(spawn_dispatcher(
-                "source-discovery",
-                discovery,
-                shutdown_receiver.clone(),
-            )?);
+            workers.push(spawn_dispatcher(discovery, shutdown_receiver.clone())?);
 
             let acquisition = TaskDispatcher::new(
                 self.task_manager.clone(),
@@ -276,11 +252,7 @@ impl Host {
                     sessions.clone(),
                 ),
             );
-            workers.push(spawn_dispatcher(
-                "acquisition",
-                acquisition,
-                shutdown_receiver.clone(),
-            )?);
+            workers.push(spawn_dispatcher(acquisition, shutdown_receiver.clone())?);
 
             let synchronization = TaskDispatcher::new(
                 self.task_manager.clone(),
@@ -290,7 +262,6 @@ impl Host {
                 ),
             );
             workers.push(spawn_dispatcher(
-                "synchronization",
                 synchronization,
                 shutdown_receiver.clone(),
             )?);
@@ -302,27 +273,20 @@ impl Host {
                     sessions.clone(),
                 ),
             );
-            workers.push(spawn_dispatcher(
-                "reconciliation",
-                reconciliation,
-                shutdown_receiver.clone(),
-            )?);
+            workers.push(spawn_dispatcher(reconciliation, shutdown_receiver.clone())?);
         }
-        workers.push(spawn_supervised(
-            "schedules",
-            run_schedules(sync_schedule_runner, shutdown_receiver.clone()),
-        ));
-        workers.push(spawn_supervised(
-            "provider-updates",
-            run_provider_updates(provider_management, shutdown_receiver.clone()),
-        ));
-        workers.push(spawn_supervised(
-            "retention",
-            run_retention(
-                PostgresSyncRetentionRepository::new(pool),
-                shutdown_receiver.clone(),
-            ),
-        ));
+        workers.push(tokio::spawn(run_schedules(
+            sync_schedule_runner,
+            shutdown_receiver.clone(),
+        )));
+        workers.push(tokio::spawn(run_provider_updates(
+            provider_management,
+            shutdown_receiver.clone(),
+        )));
+        workers.push(tokio::spawn(run_retention(
+            PostgresSyncRetentionRepository::new(pool),
+            shutdown_receiver.clone(),
+        )));
         Ok(RunningHost {
             host: self,
             application,
@@ -342,7 +306,7 @@ impl Host {
         started_at: OffsetDateTime,
     ) -> Result<Self, HostError> {
         let lifecycle = PostgresTaskLifecycleRepository::new(database.pool());
-        let startup_recovery = lifecycle
+        lifecycle
             .interrupt_active_tasks(InterruptActiveTasks {
                 interrupted_at: started_at,
             })
@@ -350,7 +314,6 @@ impl Host {
         let task_manager = TaskManager::new(PostgresTaskRepository::new(database.pool()));
         Ok(Self {
             database,
-            startup_recovery,
             task_manager,
         })
     }
@@ -372,24 +335,14 @@ impl RunningHost {
     pub async fn shutdown(self) -> Result<(), HostError> {
         let _ = self.shutdown_sender.send(true);
         for worker in self.workers {
-            if let Err(error) = worker.await {
-                tracing::error!(event = "worker.join.failed", error = ?error);
-            }
+            let _ = worker.await;
         }
-        if let Err(error) = self.sessions.retire_all().await {
-            tracing::error!(event = "host.shutdown.providers.failed", error = ?error);
-            return Err(error.into());
-        }
-        let shutdown = self.host.shutdown().await;
-        if let Err(error) = &shutdown {
-            tracing::error!(event = "host.shutdown.database.failed", error = ?error);
-        }
-        shutdown
+        self.sessions.retire_all().await?;
+        self.host.shutdown().await
     }
 }
 
 fn spawn_dispatcher<R, H>(
-    name: &'static str,
     dispatcher: TaskDispatcher<R, H>,
     shutdown: watch::Receiver<bool>,
 ) -> Result<JoinHandle<()>, getrandom::Error>
@@ -400,27 +353,7 @@ where
     H::Error: Send + std::fmt::Debug,
 {
     let owner_id = random_uuid()?;
-    Ok(spawn_supervised(
-        name,
-        run_dispatcher(dispatcher, owner_id, shutdown),
-    ))
-}
-
-fn spawn_supervised<F>(name: &'static str, worker: F) -> JoinHandle<()>
-where
-    F: Future<Output = ()> + Send + 'static,
-{
-    tokio::spawn(async move {
-        let task = tokio::spawn(worker);
-        match task.await {
-            Ok(()) => tracing::info!(event = "worker.exited", worker.name = name),
-            Err(error) => tracing::error!(
-                event = "worker.panicked",
-                worker.name = name,
-                error = ?error,
-            ),
-        }
-    })
+    Ok(tokio::spawn(run_dispatcher(dispatcher, owner_id, shutdown)))
 }
 
 async fn run_dispatcher<R, H>(
@@ -435,7 +368,6 @@ async fn run_dispatcher<R, H>(
 {
     while !*shutdown.borrow() {
         let Ok(attempt_id) = random_uuid() else {
-            tracing::error!(event = "task.dispatcher.random_id.failed", %owner_id);
             return;
         };
         let now = OffsetDateTime::now_utc();
@@ -447,59 +379,8 @@ async fn run_dispatcher<R, H>(
                 completed_at: now,
             })
             .await;
-        match dispatch {
-            Ok(Some(task)) => {
-                match &task.status {
-                    TaskStatus::Queued => tracing::warn!(
-                        event = "task.retry.queued",
-                        %owner_id,
-                        %attempt_id,
-                        task.id = %task.id,
-                    ),
-                    TaskStatus::Failed => tracing::error!(
-                        event = "task.failed",
-                        %owner_id,
-                        %attempt_id,
-                        task.id = %task.id,
-                        failure.code = task
-                            .failure
-                            .as_ref()
-                            .map(|failure| failure.code.as_str())
-                            .unwrap_or("unavailable"),
-                        failure.message = task
-                            .failure
-                            .as_ref()
-                            .map(|failure| failure.message.as_str())
-                            .unwrap_or("unavailable"),
-                        failure.retryable = task
-                            .failure
-                            .as_ref()
-                            .is_some_and(|failure| failure.retryable),
-                        diagnostic.id = task
-                            .failure
-                            .as_ref()
-                            .and_then(|failure| failure.diagnostic_id.as_deref())
-                            .unwrap_or("unavailable"),
-                    ),
-                    _ => tracing::info!(
-                        event = "task.dispatched",
-                        %owner_id,
-                        %attempt_id,
-                        task.id = %task.id,
-                        task.status = ?task.status,
-                    ),
-                }
-                continue;
-            }
-            Ok(None) => {}
-            Err(error) => {
-                tracing::error!(
-                    event = "task.dispatch.failed",
-                    %owner_id,
-                    %attempt_id,
-                    error = ?error,
-                );
-            }
+        if matches!(dispatch, Ok(Some(_))) {
+            continue;
         }
         tokio::select! {
             result = shutdown.changed() => {
@@ -527,15 +408,12 @@ async fn run_schedules<C>(
 {
     while !*shutdown.borrow() {
         let Ok(occurrence_id) = random_uuid() else {
-            tracing::error!(event = "schedule.random_id.failed", id.kind = "occurrence");
             return;
         };
         let Ok(preview_id) = random_uuid() else {
-            tracing::error!(event = "schedule.random_id.failed", id.kind = "preview");
             return;
         };
         let Ok(run_id) = random_uuid() else {
-            tracing::error!(event = "schedule.random_id.failed", id.kind = "run");
             return;
         };
         let observed_at = OffsetDateTime::now_utc();
@@ -548,20 +426,13 @@ async fn run_schedules<C>(
                 preview_expires_at: observed_at + SCHEDULE_PREVIEW_LIFETIME,
             })
             .await;
-        match result {
-            Ok(
-                SyncScheduleTickResult::NoChanges { .. }
+        if matches!(
+            result,
+            Ok(SyncScheduleTickResult::NoChanges { .. }
                 | SyncScheduleTickResult::RunStarted { .. }
-                | SyncScheduleTickResult::RunAlreadyStarted { .. },
-            ) => continue,
-            Ok(SyncScheduleTickResult::Idle) => {}
-            Err(error) => tracing::error!(
-                event = "schedule.tick.failed",
-                %occurrence_id,
-                %preview_id,
-                %run_id,
-                error = ?error,
-            ),
+                | SyncScheduleTickResult::RunAlreadyStarted { .. })
+        ) {
+            continue;
         }
         tokio::select! {
             result = shutdown.changed() => {
@@ -579,41 +450,30 @@ async fn run_retention(
     mut shutdown: watch::Receiver<bool>,
 ) {
     while !*shutdown.borrow() {
-        match repository.workspace_ids().await {
-            Ok(workspace_ids) => {
-                let service = SyncRetentionService::new(repository.clone());
-                for workspace_id in workspace_ids {
-                    let mut policy = SyncRetentionPolicy::default();
-                    for _ in 0..RETENTION_PASSES_PER_SWEEP {
-                        let result = service
-                            .retain(RetainSyncEvidence {
-                                workspace_id,
-                                retained_at: OffsetDateTime::now_utc(),
-                                policy,
-                            })
-                            .await;
-                        let report = match result {
-                            Ok(report) => report,
-                            Err(error) => {
-                                tracing::error!(
-                                    event = "retention.workspace.failed",
-                                    %workspace_id,
-                                    error = ?error,
-                                );
-                                break;
-                            }
-                        };
-                        if !report.deferred {
-                            break;
-                        }
-                        if let Some(minimum) = report.next_batch_minimum_rows {
-                            policy.maximum_deleted_rows = policy.maximum_deleted_rows.max(minimum);
-                        }
-                        tokio::task::yield_now().await;
+        if let Ok(workspace_ids) = repository.workspace_ids().await {
+            let service = SyncRetentionService::new(repository.clone());
+            for workspace_id in workspace_ids {
+                let mut policy = SyncRetentionPolicy::default();
+                for _ in 0..RETENTION_PASSES_PER_SWEEP {
+                    let Ok(report) = service
+                        .retain(RetainSyncEvidence {
+                            workspace_id,
+                            retained_at: OffsetDateTime::now_utc(),
+                            policy,
+                        })
+                        .await
+                    else {
+                        break;
+                    };
+                    if !report.deferred {
+                        break;
                     }
+                    if let Some(minimum) = report.next_batch_minimum_rows {
+                        policy.maximum_deleted_rows = policy.maximum_deleted_rows.max(minimum);
+                    }
+                    tokio::task::yield_now().await;
                 }
             }
-            Err(error) => tracing::error!(event = "retention.workspaces.failed", error = ?error),
         }
         tokio::select! {
             result = shutdown.changed() => {

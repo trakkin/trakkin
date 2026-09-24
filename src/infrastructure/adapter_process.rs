@@ -1,7 +1,5 @@
 use std::time::Duration;
 
-use trakkin_provider_sdk::v1::HealthStatus;
-
 use crate::application::{
     adapter_runtime::{AdapterLauncher, AdapterRetirement, AdapterSession, LaunchAdapter},
     providers::{ProviderLaunchResolver, ProviderLaunchTarget},
@@ -83,11 +81,7 @@ where
         target: ProviderLaunchTarget,
         process_instance_id: String,
     ) -> Result<(), AdapterProcessError> {
-        let mut process = self.launch_target(target, process_instance_id).await?;
-        if HealthStatus::try_from(process.health().await?.status) != Ok(HealthStatus::Ready) {
-            let _ = process.retire().await;
-            return Err(AdapterProcessError::ProbeNotReady);
-        }
+        let process = self.launch_target(target, process_instance_id).await?;
         if process.retire().await? != AdapterRetirement::Graceful {
             return Err(AdapterProcessError::ProbeShutdown);
         }

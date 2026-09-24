@@ -1,12 +1,5 @@
-use std::{
-    net::SocketAddr,
-    path::Path,
-    process::Stdio,
-    sync::atomic::{AtomicU64, Ordering},
-    time::Duration,
-};
+use std::{net::SocketAddr, path::Path, process::Stdio, time::Duration};
 
-use sha2::{Digest, Sha256};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     process::{Child, Command},
@@ -14,17 +7,14 @@ use tokio::{
 };
 use tonic::{Request, Response, Status, transport::Channel};
 use trakkin_provider_sdk::{
-    BOOTSTRAP_VERSION, InvocationContext, LaunchRequest, LaunchToken, ReadyMessage,
-    current_protocol_version, supported_protocol_range,
+    BOOTSTRAP_VERSION, LaunchRequest, LaunchToken, ReadyMessage, current_protocol_version,
+    supported_protocol_range,
     v1::{HandshakeRequest, HandshakeResponse, ProtocolVersion, ShutdownRequest},
 };
 
-use crate::{
-    application::{
-        adapter_runtime::{AdapterIdentity, AdapterRetirement},
-        providers::ProviderLaunchTarget,
-    },
-    observability,
+use crate::application::{
+    adapter_runtime::{AdapterIdentity, AdapterRetirement},
+    providers::ProviderLaunchTarget,
 };
 
 use super::AdapterProcessError;
@@ -37,8 +27,6 @@ pub(super) struct ProviderProcess {
     client: AdapterServiceClient<Channel>,
     token: LaunchToken,
     identity: AdapterIdentity,
-    correlation_prefix: String,
-    correlation_sequence: AtomicU64,
     rpc_timeout: Duration,
     shutdown_timeout: Duration,
 }
@@ -81,8 +69,6 @@ impl ProviderProcess {
             client,
             token,
             identity,
-            correlation_prefix: correlation_prefix(&launch.process_instance_id),
-            correlation_sequence: AtomicU64::new(1),
             rpc_timeout,
             shutdown_timeout,
         })
@@ -103,11 +89,6 @@ impl ProviderProcess {
     pub(super) fn request<T>(&self, value: T) -> Request<T> {
         let mut request = Request::new(value);
         self.token.apply(&mut request);
-        let sequence = self.correlation_sequence.fetch_add(1, Ordering::Relaxed);
-        apply_invocation_context(
-            &mut request,
-            &format!("adapter:{}:{sequence}", self.correlation_prefix),
-        );
         request
     }
 
@@ -153,19 +134,6 @@ pub(super) fn validate_process_instance_id(
         return Err(AdapterProcessError::InvalidProcessInstanceId);
     }
     Ok(())
-}
-
-fn apply_invocation_context<T>(request: &mut Request<T>, fallback_correlation_id: &str) {
-    let context = observability::current_invocation_context().unwrap_or_else(|| {
-        InvocationContext::new(fallback_correlation_id, None, None)
-            .expect("generated adapter correlation ID is valid")
-    });
-    context.apply(request);
-}
-
-fn correlation_prefix(process_instance_id: &str) -> String {
-    let digest = Sha256::digest(process_instance_id.as_bytes());
-    hex::encode(&digest[..8])
 }
 
 async fn initialize_child(
@@ -215,13 +183,6 @@ async fn initialize_child(
         process_instance_id: launch.process_instance_id.clone(),
     });
     token.apply(&mut handshake_request);
-    apply_invocation_context(
-        &mut handshake_request,
-        &format!(
-            "adapter:{}:0",
-            correlation_prefix(&launch.process_instance_id)
-        ),
-    );
     let handshake = timeout(rpc_timeout, client.clone().handshake(handshake_request))
         .await
         .map_err(|_| AdapterProcessError::RpcTimeout("handshake"))??
@@ -255,13 +216,9 @@ fn spawn_child(executable: &Path, working_directory: &Path) -> Result<Child, Ada
     Ok(Command::new(executable)
         .current_dir(working_directory)
         .env_clear()
-        .env(
-            observability::LOG_LEVEL_ENV,
-            observability::configured_log_level(),
-        )
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::null())
         .kill_on_drop(true)
         .spawn()?)
 }

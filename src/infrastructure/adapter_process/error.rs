@@ -32,8 +32,6 @@ pub enum AdapterProcessError {
     Rpc(tonic::Code),
     #[error("adapter handshake failed validation")]
     InvalidHandshake,
-    #[error("adapter activation probe did not report ready health")]
-    ProbeNotReady,
     #[error("adapter activation probe did not shut down gracefully")]
     ProbeShutdown,
     #[error("adapter response failed validation: {0}")]

@@ -3,10 +3,7 @@
 use tempfile::tempdir;
 use time::OffsetDateTime;
 use trakkin::{
-    application::{
-        task_lifecycle::InterruptionSummary,
-        task_manager::{AdmitTask, TaskDefinition, TaskStatus},
-    },
+    application::task_manager::{AdmitTask, TaskDefinition, TaskStatus},
     database::DatabaseRuntime,
     host::Host,
 };
@@ -36,10 +33,9 @@ async fn startup_interrupts_existing_work_and_accepts_new_tasks() {
     sqlx::query(
         "INSERT INTO tasks (
              id, connection_id, kind, status, cancellation_supported,
-             invocation_context, created_at, updated_at
+             created_at, updated_at
          ) VALUES (
              $1, $2, 'source_discovery', 'queued', TRUE,
-             jsonb_build_object('correlationId', 'request:test', 'traceparent', NULL, 'tracestate', NULL),
              $3, $3
          )",
     )
@@ -67,17 +63,6 @@ async fn startup_interrupts_existing_work_and_accepts_new_tasks() {
         .await
         .expect("host starts after recovering active work");
 
-    assert_eq!(
-        host.startup_recovery(),
-        &InterruptionSummary {
-            tasks: 1,
-            task_attempts: 0,
-            read_attempts: 0,
-            sync_actions_confirmed_not_applied: 0,
-            sync_actions_indeterminate: 0,
-            claims: 0,
-        }
-    );
     assert_eq!(
         host.task_manager()
             .get(INTERRUPTED_TASK_ID)

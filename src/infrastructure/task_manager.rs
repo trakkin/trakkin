@@ -2,7 +2,6 @@ use serde_json::{Value, json};
 use sqlx::{FromRow, PgPool, Postgres, Transaction};
 use thiserror::Error;
 use time::OffsetDateTime;
-use trakkin_provider_sdk::InvocationContext;
 use uuid::Uuid;
 
 use crate::application::{
@@ -26,11 +25,7 @@ impl PostgresTaskRepository {
         Self { pool }
     }
 
-    async fn admit(
-        &self,
-        command: AdmitTask,
-        invocation_context: InvocationContext,
-    ) -> Result<TaskSnapshot, TaskManagerError> {
+    async fn admit(&self, command: AdmitTask) -> Result<TaskSnapshot, TaskManagerError> {
         let mut transaction = self.pool.begin().await?;
         let connection_id =
             resolve_connection(&mut transaction, command.workspace_id, &command.definition).await?;
@@ -38,8 +33,8 @@ impl PostgresTaskRepository {
         sqlx::query(
             "INSERT INTO tasks (
     id, workspace_id, connection_id, kind, status, cancellation_supported,
-    invocation_context, created_at, updated_at
-) VALUES ($1, $2, $3, $4, 'queued', $5, $6, $7, $7)
+    created_at, updated_at
+) VALUES ($1, $2, $3, $4, 'queued', $5, $6, $6)
 ",
         )
         .bind(command.task_id)
@@ -47,7 +42,6 @@ impl PostgresTaskRepository {
         .bind(connection_id)
         .bind(kind)
         .bind(command.cancellation_supported)
-        .bind(invocation_context_json(&invocation_context))
         .bind(command.admitted_at)
         .execute(&mut *transaction)
         .await?;
@@ -85,7 +79,6 @@ impl PostgresTaskRepository {
     tasks.id, tasks.workspace_id, tasks.connection_id, tasks.kind, tasks.status,
     tasks.cancellation_supported,
     tasks.cancellation_requested_at,
-    tasks.invocation_context,
     tasks.failure,
     tasks.created_at, tasks.started_at, tasks.finished_at, tasks.updated_at
 FROM tasks
@@ -154,7 +147,6 @@ VALUES ($1, $2, $3, 'running', $4)
         .bind(command.claimed_at)
         .execute(&mut *transaction)
         .await?;
-        let invocation_context = parse_invocation_context(&task.invocation_context)?;
         let definition = load_task_definition(&mut transaction, task.id, &task.kind).await?;
         task.status = "running".to_owned();
         task.started_at = Some(command.claimed_at);
@@ -167,7 +159,6 @@ VALUES ($1, $2, $3, 'running', $4)
             attempt_id: command.attempt_id,
             attempt_ordinal,
             owner_id: command.owner_id,
-            invocation_context,
         }))
     }
 
@@ -349,7 +340,6 @@ WHERE id = $4
             "SELECT
     id, workspace_id, connection_id, kind, status, cancellation_supported,
     cancellation_requested_at,
-    invocation_context,
     failure,
     created_at,
     started_at,
@@ -381,7 +371,6 @@ WHERE id = $1
             "SELECT
     id, workspace_id, connection_id, kind, status, cancellation_supported,
     cancellation_requested_at,
-    invocation_context,
     failure,
     created_at,
     started_at,
@@ -409,12 +398,8 @@ LIMIT 100
 impl TaskRepository for PostgresTaskRepository {
     type Error = TaskManagerError;
 
-    fn admit_task(
-        &self,
-        command: AdmitTask,
-        invocation_context: InvocationContext,
-    ) -> TaskManagerFuture<'_, TaskSnapshot, Self::Error> {
-        Box::pin(self.admit(command, invocation_context))
+    fn admit_task(&self, command: AdmitTask) -> TaskManagerFuture<'_, TaskSnapshot, Self::Error> {
+        Box::pin(self.admit(command))
     }
 
     fn claim_next_task(
@@ -698,7 +683,6 @@ async fn lock_task(
         "SELECT
     id, workspace_id, connection_id, kind, status, cancellation_supported,
     cancellation_requested_at,
-    invocation_context,
     failure,
     created_at,
     started_at,
@@ -817,38 +801,8 @@ fn ensure_cancellation_supported(task: &TaskRow) -> Result<(), TaskManagerError>
     }
 }
 
-pub(crate) fn invocation_context_json(context: &InvocationContext) -> Value {
-    json!({
-        "correlationId": context.correlation_id(),
-        "traceparent": context.traceparent(),
-        "tracestate": context.tracestate(),
-    })
-}
-
-fn parse_invocation_context(value: &Value) -> Result<InvocationContext, TaskManagerError> {
-    let correlation_id = value
-        .get("correlationId")
-        .and_then(Value::as_str)
-        .ok_or(TaskManagerError::InvalidInvocationContext)?;
-    let traceparent = optional_text(value, "traceparent")?;
-    let tracestate = optional_text(value, "tracestate")?;
-    InvocationContext::new(correlation_id, traceparent, tracestate)
-        .map_err(|_| TaskManagerError::InvalidInvocationContext)
-}
-
-fn optional_text<'a>(value: &'a Value, key: &str) -> Result<Option<&'a str>, TaskManagerError> {
-    match value.get(key) {
-        None | Some(Value::Null) => Ok(None),
-        Some(value) => value
-            .as_str()
-            .map(Some)
-            .ok_or(TaskManagerError::InvalidInvocationContext),
-    }
-}
-
 pub(crate) fn failure_json(failure: &TaskFailure) -> Value {
     json!({
-        "id": failure.id,
         "code": failure.code,
         "message": failure.message,
         "retryable": failure.retryable,
@@ -856,7 +810,6 @@ pub(crate) fn failure_json(failure: &TaskFailure) -> Value {
             "seconds": after.seconds,
             "nanoseconds": after.nanoseconds,
         })),
-        "diagnosticId": failure.diagnostic_id,
     })
 }
 
@@ -866,10 +819,6 @@ fn parse_failure(value: Option<Value>) -> Result<Option<TaskFailure>, TaskManage
     };
     let code = value
         .get("code")
-        .and_then(Value::as_str)
-        .ok_or(TaskManagerError::InvalidFailure)?;
-    let id = value
-        .get("id")
         .and_then(Value::as_str)
         .ok_or(TaskManagerError::InvalidFailure)?;
     let message = value
@@ -902,23 +851,11 @@ fn parse_failure(value: Option<Value>) -> Result<Option<TaskFailure>, TaskManage
             })
         })
         .transpose()?;
-    let diagnostic_id = value
-        .get("diagnosticId")
-        .filter(|value| !value.is_null())
-        .map(|value| {
-            value
-                .as_str()
-                .map(str::to_owned)
-                .ok_or(TaskManagerError::InvalidFailure)
-        })
-        .transpose()?;
     Ok(Some(TaskFailure {
-        id: id.to_owned(),
         code: code.to_owned(),
         message: message.to_owned(),
         retryable,
         retry_after,
-        diagnostic_id,
     }))
 }
 
@@ -931,7 +868,6 @@ struct TaskRow {
     status: String,
     cancellation_supported: bool,
     cancellation_requested_at: Option<OffsetDateTime>,
-    invocation_context: Value,
     failure: Option<Value>,
     created_at: OffsetDateTime,
     started_at: Option<OffsetDateTime>,
@@ -1012,8 +948,6 @@ pub enum TaskManagerError {
     InvalidCompletion,
     #[error("task failure evidence is invalid")]
     InvalidFailure,
-    #[error("task invocation context is invalid")]
-    InvalidInvocationContext,
     #[error("task claim must select at least one task kind")]
     EmptyTaskKindSelection,
     #[error("task manager database operation failed: {0}")]
@@ -1038,7 +972,7 @@ impl IntoApplicationError for TaskManagerError {
                 ApplicationErrorCode::TaskCancellationUnsupported,
                 "task cancellation is not supported",
             ),
-            error @ (Self::MissingTaskDetail
+            Self::MissingTaskDetail
             | Self::MissingTaskConnection
             | Self::InvalidTaskDetail
             | Self::UnknownTaskKind(_)
@@ -1046,9 +980,8 @@ impl IntoApplicationError for TaskManagerError {
             | Self::ClaimNotOwned
             | Self::InvalidCompletion
             | Self::InvalidFailure
-            | Self::InvalidInvocationContext
             | Self::EmptyTaskKindSelection
-            | Self::Database(_)) => ApplicationError::internal("task operation failed", error),
+            | Self::Database(_) => ApplicationError::internal("task operation failed"),
         }
     }
 }

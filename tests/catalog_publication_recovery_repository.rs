@@ -15,9 +15,7 @@ use trakkin::{
         AbandonRead, BeginRead, PublicationRepository, PublishRead, ReadAbandonment, ReadFailure,
         ReadMode, ResetSourceStream, StageCatalogBatch, StageStateBatch,
     },
-    application::task_lifecycle::{
-        InterruptActiveTasks, InterruptionSummary, TaskLifecycleRepository,
-    },
+    application::task_lifecycle::{InterruptActiveTasks, TaskLifecycleRepository},
     database::DatabaseRuntime,
     domain::acquisition::{
         BinaryAssetKey, BinaryAssetReference, CatalogBatch, CatalogItem, CatalogRelation,
@@ -116,23 +114,12 @@ async fn restart_interrupts_active_tasks_and_abandons_staging_without_replay() {
         ]
     );
 
-    let summary = lifecycle_repository
+    lifecycle_repository
         .interrupt_active_tasks(InterruptActiveTasks {
             interrupted_at: timestamp(12),
         })
         .await
         .expect("startup recovery interrupts active tasks");
-    assert_eq!(
-        summary,
-        InterruptionSummary {
-            tasks: 3,
-            task_attempts: 2,
-            read_attempts: 2,
-            sync_actions_confirmed_not_applied: 0,
-            sync_actions_indeterminate: 0,
-            claims: 2,
-        }
-    );
 
     assert_eq!(catalog_stream(&database.pool()).await, catalog_before);
     assert_eq!(state_stream(&database.pool()).await, state_before);
@@ -174,15 +161,12 @@ async fn restart_interrupts_active_tasks_and_abandons_staging_without_replay() {
         read_attempt_status_for(&database.pool(), SECOND_READ_ATTEMPT_ID).await,
         "abandoned"
     );
-    assert_eq!(
-        lifecycle_repository
-            .interrupt_active_tasks(InterruptActiveTasks {
-                interrupted_at: timestamp(13),
-            })
-            .await
-            .expect("repeated startup recovery is a no-op"),
-        InterruptionSummary::default()
-    );
+    lifecycle_repository
+        .interrupt_active_tasks(InterruptActiveTasks {
+            interrupted_at: timestamp(13),
+        })
+        .await
+        .expect("repeated startup recovery is a no-op");
 
     database
         .shutdown()
@@ -920,10 +904,9 @@ async fn seed_catalog_refetch(pool: PgPool) {
     sqlx::query(
         "INSERT INTO tasks (
              id, workspace_id, connection_id, kind, status,
-             cancellation_supported, invocation_context, created_at, started_at, updated_at
+             cancellation_supported, created_at, started_at, updated_at
          ) VALUES (
              $1, $2, $3, 'catalog_read', 'running', TRUE,
-             jsonb_build_object('correlationId', 'request:test', 'traceparent', NULL, 'tracestate', NULL),
              $4, $4, $4
          )",
     )
@@ -970,10 +953,9 @@ async fn seed_concurrent_catalog_reset_task(pool: PgPool) {
     sqlx::query(
         "INSERT INTO tasks (
              id, workspace_id, connection_id, kind, status,
-             cancellation_supported, invocation_context, created_at, started_at, updated_at
+             cancellation_supported, created_at, started_at, updated_at
          ) VALUES (
              $1, $2, $3, 'catalog_reset', 'running', TRUE,
-             jsonb_build_object('correlationId', 'request:test', 'traceparent', NULL, 'tracestate', NULL),
              $4, $4, $4
          )",
     )
@@ -1020,16 +1002,14 @@ async fn seed_concurrent_state_read_and_queued_task(pool: PgPool) {
     sqlx::query(
         "INSERT INTO tasks (
              id, workspace_id, connection_id, kind, status,
-             cancellation_supported, invocation_context, created_at, started_at, updated_at
+             cancellation_supported, created_at, started_at, updated_at
          ) VALUES
              (
                  $1, $2, $3, 'state_read', 'running', TRUE,
-                 jsonb_build_object('correlationId', 'request:test', 'traceparent', NULL, 'tracestate', NULL),
                  $4, $4, $4
              ),
              (
                  $5, $2, $3, 'catalog_read', 'queued', TRUE,
-                 jsonb_build_object('correlationId', 'request:test', 'traceparent', NULL, 'tracestate', NULL),
                  $4, NULL, $4
              )",
     )
@@ -1445,5 +1425,4 @@ fn assert_task_failure(value: serde_json::Value, failure: &ReadFailure) {
     assert_eq!(value["code"], failure.code);
     assert_eq!(value["message"], failure.code.replace('_', " "));
     assert_eq!(value["retryable"], failure.retryable);
-    assert!(value["id"].as_str().is_some_and(|id| !id.is_empty()));
 }

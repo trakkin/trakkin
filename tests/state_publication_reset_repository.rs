@@ -723,5 +723,4 @@ fn assert_task_failure(value: serde_json::Value, failure: &ReadFailure) {
     assert_eq!(value["code"], failure.code);
     assert_eq!(value["message"], failure.code.replace('_', " "));
     assert_eq!(value["retryable"], failure.retryable);
-    assert!(value["id"].as_str().is_some_and(|id| !id.is_empty()));
 }

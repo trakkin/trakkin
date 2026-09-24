@@ -73,7 +73,6 @@ pub struct AdapterCallError {
     pub retryable: bool,
     pub retry_after: Option<AdapterRetryAfter>,
     pub field_problems: Vec<AdapterFieldProblem>,
-    pub diagnostic_id: String,
 }
 
 impl IntoApplicationError for AdapterCallError {
@@ -113,7 +112,6 @@ impl IntoApplicationError for AdapterCallError {
                 retryable: self.retryable,
                 after: retry_after,
             },
-            self.diagnostic_id,
         )
     }
 }
@@ -164,7 +162,6 @@ impl From<OperationFailure> for AdapterCallError {
                     message: problem.message,
                 })
                 .collect(),
-            diagnostic_id: error.diagnostic_id,
         }
     }
 }

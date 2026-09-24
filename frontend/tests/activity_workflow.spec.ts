@@ -53,12 +53,10 @@ test("loads and polls a focused run with structured failure evidence", async ({ 
         mode: null,
         stream: null,
         failure: {
-          id: "provider-failure-1",
           code: "provider_rate_limited",
           message: "Provider rate limit reached",
           retryable: true,
           retryAfter: { seconds: 30, nanoseconds: 0 },
-          diagnosticId: "diagnostic-1",
         },
       });
     }
@@ -76,7 +74,6 @@ test("loads and polls a focused run with structured failure evidence", async ({ 
   await expect(page.getByRole("alert")).toContainText("Provider rate limit reached");
   await expect(page.getByRole("alert")).toContainText("provider_rate_limited");
   await expect(page.getByRole("alert")).toContainText("Retryable after 30s");
-  await expect(page.getByRole("alert")).toContainText("diagnostic-1");
   await expectNoHorizontalOverflow(page);
 });
 
@@ -163,7 +160,7 @@ test("workspace task cancellation cannot mutate a later workspace", async ({ pag
   await page.keyboard.press("Escape");
 
   await page
-    .getByRole("button", { name: /Tasks, server online, 1 active task/ })
+    .getByRole("button", { name: /Tasks, 1 active task/ })
     .filter({ visible: true })
     .click();
   await page.getByRole("button", { name: "Cancel catalog read" }).click();
@@ -175,7 +172,7 @@ test("workspace task cancellation cannot mutate a later workspace", async ({ pag
   await expect.poll(() => secondWorkspaceTaskRequests).toBeGreaterThan(0);
   await page.keyboard.press("Escape");
   await page
-    .getByRole("button", { name: /Tasks, server online, 1 active task/ })
+    .getByRole("button", { name: /Tasks, 1 active task/ })
     .filter({ visible: true })
     .click();
   await expect(page.getByRole("button", { name: "Cancel catalog read" })).toBeEnabled();

@@ -12,7 +12,7 @@ use std::{
 use thiserror::Error;
 use time::OffsetDateTime;
 use tokio::net::TcpListener;
-use trakkin::{host::Host, http, infrastructure::connection::ConnectionMasterKey, observability};
+use trakkin::{host::Host, http, infrastructure::connection::ConnectionMasterKey};
 
 const DEFAULT_BIND_ADDRESS: &str = "127.0.0.1:8725";
 const DEFAULT_DATA_DIRECTORY: &str = ".trakkin";
@@ -22,25 +22,17 @@ const MASTER_KEY_FILE: &str = "master.key";
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    if let Err(error) = observability::init() {
-        eprintln!("trakkin tracing initialization failed: {error}");
-        return ExitCode::FAILURE;
-    }
     if env::args_os().nth(1).as_deref() == Some(OsStr::new(HEALTHCHECK_ARGUMENT)) {
-        return match run_healthcheck() {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(error) => {
-                tracing::error!(event = "healthcheck.failed", error = %error);
-                ExitCode::FAILURE
-            }
+        return if run_healthcheck().is_ok() {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
         };
     }
-    match run().await {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            tracing::error!(event = "host.failed", error = %error);
-            ExitCode::FAILURE
-        }
+    if run().await.is_ok() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
     }
 }
 
@@ -83,7 +75,6 @@ fn healthy_http_status(response: &[u8]) -> bool {
 async fn run() -> Result<(), MainError> {
     let configuration = Configuration::load()?;
     let listener = TcpListener::bind(configuration.bind_address).await?;
-    let address = listener.local_addr()?;
     let started_at = OffsetDateTime::now_utc();
     let host = match configuration.database_url.as_deref() {
         Some(database_url) => Host::connect(database_url, started_at).await?,
@@ -97,19 +88,12 @@ async fn run() -> Result<(), MainError> {
         )
         .await?;
     let application = runtime.application();
-    println!(
-        "{}",
-        serde_json::json!({ "status": "ready", "address": address.to_string() })
-    );
-    io::stdout().flush()?;
-    tracing::info!(event = "host.ready", %address);
     let server = axum::serve(listener, http::router(application))
         .with_graceful_shutdown(shutdown_signal())
         .await;
     let shutdown = runtime.shutdown().await;
     server?;
     shutdown?;
-    tracing::info!(event = "host.stopped");
     Ok(())
 }
 

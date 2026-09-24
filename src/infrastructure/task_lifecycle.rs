@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::application::sync_action_reconciliation::MAXIMUM_AUTOMATIC_SYNC_ACTION_RECONCILIATION_ATTEMPTS;
 use crate::application::task_lifecycle::{
-    InterruptActiveTasks, InterruptionSummary, TaskLifecycleRepository, TaskRepositoryFuture,
+    InterruptActiveTasks, TaskLifecycleRepository, TaskRepositoryFuture,
 };
 use crate::infrastructure::sync_execution::reduce_sync_run;
 
@@ -18,10 +18,7 @@ impl PostgresTaskLifecycleRepository {
         Self { pool }
     }
 
-    async fn interrupt(
-        &self,
-        command: InterruptActiveTasks,
-    ) -> Result<InterruptionSummary, TaskLifecycleError> {
+    async fn interrupt(&self, command: InterruptActiveTasks) -> Result<(), TaskLifecycleError> {
         let mut transaction = self.pool.begin().await?;
         let task_ids = sqlx::query_scalar::<_, Uuid>(
             "SELECT id
@@ -35,7 +32,7 @@ FOR UPDATE
         .await?;
         if task_ids.is_empty() {
             transaction.commit().await?;
-            return Ok(InterruptionSummary::default());
+            return Ok(());
         }
         let retriable_reconciliation_task_ids = sqlx::query_scalar::<_, Uuid>(
             "SELECT reconciliation_tasks.task_id
@@ -66,7 +63,7 @@ FOR UPDATE
         .fetch_all(&mut *transaction)
         .await?;
         clear_interrupted_read_staging(&mut transaction, &read_attempt_ids).await?;
-        let read_attempts = sqlx::query(
+        sqlx::query(
             "UPDATE read_attempts
 SET status = 'abandoned', updated_at = $1, completed_at = $1
 WHERE id = ANY($2) AND status = 'staging'
@@ -75,8 +72,7 @@ WHERE id = ANY($2) AND status = 'staging'
         .bind(command.interrupted_at)
         .bind(&read_attempt_ids)
         .execute(&mut *transaction)
-        .await?
-        .rows_affected();
+        .await?;
         let active_sync_action_attempt_ids = sqlx::query_scalar::<_, Uuid>(
             "SELECT task_attempt_id
 FROM sync_action_attempts
@@ -183,21 +179,17 @@ RETURNING sync_actions.run_id
         }
         for reconciliation in dispatched_reconciliations {
             let task_id = reconciliation_task_id(reconciliation.write_task_attempt_id);
-            let invocation_context = crate::observability::task_invocation_context(task_id);
             sqlx::query(
                 "INSERT INTO tasks (
     id, workspace_id, connection_id, kind, status, cancellation_supported,
-    invocation_context, created_at, updated_at
+    created_at, updated_at
 )
-VALUES ($1, $2, $3, 'sync_action_reconciliation', 'queued', FALSE, $4, $5, $5)
+VALUES ($1, $2, $3, 'sync_action_reconciliation', 'queued', FALSE, $4, $4)
 ",
             )
             .bind(task_id)
             .bind(reconciliation.workspace_id)
             .bind(reconciliation.connection_id)
-            .bind(super::task_manager::invocation_context_json(
-                &invocation_context,
-            ))
             .bind(command.interrupted_at)
             .execute(&mut *transaction)
             .await?;
@@ -231,7 +223,7 @@ WHERE task_id = ANY($2) AND state = 'prepared'
         .bind(&task_ids)
         .execute(&mut *transaction)
         .await?;
-        let task_attempts = sqlx::query(
+        sqlx::query(
             "UPDATE task_attempts
 SET status = 'interrupted', failure = NULL, finished_at = $1
 WHERE task_id = ANY($2) AND status = 'running'
@@ -240,16 +232,14 @@ WHERE task_id = ANY($2) AND status = 'running'
         .bind(command.interrupted_at)
         .bind(&task_ids)
         .execute(&mut *transaction)
-        .await?
-        .rows_affected();
-        let claims = sqlx::query(
+        .await?;
+        sqlx::query(
             "DELETE FROM task_claims WHERE task_id = ANY($1)
 ",
         )
         .bind(&task_ids)
         .execute(&mut *transaction)
-        .await?
-        .rows_affected();
+        .await?;
         let tasks = sqlx::query(
             "UPDATE tasks
 SET
@@ -287,14 +277,7 @@ WHERE id = ANY($2) AND status = 'interrupted'
         }
 
         transaction.commit().await?;
-        Ok(InterruptionSummary {
-            tasks,
-            task_attempts,
-            read_attempts,
-            sync_actions_confirmed_not_applied,
-            sync_actions_indeterminate,
-            claims,
-        })
+        Ok(())
     }
 }
 
@@ -324,7 +307,7 @@ impl TaskLifecycleRepository for PostgresTaskLifecycleRepository {
     fn interrupt_active_tasks(
         &self,
         command: InterruptActiveTasks,
-    ) -> TaskRepositoryFuture<'_, InterruptionSummary, Self::Error> {
+    ) -> TaskRepositoryFuture<'_, (), Self::Error> {
         Box::pin(self.interrupt(command))
     }
 }

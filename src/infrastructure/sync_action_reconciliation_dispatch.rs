@@ -197,7 +197,6 @@ fn indeterminate_outcome(code: &str, safe_message: &str) -> AdapterTargetedState
         retryable: true,
         retry_after: None,
         field_problems: Vec::new(),
-        diagnostic_id: format!("reconciliation:{code}"),
     })
 }
 

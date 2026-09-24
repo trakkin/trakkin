@@ -65,30 +65,16 @@ impl ProbedProviderRegistry {
     }
 
     pub async fn refresh_all_provider_sources(&self, checked_at: OffsetDateTime) {
-        let source_ids = match self.registry.source_ids().await {
-            Ok(source_ids) => source_ids,
-            Err(error) => {
-                tracing::error!(
-                    event = "provider.sources.list.failed",
-                    error = %error.message,
-                );
-                return;
-            }
+        let Ok(source_ids) = self.registry.source_ids().await else {
+            return;
         };
         for source_id in source_ids {
-            if let Err(error) = self
+            let _ = self
                 .refresh(RefreshProviderSource {
                     source_id,
                     checked_at,
                 })
-                .await
-            {
-                tracing::error!(
-                    event = "provider.source.refresh.failed",
-                    %source_id,
-                    error = %error.message,
-                );
-            }
+                .await;
         }
     }
 
@@ -219,11 +205,6 @@ impl ProbedProviderRegistry {
                 self.registry
                     .record_update_error(&command.provider_id, &error_message, command.updated_at)
                     .await?;
-                tracing::warn!(
-                    event = "provider.automatic_update.failed",
-                    provider.id = %command.provider_id,
-                    error = %error_message,
-                );
                 self.registry.provider(&command.provider_id).await
             }
         }
@@ -250,11 +231,6 @@ impl ProbedProviderRegistry {
                 self.registry
                     .record_update_error(&provider_id, &error_message, updated_at)
                     .await?;
-                tracing::warn!(
-                    event = "provider.automatic_update.failed",
-                    %provider_id,
-                    error = %error_message,
-                );
             }
         }
         Ok(source)
@@ -865,15 +841,7 @@ WHERE provider_id = $1
         }
         .await;
         if let Err(error) = committed {
-            if let Err(cleanup_error) =
-                remove_path_if_present(&self.artifact_directory(prepared.artifact_id)).await
-            {
-                tracing::warn!(
-                    event = "provider.update.staging_cleanup.failed",
-                    artifact.id = %prepared.artifact_id,
-                    error = %cleanup_error,
-                );
-            }
+            let _ = remove_path_if_present(&self.artifact_directory(prepared.artifact_id)).await;
             return Err(error);
         }
 
@@ -1716,8 +1684,8 @@ fn invalid_artifact(provider_id: &str, reason: impl Into<String>) -> ProviderLau
     }
 }
 
-fn internal_error(error: impl std::fmt::Display) -> ApplicationError {
-    ApplicationError::internal("provider registry failed", error)
+fn internal_error(_error: impl std::fmt::Display) -> ApplicationError {
+    ApplicationError::internal("provider registry failed")
 }
 
 #[cfg(test)]

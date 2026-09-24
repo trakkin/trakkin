@@ -437,7 +437,6 @@ fn completion_matches_outcome(
                 && actual.message == expected.message
                 && actual.retryable == expected.retryable
                 && actual.retry_after == expected.retry_after
-                && actual.diagnostic_id == expected.diagnostic_id
         }
         _ => false,
     }

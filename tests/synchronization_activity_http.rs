@@ -681,11 +681,10 @@ async fn seed_http_activity_task(
     sqlx::query(
         "INSERT INTO tasks (
     id, workspace_id, connection_id, kind, status,
-    cancellation_supported, invocation_context, created_at, started_at, finished_at, updated_at
+    cancellation_supported, created_at, started_at, finished_at, updated_at
 )
 VALUES (
     $1, $2, $3, 'sync_action', 'succeeded', false,
-    jsonb_build_object('correlationId', 'request:test', 'traceparent', NULL, 'tracestate', NULL),
     $4, $4, $5, $5
 )
 ",

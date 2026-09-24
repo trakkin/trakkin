@@ -73,12 +73,10 @@ pub enum TaskStatusResponse {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskFailureResponse {
-    pub id: String,
     pub code: String,
     pub message: String,
     pub retryable: bool,
     pub retry_after: Option<TaskRetryAfterResponse>,
-    pub diagnostic_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, ToSchema)]
@@ -156,12 +154,10 @@ impl TaskResponse {
 impl From<TaskFailure> for TaskFailureResponse {
     fn from(failure: TaskFailure) -> Self {
         Self {
-            id: failure.id,
             code: failure.code,
             message: failure.message,
             retryable: failure.retryable,
             retry_after: failure.retry_after.map(TaskRetryAfterResponse::from),
-            diagnostic_id: failure.diagnostic_id,
         }
     }
 }

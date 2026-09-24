@@ -302,7 +302,6 @@ fn failed_outcome(
             retryable,
             retry_after: None,
             field_problems: Vec::new(),
-            diagnostic_id: "fixture:temporary_provider_failure".to_owned(),
         }),
     }
 }

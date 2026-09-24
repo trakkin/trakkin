@@ -220,10 +220,9 @@ where
             ),
             Self::Repository(error) => error.into_application_error(),
             Self::Rejected(error) => error.into_application_error(),
-            Self::Adapter(error) => ApplicationError::internal(
-                "reference lookup adapter operation failed",
-                format_args!("{error:?}"),
-            ),
+            Self::Adapter(_) => {
+                ApplicationError::internal("reference lookup adapter operation failed")
+            }
         }
     }
 }

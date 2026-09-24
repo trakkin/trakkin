@@ -293,9 +293,6 @@ function retryLabel(failure: NonNullable<TaskRun["failure"]>): string {
                       {task.failure.code}
                       · {retryLabel(task.failure)}
                     </p>
-                    {#if task.failure.diagnosticId}
-                      <p class="mt-1 font-mono text-meta text-text-muted">Diagnostic {task.failure.diagnosticId}</p>
-                    {/if}
                   </Panel>
                 {/if}
               </div>

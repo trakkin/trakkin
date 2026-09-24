@@ -214,7 +214,6 @@ CREATE TABLE tasks (
     ),
     cancellation_supported BOOLEAN NOT NULL,
     cancellation_requested_at TIMESTAMPTZ,
-    invocation_context JSONB NOT NULL,
     failure JSONB,
     created_at TIMESTAMPTZ NOT NULL,
     started_at TIMESTAMPTZ,
@@ -1355,7 +1354,6 @@ CREATE TABLE sync_action_attempts (
     outcome_error_code TEXT,
     outcome_error_retryable BOOLEAN,
     outcome_error_safe_message TEXT,
-    outcome_error_diagnostic_id TEXT,
     outcome_error_retry_after_seconds BIGINT,
     outcome_error_retry_after_nanoseconds INTEGER,
     state TEXT NOT NULL CHECK (
@@ -1411,7 +1409,6 @@ CREATE TABLE sync_action_attempts (
             AND outcome_error_code IS NULL
             AND outcome_error_retryable IS NULL
             AND outcome_error_safe_message IS NULL
-            AND outcome_error_diagnostic_id IS NULL
             AND outcome_error_retry_after_seconds IS NULL
             AND outcome_error_retry_after_nanoseconds IS NULL
         )
@@ -1438,7 +1435,6 @@ CREATE TABLE sync_action_attempts (
                     AND outcome_error_code IS NULL
                     AND outcome_error_retryable IS NULL
                     AND outcome_error_safe_message IS NULL
-                    AND outcome_error_diagnostic_id IS NULL
                     AND outcome_error_retry_after_seconds IS NULL
                     AND outcome_error_retry_after_nanoseconds IS NULL
                 )
@@ -1459,8 +1455,6 @@ CREATE TABLE sync_action_attempts (
                     AND outcome_error_retryable IS NOT NULL
                     AND outcome_error_safe_message IS NOT NULL
                     AND outcome_error_safe_message <> ''
-                    AND outcome_error_diagnostic_id IS NOT NULL
-                    AND outcome_error_diagnostic_id <> ''
                     AND (
                         (
                             outcome_error_retry_after_seconds IS NULL

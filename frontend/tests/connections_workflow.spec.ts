@@ -486,12 +486,10 @@ test("explains failed source discovery during connection setup", async ({ page }
           kind: "sourceDiscovery",
           sourceId: null,
           failure: {
-            id: "discovery-failure",
             code: "connection_discovery_failed",
             message: "connection discovery failed",
             retryable: false,
             retryAfter: null,
-            diagnosticId: null,
           },
         },
         202,

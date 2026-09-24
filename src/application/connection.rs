@@ -892,7 +892,7 @@ where
             Self::AdapterNotReady(Some(error)) | Self::Rejected(error) => {
                 error.into_application_error()
             }
-            Self::AdapterNotReady(_) => ApplicationError::new(
+            Self::AdapterNotReady(None) => ApplicationError::new(
                 ApplicationErrorCode::ConnectionUnavailable,
                 "connection adapter is unavailable",
             ),
@@ -913,14 +913,9 @@ where
                 "authentication process is unavailable",
             ),
             Self::Repository(error) => error.into_application_error(),
-            Self::AdapterIdentityMismatch => ApplicationError::internal(
-                "connection adapter operation failed",
-                "adapter identity did not match the selected provider",
-            ),
-            Self::Adapter(error) => ApplicationError::internal(
-                "connection adapter operation failed",
-                format_args!("{error:?}"),
-            ),
+            Self::AdapterIdentityMismatch | Self::Adapter(_) => {
+                ApplicationError::internal("connection adapter operation failed")
+            }
         }
     }
 }
@@ -986,7 +981,7 @@ mod tests {
     };
 
     #[test]
-    fn provider_rejection_preserves_public_diagnostics() {
+    fn provider_rejection_preserves_public_details() {
         let rejection = AdapterCallError {
             category: AdapterFailureCategory::RateLimited,
             code: "remote_rate_limit".to_owned(),
@@ -1001,7 +996,6 @@ mod tests {
                 code: "temporarily_limited".to_owned(),
                 message: "account is temporarily limited".to_owned(),
             }],
-            diagnostic_id: "provider:rate-limit:1".to_owned(),
         };
 
         let error = ConnectionCoordinatorError::<ApplicationError, String>::Rejected(rejection)
@@ -1011,8 +1005,6 @@ mod tests {
         assert_eq!(error.provider_code(), Some("remote_rate_limit"));
         assert_eq!(error.field_problems.len(), 1);
         assert!(error.retry().is_some_and(|retry| retry.retryable));
-        assert_eq!(error.diagnostic_id(), Some("provider:rate-limit:1"));
-        assert!(error.internal_message().is_none());
     }
 
     #[test]
@@ -1024,7 +1016,6 @@ mod tests {
             retryable: false,
             retry_after: None,
             field_problems: Vec::new(),
-            diagnostic_id: "provider:authentication:1".to_owned(),
         };
 
         let failure =
@@ -1033,10 +1024,6 @@ mod tests {
         assert_eq!(failure.code, "remote_authentication_failed");
         assert_eq!(failure.message, "remote authentication failed");
         assert!(!failure.retryable);
-        assert_eq!(
-            failure.diagnostic_id.as_deref(),
-            Some("provider:authentication:1")
-        );
     }
 
     #[test]
@@ -1048,7 +1035,5 @@ mod tests {
 
         assert_eq!(error.code, ApplicationErrorCode::Internal);
         assert_eq!(error.message, "connection adapter operation failed");
-        assert_eq!(error.internal_message(), Some("\"socket closed\""));
-        assert!(error.diagnostic_id().is_some());
     }
 }

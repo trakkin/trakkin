@@ -132,16 +132,6 @@ WHERE task_attempt_id = $2
         trakkin::host::Host::start(directory.path(), CREATED_AT + time::Duration::seconds(1))
             .await
             .expect("host recovers sync action before startup completes");
-    assert_eq!(host.startup_recovery().tasks, 1);
-    assert_eq!(host.startup_recovery().task_attempts, 1);
-    assert_eq!(
-        host.startup_recovery().sync_actions_confirmed_not_applied,
-        u64::from(!dispatched)
-    );
-    assert_eq!(
-        host.startup_recovery().sync_actions_indeterminate,
-        u64::from(dispatched)
-    );
     assert_eq!(
         host.task_manager()
             .get(TASK_ID)
@@ -254,7 +244,6 @@ WHERE reconciliation_attempts.action_id = $1
         trakkin::host::Host::start(directory.path(), CREATED_AT + time::Duration::seconds(3))
             .await
             .expect("second restart is idempotent");
-    assert_eq!(restarted.startup_recovery(), &Default::default());
     restarted.shutdown().await.expect("second host shuts down");
     let database = DatabaseRuntime::start(directory.path())
         .await
@@ -641,7 +630,6 @@ async fn sync_precondition_failure_records_no_write_and_isolates_receiver() {
                 retryable: false,
                 retry_after: None,
                 field_problems: Vec::new(),
-                diagnostic_id: "fixture:precondition_failed".to_owned(),
             }),
         })]),
     });
@@ -1780,10 +1768,6 @@ async fn sync_reconciliation_restart_requeues_prepared_read_without_rewriting() 
     let host = trakkin::host::Host::start(directory.path(), recovered_at)
         .await
         .expect("host recovers prepared reconciliation");
-    assert_eq!(host.startup_recovery().tasks, 1);
-    assert_eq!(host.startup_recovery().task_attempts, 1);
-    assert_eq!(host.startup_recovery().claims, 1);
-    assert_eq!(host.startup_recovery().sync_actions_indeterminate, 0);
     assert_eq!(
         host.task_manager()
             .get(reconciliation_task_id)
@@ -2382,12 +2366,10 @@ async fn sync_missing_session_terminalizes_execution_consistently() {
     let failure = completed
         .failure
         .expect("sessionless execution records a structured failure");
-    assert!(failure.id.starts_with("task:"));
     assert_eq!(failure.code, "connection_session_unavailable");
     assert_eq!(failure.message, "connection session unavailable");
     assert!(failure.retryable);
     assert_eq!(failure.retry_after, None);
-    assert_eq!(failure.diagnostic_id, None);
     assert_eq!(table_count(&pool, "task_attempts").await, 1);
     assert_eq!(table_count(&pool, "sync_action_attempts").await, 0);
     assert_eq!(table_count(&pool, "task_claims").await, 0);

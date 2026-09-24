@@ -16,7 +16,6 @@ use trakkin::{
         provider_registry::{PostgresProviderRegistry, ProbedProviderRegistry},
     },
 };
-use trakkin_provider_sdk::v1::HealthStatus;
 use uuid::Uuid;
 
 const SOURCE_ID: Uuid = Uuid::from_u128(1);
@@ -82,7 +81,7 @@ async fn trusted_oci_source_installs_and_launches_provider() {
     assert!(resolved.executable.is_file());
 
     let launcher = AdapterProcessLauncher::new(registry, env!("CARGO_PKG_VERSION"));
-    let mut session = launcher
+    let session = launcher
         .launch(LaunchAdapter {
             provider_id: installed.provider_id.clone(),
             process_instance_id: "oci-install-test".to_owned(),
@@ -90,10 +89,6 @@ async fn trusted_oci_source_installs_and_launches_provider() {
         .await
         .expect("installed provider launches");
     assert_eq!(session.identity().adapter_key, installed.provider_id);
-    assert_eq!(
-        session.health().await.expect("provider health").status,
-        HealthStatus::Ready as i32
-    );
     assert_eq!(
         session.retire().await.expect("provider retires"),
         AdapterRetirement::Graceful

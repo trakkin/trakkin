@@ -1,5 +1,3 @@
-use std::sync::atomic::{AtomicU64, Ordering};
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ApplicationErrorCode {
     InvalidRequest,
@@ -138,8 +136,6 @@ pub struct ApplicationError {
 struct ApplicationErrorDetails {
     provider_code: Option<String>,
     retry: Option<ApplicationRetryAdvice>,
-    diagnostic_id: Option<String>,
-    internal_message: Option<String>,
 }
 
 impl ApplicationError {
@@ -171,16 +167,12 @@ impl ApplicationError {
         }
     }
 
-    pub fn internal(message: impl Into<String>, cause: impl std::fmt::Display) -> Self {
+    pub fn internal(message: impl Into<String>) -> Self {
         Self {
             code: ApplicationErrorCode::Internal,
             message: message.into(),
             field_problems: Vec::new(),
-            details: Box::new(ApplicationErrorDetails {
-                diagnostic_id: Some(generate_diagnostic_id()),
-                internal_message: Some(cause.to_string()),
-                ..ApplicationErrorDetails::default()
-            }),
+            details: Box::default(),
         }
     }
 
@@ -190,7 +182,6 @@ impl ApplicationError {
         provider_code: impl Into<String>,
         field_problems: Vec<ApplicationFieldProblem>,
         retry: ApplicationRetryAdvice,
-        diagnostic_id: impl Into<String>,
     ) -> Self {
         Self {
             code,
@@ -199,8 +190,6 @@ impl ApplicationError {
             details: Box::new(ApplicationErrorDetails {
                 provider_code: Some(provider_code.into()),
                 retry: Some(retry),
-                diagnostic_id: Some(diagnostic_id.into()),
-                internal_message: None,
             }),
         }
     }
@@ -213,14 +202,6 @@ impl ApplicationError {
         self.details.retry.as_ref()
     }
 
-    pub fn diagnostic_id(&self) -> Option<&str> {
-        self.details.diagnostic_id.as_deref()
-    }
-
-    pub fn internal_message(&self) -> Option<&str> {
-        self.details.internal_message.as_deref()
-    }
-
     pub fn take_provider_code(&mut self) -> Option<String> {
         self.details.provider_code.take()
     }
@@ -228,23 +209,6 @@ impl ApplicationError {
     pub fn take_retry(&mut self) -> Option<ApplicationRetryAdvice> {
         self.details.retry.take()
     }
-
-    pub fn take_diagnostic_id(&mut self) -> Option<String> {
-        self.details.diagnostic_id.take()
-    }
-}
-
-static DIAGNOSTIC_ID_SEQUENCE: AtomicU64 = AtomicU64::new(1);
-
-fn generate_diagnostic_id() -> String {
-    let mut bytes = [0_u8; 16];
-    if getrandom::fill(&mut bytes).is_ok() {
-        return format!("host:{}", hex::encode(bytes));
-    }
-    format!(
-        "host:fallback:{}",
-        DIAGNOSTIC_ID_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    )
 }
 
 pub trait IntoApplicationError {
