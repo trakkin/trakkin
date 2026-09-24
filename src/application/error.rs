@@ -124,7 +124,8 @@ pub struct ApplicationRetryAdvice {
     pub after: Option<ApplicationRetryAfter>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("{message}")]
 pub struct ApplicationError {
     pub code: ApplicationErrorCode,
     pub message: String,

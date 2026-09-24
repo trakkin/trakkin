@@ -274,6 +274,12 @@ where
         if snapshot.recurrence != command.recurrence || snapshot.next_run_at != Some(next_run_at) {
             return Err(SyncScheduleRepositoryError::RepositoryInvariant);
         }
+        tracing::info!(
+            workspace.id = %snapshot.workspace_id,
+            sync.policy.id = %snapshot.policy_id,
+            sync.schedule.id = %snapshot.schedule_id,
+            "synchronization schedule enabled"
+        );
         Ok(snapshot)
     }
 
@@ -296,12 +302,19 @@ where
         command: PauseSyncSchedule,
     ) -> Result<SyncScheduleSnapshot, SyncScheduleRepositoryError<R::Error>> {
         let snapshot = self.repository.pause_schedule(command).await?;
-        validate_schedule(
+        let snapshot = validate_schedule(
             snapshot,
             command.workspace_id,
             command.policy_id,
             SyncScheduleState::Paused,
-        )
+        )?;
+        tracing::info!(
+            workspace.id = %snapshot.workspace_id,
+            sync.policy.id = %snapshot.policy_id,
+            sync.schedule.id = %snapshot.schedule_id,
+            "synchronization schedule paused"
+        );
+        Ok(snapshot)
     }
 
     pub async fn materialize_due(

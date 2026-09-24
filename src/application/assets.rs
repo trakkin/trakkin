@@ -178,7 +178,21 @@ impl<R, G> BinaryAssetService<R, G> {
         match result {
             Ok(result) => {
                 restore_session(&self.sessions, target.connection_id, session).await?;
-                let asset = result.map_err(BinaryAssetServiceError::Rejected)?;
+                let asset = match result {
+                    Ok(asset) => asset,
+                    Err(error) => {
+                        tracing::warn!(
+                            workspace.id = %workspace_id,
+                            source.id = %source_id,
+                            publication.id = %publication_id,
+                            provider.operation = "ReadAsset",
+                            failure.category = ?error.category,
+                            failure.retryable = error.retryable,
+                            "provider rejected asset read"
+                        );
+                        return Err(BinaryAssetServiceError::Rejected(error));
+                    }
+                };
                 self.repository
                     .confirm_binary_asset_publication(workspace_id, source_id, publication_id)
                     .await

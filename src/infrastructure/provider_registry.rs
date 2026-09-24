@@ -65,16 +65,30 @@ impl ProbedProviderRegistry {
     }
 
     pub async fn refresh_all_provider_sources(&self, checked_at: OffsetDateTime) {
-        let Ok(source_ids) = self.registry.source_ids().await else {
-            return;
+        let source_ids = match self.registry.source_ids().await {
+            Ok(source_ids) => source_ids,
+            Err(error) => {
+                tracing::warn!(
+                    error.code = error.code.as_str(),
+                    "provider source refresh failed"
+                );
+                return;
+            }
         };
         for source_id in source_ids {
-            let _ = self
+            if let Err(error) = self
                 .refresh(RefreshProviderSource {
                     source_id,
                     checked_at,
                 })
-                .await;
+                .await
+            {
+                tracing::warn!(
+                    %source_id,
+                    error.code = error.code.as_str(),
+                    "provider source refresh failed"
+                );
+            }
         }
     }
 
@@ -199,8 +213,21 @@ impl ProbedProviderRegistry {
             )
             .await;
         match result {
-            Ok(provider) => Ok(provider),
+            Ok(provider) => {
+                tracing::info!(
+                    provider.id = %provider.provider_id,
+                    provider.version = %provider.version,
+                    update.policy = ?provider.update_policy,
+                    "provider updated automatically"
+                );
+                Ok(provider)
+            }
             Err(error) => {
+                tracing::warn!(
+                    provider.id = %command.provider_id,
+                    error.code = error.code.as_str(),
+                    "automatic provider update failed"
+                );
                 let error_message = provider_update_error_message(&error);
                 self.registry
                     .record_update_error(&command.provider_id, &error_message, command.updated_at)
@@ -217,6 +244,7 @@ impl ProbedProviderRegistry {
         let (source, updates) = self.registry.discover_updates(&command).await?;
         for update in updates {
             let provider_id = update.provider_id.clone();
+            let version = update.version.clone();
             let updated_at = command.checked_at;
             let result = self
                 .update_discovered_release(
@@ -226,11 +254,26 @@ impl ProbedProviderRegistry {
                     updated_at,
                 )
                 .await;
-            if let Err(error) = result {
-                let error_message = provider_update_error_message(&error);
-                self.registry
-                    .record_update_error(&provider_id, &error_message, updated_at)
-                    .await?;
+            match result {
+                Ok(provider) => tracing::info!(
+                    provider.id = %provider.provider_id,
+                    provider.version = %provider.version,
+                    provider.source.id = %command.source_id,
+                    "provider updated automatically"
+                ),
+                Err(error) => {
+                    tracing::warn!(
+                        provider.id = %provider_id,
+                        provider.version = %version,
+                        provider.source.id = %command.source_id,
+                        error.code = error.code.as_str(),
+                        "automatic provider update failed"
+                    );
+                    let error_message = provider_update_error_message(&error);
+                    self.registry
+                        .record_update_error(&provider_id, &error_message, updated_at)
+                        .await?;
+                }
             }
         }
         Ok(source)
@@ -1092,18 +1135,65 @@ impl ProviderRegistryApi for ProbedProviderRegistry {
         &self,
         command: TrustProviderSource,
     ) -> ProviderApiFuture<'_, ProviderSourceSnapshot> {
-        Box::pin(self.registry.trust_source(command))
+        Box::pin(async move {
+            let source_id = command.source_id;
+            let result = self.registry.trust_source(command).await;
+            match &result {
+                Ok(source) => tracing::info!(
+                    provider.source.id = %source_id,
+                    available_provider_count = source.available_providers.len(),
+                    "provider source trusted"
+                ),
+                Err(error) => tracing::warn!(
+                    provider.source.id = %source_id,
+                    error.code = error.code.as_str(),
+                    "provider source trust failed"
+                ),
+            }
+            result
+        })
     }
 
     fn refresh_provider_source(
         &self,
         command: RefreshProviderSource,
     ) -> ProviderApiFuture<'_, ProviderSourceSnapshot> {
-        Box::pin(self.refresh(command))
+        Box::pin(async move {
+            let source_id = command.source_id;
+            let result = self.refresh(command).await;
+            match &result {
+                Ok(source) => tracing::info!(
+                    provider.source.id = %source_id,
+                    available_provider_count = source.available_providers.len(),
+                    "provider source refreshed"
+                ),
+                Err(error) => tracing::warn!(
+                    provider.source.id = %source_id,
+                    error.code = error.code.as_str(),
+                    "provider source refresh failed"
+                ),
+            }
+            result
+        })
     }
 
     fn remove_provider_source(&self, command: RemoveProviderSource) -> ProviderApiFuture<'_, ()> {
-        Box::pin(self.registry.remove_source(command))
+        Box::pin(async move {
+            let source_id = command.source_id;
+            let result = self.registry.remove_source(command).await;
+            match &result {
+                Ok(()) => tracing::info!(
+                    provider.source.id = %source_id,
+                    "provider source removed"
+                ),
+                Err(error) => tracing::warn!(
+                    provider.source.id = %source_id,
+                    error.code = error.code.as_str(),
+                    "provider source removal failed"
+                ),
+            }
+            result
+        })
     }
 
     fn inspect_provider_release(
@@ -1121,22 +1211,93 @@ impl ProviderRegistryApi for ProbedProviderRegistry {
         &self,
         command: InstallProvider,
     ) -> ProviderApiFuture<'_, ProviderSnapshot> {
-        Box::pin(self.install(command))
+        Box::pin(async move {
+            let source_id = command.source_id;
+            let artifact_id = command.artifact_id;
+            let provider_id = command.provider_id.clone();
+            let result = self.install(command).await;
+            match &result {
+                Ok(provider) => tracing::info!(
+                    provider.id = %provider.provider_id,
+                    provider.version = %provider.version,
+                    provider.source.id = %source_id,
+                    provider.artifact.id = %artifact_id,
+                    "provider installed"
+                ),
+                Err(error) => tracing::warn!(
+                    provider.id = %provider_id,
+                    provider.source.id = %source_id,
+                    provider.artifact.id = %artifact_id,
+                    error.code = error.code.as_str(),
+                    "provider installation failed"
+                ),
+            }
+            result
+        })
     }
 
     fn update_provider(&self, command: UpdateProvider) -> ProviderApiFuture<'_, ProviderSnapshot> {
-        Box::pin(self.update(command))
+        Box::pin(async move {
+            let provider_id = command.provider_id.clone();
+            let artifact_id = command.artifact_id;
+            let result = self.update(command).await;
+            match &result {
+                Ok(provider) => tracing::info!(
+                    provider.id = %provider.provider_id,
+                    provider.version = %provider.version,
+                    provider.artifact.id = %artifact_id,
+                    "provider updated"
+                ),
+                Err(error) => tracing::warn!(
+                    provider.id = %provider_id,
+                    provider.artifact.id = %artifact_id,
+                    error.code = error.code.as_str(),
+                    "provider update failed"
+                ),
+            }
+            result
+        })
     }
 
     fn change_provider_update_policy(
         &self,
         command: ChangeProviderUpdatePolicy,
     ) -> ProviderApiFuture<'_, ProviderSnapshot> {
-        Box::pin(self.change_policy(command))
+        Box::pin(async move {
+            let provider_id = command.provider_id.clone();
+            let update_policy = command.update_policy;
+            let result = self.change_policy(command).await;
+            match &result {
+                Ok(provider) => tracing::info!(
+                    provider.id = %provider.provider_id,
+                    ?update_policy,
+                    "provider update policy changed"
+                ),
+                Err(error) => tracing::warn!(
+                    provider.id = %provider_id,
+                    ?update_policy,
+                    error.code = error.code.as_str(),
+                    "provider update policy change failed"
+                ),
+            }
+            result
+        })
     }
 
     fn remove_provider(&self, command: RemoveProvider) -> ProviderApiFuture<'_, ()> {
-        Box::pin(self.registry.remove_provider(command))
+        Box::pin(async move {
+            let provider_id = command.provider_id.clone();
+            let result = self.registry.remove_provider(command).await;
+            match &result {
+                Ok(()) => tracing::info!(provider.id = %provider_id, "provider removed"),
+                Err(error) => tracing::warn!(
+                    provider.id = %provider_id,
+                    error.code = error.code.as_str(),
+                    "provider removal failed"
+                ),
+            }
+            result
+        })
     }
 }
 

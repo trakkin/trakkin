@@ -960,16 +960,51 @@ where
         command: CreateWorkspaceSyncPreview,
     ) -> ApplicationFuture<'_, WorkspaceSyncPreview> {
         Box::pin(async move {
-            let snapshot = self
-                .create_preview(command)
-                .await
-                .map_err(sync_workflow_error)?;
-            project_preview(snapshot).map_err(|_| {
+            let preview_id = command.preview_id;
+            let workspace_id = command.workspace_id;
+            let policy_id = command.policy_id;
+            let snapshot = match self.create_preview(command).await {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    let stage = match &error {
+                        SyncWorkflowError::Policy(_) => "policy",
+                        SyncWorkflowError::Collection(_) => "collection",
+                        SyncWorkflowError::Construction(_) => "construction",
+                        SyncWorkflowError::Preview(_) => "persistence",
+                    };
+                    tracing::warn!(
+                        sync.preview.id = %preview_id,
+                        workspace.id = %workspace_id,
+                        sync.policy.id = %policy_id,
+                        failure.stage = stage,
+                        "synchronization preview creation failed"
+                    );
+                    return Err(sync_workflow_error(error));
+                }
+            };
+            let preview = project_preview(snapshot).map_err(|_| {
+                tracing::warn!(
+                    sync.preview.id = %preview_id,
+                    workspace.id = %workspace_id,
+                    sync.policy.id = %policy_id,
+                    failure.stage = "projection",
+                    "synchronization preview creation failed"
+                );
                 ApplicationError::new(
                     ApplicationErrorCode::Internal,
                     "synchronization preview could not be projected",
                 )
-            })
+            })?;
+            tracing::debug!(
+                sync.preview.id = %preview_id,
+                workspace.id = %workspace_id,
+                sync.policy.id = %policy_id,
+                proposed_count = preview.counts.proposed,
+                no_op_count = preview.counts.no_op,
+                finding_count = preview.counts.findings,
+                "synchronization preview created"
+            );
+            Ok(preview)
         })
     }
 }
@@ -1085,9 +1120,41 @@ where
         command: StartWorkspaceSyncRun,
     ) -> ApplicationFuture<'_, SyncRunSnapshot> {
         Box::pin(async move {
-            self.start_run(command)
-                .await
-                .map_err(sync_run_workflow_error)
+            let run_id = command.run_id;
+            let preview_id = command.preview_id;
+            let workspace_id = command.workspace_id;
+            let scheduled = command.schedule_occurrence_id.is_some();
+            let run = match self.start_run(command).await {
+                Ok(run) => run,
+                Err(error) => {
+                    let stage = match &error {
+                        SyncRunWorkflowError::Policy(_) => "policy",
+                        SyncRunWorkflowError::Collection(_) => "collection",
+                        SyncRunWorkflowError::Preview(_) => "preview_load",
+                        SyncRunWorkflowError::Projection => "projection",
+                        SyncRunWorkflowError::IdentityGeneration => "identity_generation",
+                        SyncRunWorkflowError::Admission(_) => "admission",
+                    };
+                    tracing::warn!(
+                        sync.run.id = %run_id,
+                        sync.preview.id = %preview_id,
+                        workspace.id = %workspace_id,
+                        scheduled,
+                        failure.stage = stage,
+                        "synchronization run admission failed"
+                    );
+                    return Err(sync_run_workflow_error(error));
+                }
+            };
+            tracing::info!(
+                sync.run.id = %run_id,
+                sync.preview.id = %preview_id,
+                workspace.id = %workspace_id,
+                scheduled,
+                action_count = run.actions.len(),
+                "synchronization run admitted"
+            );
+            Ok(run)
         })
     }
 }

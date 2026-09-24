@@ -108,9 +108,12 @@ impl<R, G> ReferenceLookupService<R, G> {
         if command.operation_id.is_empty() || command.references.is_empty() {
             return Err(ReferenceLookupServiceError::InvalidRequest);
         }
+        let workspace_id = command.workspace_id;
+        let source_id = command.source_id;
+        let reference_count = command.references.len();
         let target = self
             .repository
-            .resolve_reference_lookup(command.workspace_id, command.source_id)
+            .resolve_reference_lookup(workspace_id, source_id)
             .await
             .map_err(ReferenceLookupServiceError::Repository)?;
         if target.maximum_batch_size == 0
@@ -140,7 +143,21 @@ impl<R, G> ReferenceLookupService<R, G> {
         match result {
             Ok(result) => {
                 restore_session(&self.sessions, target.connection_id, session).await?;
-                result.map_err(ReferenceLookupServiceError::Rejected)
+                match result {
+                    Ok(lookups) => Ok(lookups),
+                    Err(error) => {
+                        tracing::warn!(
+                            workspace.id = %workspace_id,
+                            source.id = %source_id,
+                            reference_count,
+                            provider.operation = "LookupPortableReferences",
+                            failure.category = ?error.category,
+                            failure.retryable = error.retryable,
+                            "provider rejected reference lookup"
+                        );
+                        Err(ReferenceLookupServiceError::Rejected(error))
+                    }
+                }
             }
             Err(error) => {
                 let _ = session.retire().await;

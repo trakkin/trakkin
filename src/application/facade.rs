@@ -489,11 +489,13 @@ where
 {
     fn create_workspace(&self, command: CreateWorkspace) -> ApplicationFuture<'_, WorkspaceView> {
         Box::pin(async move {
+            let workspace_id = command.workspace_id;
             let workspace = self
                 .workspaces
                 .create(command)
                 .await
                 .map_err(IntoApplicationError::into_application_error)?;
+            tracing::info!(workspace.id = %workspace_id, "workspace created");
             Ok(WorkspaceView {
                 workspace,
                 sources: Vec::new(),
@@ -531,10 +533,12 @@ where
     ) -> ApplicationFuture<'_, WorkspaceView> {
         Box::pin(async move {
             let workspace_id = command.workspace_id;
+            let source_id = command.source_id;
             self.workspaces
                 .attach(command)
                 .await
                 .map_err(IntoApplicationError::into_application_error)?;
+            tracing::info!(%workspace_id, %source_id, "workspace source attached");
             self.workspace_view(workspace_id).await
         })
     }
@@ -545,10 +549,15 @@ where
     ) -> ApplicationFuture<'_, WorkspaceView> {
         Box::pin(async move {
             let workspace_id = command.workspace_id;
-            self.workspaces
+            let source_id = command.source_id;
+            let detached = self
+                .workspaces
                 .detach(command)
                 .await
                 .map_err(IntoApplicationError::into_application_error)?;
+            if detached {
+                tracing::info!(%workspace_id, %source_id, "workspace source detached");
+            }
             self.workspace_view(workspace_id).await
         })
     }
@@ -571,10 +580,26 @@ where
         command: UpdateWorkspaceSourceMappingRootPolicy,
     ) -> ApplicationFuture<'_, WorkspaceSourceMappingRootPolicy> {
         Box::pin(async move {
-            self.workspaces
+            let workspace_id = command.workspace_id;
+            let source_id = command.source_id;
+            let namespace_count = command
+                .namespaces
+                .as_ref()
+                .map(Vec::len)
+                .unwrap_or_default();
+            let policy = self
+                .workspaces
                 .update_mapping_root_policy(command)
                 .await
-                .map_err(IntoApplicationError::into_application_error)
+                .map_err(IntoApplicationError::into_application_error)?;
+            tracing::info!(
+                %workspace_id,
+                %source_id,
+                namespace_count,
+                policy.generation = policy.attachment.mapping_root_policy_generation,
+                "workspace mapping-root policy updated"
+            );
+            Ok(policy)
         })
     }
 
@@ -644,6 +669,8 @@ where
         command: CreateWorkspaceMappingDocument,
     ) -> ApplicationFuture<'_, MappingDetail> {
         Box::pin(async move {
+            let workspace_id = command.workspace_id;
+            let mapping_id = command.mapping_id;
             if command.schema != "trakkin.mapping/v1" {
                 return Err(ApplicationError::field(
                     ApplicationErrorCode::InvalidField,
@@ -663,14 +690,19 @@ where
                 })
                 .await
                 .map_err(|error| mapping_lifecycle_error(error, "contentHash"))?;
-            self.mapping_queries
-                .query_revision(
-                    command.workspace_id,
-                    command.mapping_id,
-                    &revision.content_hash,
-                )
+            let detail = self
+                .mapping_queries
+                .query_revision(workspace_id, mapping_id, &revision.content_hash)
                 .await
-                .map_err(IntoApplicationError::into_application_error)
+                .map_err(IntoApplicationError::into_application_error)?;
+            tracing::info!(
+                %workspace_id,
+                %mapping_id,
+                mapping.revision = detail.revision.document.revision(),
+                mapping.row_count = detail.revision.document.mappings().len(),
+                "mapping created"
+            );
+            Ok(detail)
         })
     }
 
@@ -679,7 +711,9 @@ where
         command: UpdateWorkspaceMappingDocument,
     ) -> ApplicationFuture<'_, UpdateMappingDocumentResult> {
         Box::pin(async move {
-            self.workspace_view(command.workspace_id).await?;
+            let workspace_id = command.workspace_id;
+            let mapping_id = command.mapping_id;
+            self.workspace_view(workspace_id).await?;
             let revision = match self
                 .mapping_lifecycle
                 .update(UpdateMapping {
@@ -692,19 +726,23 @@ where
             {
                 Ok(revision) => revision,
                 Err(MappingLifecycleError::HeadMoved { current_head, diff }) => {
+                    tracing::debug!(%workspace_id, %mapping_id, "mapping update head moved");
                     return Ok(UpdateMappingDocumentResult::HeadMoved { current_head, diff });
                 }
                 Err(error) => return Err(mapping_lifecycle_error(error, "baseContentHash")),
             };
             let detail = self
                 .mapping_queries
-                .query_revision(
-                    command.workspace_id,
-                    command.mapping_id,
-                    &revision.content_hash,
-                )
+                .query_revision(workspace_id, mapping_id, &revision.content_hash)
                 .await
                 .map_err(IntoApplicationError::into_application_error)?;
+            tracing::info!(
+                %workspace_id,
+                %mapping_id,
+                mapping.revision = detail.revision.document.revision(),
+                mapping.row_count = detail.revision.document.mappings().len(),
+                "mapping updated"
+            );
             Ok(UpdateMappingDocumentResult::Updated(Box::new(detail)))
         })
     }
@@ -725,7 +763,8 @@ where
             } else {
                 MappingActivationKind::Rollback
             };
-            self.mapping_lifecycle
+            let activation = self
+                .mapping_lifecycle
                 .change_activation(ChangeMappingActivation {
                     event_id: command.event_id,
                     workspace_id: command.workspace_id,
@@ -735,7 +774,15 @@ where
                     changed_at: command.changed_at,
                 })
                 .await
-                .map_err(|error| mapping_lifecycle_error(error, "contentHash"))
+                .map_err(|error| mapping_lifecycle_error(error, "contentHash"))?;
+            tracing::info!(
+                workspace.id = %activation.workspace_id,
+                mapping.id = %activation.mapping_id,
+                activation.kind = ?kind,
+                activation.generation = activation.generation,
+                "mapping activation changed"
+            );
+            Ok(activation)
         })
     }
 
@@ -745,7 +792,8 @@ where
     ) -> ApplicationFuture<'_, WorkspaceMappingActivation> {
         Box::pin(async move {
             self.workspace_view(command.workspace_id).await?;
-            self.mapping_lifecycle
+            let activation = self
+                .mapping_lifecycle
                 .change_activation(ChangeMappingActivation {
                     event_id: command.event_id,
                     workspace_id: command.workspace_id,
@@ -755,7 +803,14 @@ where
                     changed_at: command.changed_at,
                 })
                 .await
-                .map_err(|error| mapping_lifecycle_error(error, "contentHash"))
+                .map_err(|error| mapping_lifecycle_error(error, "contentHash"))?;
+            tracing::info!(
+                workspace.id = %activation.workspace_id,
+                mapping.id = %activation.mapping_id,
+                activation.generation = activation.generation,
+                "mapping retired"
+            );
+            Ok(activation)
         })
     }
 
@@ -835,6 +890,9 @@ where
     ) -> ApplicationFuture<'_, ConnectionSummary> {
         Box::pin(async move {
             let connection_id = command.connection_id;
+            let provider_id = command.provider_id.clone();
+            let setting_count = command.settings.len();
+            let secret_count = command.secrets.len();
             self.providers
                 .ensure_provider_installed(&command.provider_id)
                 .await?;
@@ -842,7 +900,8 @@ where
                 .store_connection(command)
                 .await
                 .map_err(IntoApplicationError::into_application_error)?;
-            self.connections
+            let connection = self
+                .connections
                 .get_connection_summary(connection_id)
                 .await
                 .map_err(IntoApplicationError::into_application_error)?
@@ -851,7 +910,16 @@ where
                         ApplicationErrorCode::Internal,
                         "stored connection could not be loaded",
                     )
-                })
+                })?;
+            tracing::info!(
+                %connection_id,
+                %provider_id,
+                setting_count,
+                secret_count,
+                status = ?connection.status,
+                "connection created"
+            );
+            Ok(connection)
         })
     }
 
@@ -869,10 +937,14 @@ where
         command: RenameConnection,
     ) -> ApplicationFuture<'_, ConnectionSummary> {
         Box::pin(async move {
-            self.connections
+            let connection_id = command.connection_id;
+            let connection = self
+                .connections
                 .rename_connection(command)
                 .await
-                .map_err(IntoApplicationError::into_application_error)
+                .map_err(IntoApplicationError::into_application_error)?;
+            tracing::info!(%connection_id, "connection renamed");
+            Ok(connection)
         })
     }
 
@@ -881,14 +953,26 @@ where
         command: ReconfigureConnection,
     ) -> ApplicationFuture<'_, ConnectionSummary> {
         Box::pin(async move {
+            let connection_id = command.connection_id;
+            let setting_count = command.settings.len();
+            let secret_patch_count = command.secret_patches.len();
             self.connection_retirement
-                .retire_connection(command.connection_id)
+                .retire_connection(connection_id)
                 .await
                 .map_err(IntoApplicationError::into_application_error)?;
-            self.connections
+            let connection = self
+                .connections
                 .reconfigure_connection(command)
                 .await
-                .map_err(IntoApplicationError::into_application_error)
+                .map_err(IntoApplicationError::into_application_error)?;
+            tracing::info!(
+                %connection_id,
+                setting_count,
+                secret_patch_count,
+                status = ?connection.status,
+                "connection reconfigured"
+            );
+            Ok(connection)
         })
     }
 
@@ -958,6 +1042,15 @@ where
                 .finish_connection_deletion(FinishConnectionDeletion { connection_id })
                 .await
                 .map_err(IntoApplicationError::into_application_error)?;
+            tracing::info!(
+                %connection_id,
+                source_count = impact.source_count,
+                workspace_attachment_count = impact.workspace_attachment_count,
+                task_count = impact.task_count,
+                active_task_count = impact.active_task_count,
+                authentication_session_count = impact.authentication_session_count,
+                "connection deleted"
+            );
             Ok(impact)
         })
     }

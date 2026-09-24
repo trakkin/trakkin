@@ -186,6 +186,8 @@ where
         &self,
         command: CreateSyncPolicy,
     ) -> Result<SyncPolicyRevisionSnapshot, SyncPolicyLifecycleError<R::Error>> {
+        let workspace_id = command.workspace_id;
+        let policy_id = command.policy_id;
         let snapshot = self
             .repository
             .create_policy(StoreSyncPolicyRevision {
@@ -196,13 +198,22 @@ where
                 created_at: command.created_at,
             })
             .await?;
-        validate_snapshot(snapshot, command.workspace_id, command.policy_id, Some(1))
+        let snapshot = validate_snapshot(snapshot, workspace_id, policy_id, Some(1))?;
+        tracing::info!(
+            workspace.id = %workspace_id,
+            sync.policy.id = %policy_id,
+            sync.policy.revision = snapshot.revision,
+            "synchronization policy created"
+        );
+        Ok(snapshot)
     }
 
     pub async fn update(
         &self,
         command: UpdateSyncPolicy,
     ) -> Result<SyncPolicyRevisionSnapshot, SyncPolicyLifecycleError<R::Error>> {
+        let workspace_id = command.workspace_id;
+        let policy_id = command.policy_id;
         validate_sync_policy_hash(&command.base_content_hash)
             .map_err(SyncPolicyLifecycleError::InvalidPolicy)?;
         let current = self
@@ -233,12 +244,14 @@ where
                 },
             })
             .await?;
-        validate_snapshot(
-            snapshot,
-            command.workspace_id,
-            command.policy_id,
-            Some(revision),
-        )
+        let snapshot = validate_snapshot(snapshot, workspace_id, policy_id, Some(revision))?;
+        tracing::info!(
+            workspace.id = %workspace_id,
+            sync.policy.id = %policy_id,
+            sync.policy.revision = snapshot.revision,
+            "synchronization policy updated"
+        );
+        Ok(snapshot)
     }
 }
 

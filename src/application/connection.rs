@@ -498,7 +498,8 @@ where
             let _ = session.retire().await;
             return Err(ConnectionCoordinatorError::Repository(error));
         }
-        if authentication_status_active(step.status) {
+        let active = authentication_status_active(step.status);
+        if active {
             self.install_authentication_session(command.connection_id, session)
                 .await?;
         } else {
@@ -506,6 +507,21 @@ where
                 .retire()
                 .await
                 .map_err(ConnectionCoordinatorError::Adapter)?;
+        }
+        if active {
+            tracing::info!(
+                connection.id = %command.connection_id,
+                authentication.id = %command.authentication_id,
+                authentication.status = %authentication_status_name(step.status),
+                "connection authentication started"
+            );
+        } else {
+            tracing::info!(
+                connection.id = %command.connection_id,
+                authentication.id = %command.authentication_id,
+                authentication.status = %authentication_status_name(step.status),
+                "connection authentication completed"
+            );
         }
         Ok(StartedConnectionAuthentication {
             authentication_id: command.authentication_id,
@@ -575,6 +591,14 @@ where
                 .await
                 .map_err(ConnectionCoordinatorError::Adapter)?;
         }
+        if !authentication_status_active(step.status) {
+            tracing::info!(
+                connection.id = %stored.connection_id,
+                authentication.id = %stored.authentication_id,
+                authentication.status = %authentication_status_name(step.status),
+                "connection authentication completed"
+            );
+        }
         Ok(step)
     }
 
@@ -627,6 +651,11 @@ where
             .retire()
             .await
             .map_err(ConnectionCoordinatorError::Adapter)?;
+        tracing::info!(
+            connection.id = %stored.connection_id,
+            authentication.id = %stored.authentication_id,
+            "connection authentication cancelled"
+        );
         Ok(())
     }
 
@@ -754,6 +783,13 @@ where
                 .await?;
             return Err(ConnectionCoordinatorError::ConcurrentSession);
         }
+        tracing::info!(
+            connection.id = %result.connection_id,
+            account_count = result.account_count,
+            source_count = result.source_count,
+            replaced_session = result.replaced_session,
+            "connection opened"
+        );
         Ok(result)
     }
 
@@ -775,6 +811,12 @@ where
         };
         self.mark_unavailable(command.connection_id, command.stopped_at)
             .await?;
+        tracing::info!(
+            connection.id = %command.connection_id,
+            retired_session = retirement.is_some(),
+            retirement = ?retirement,
+            "connection stopped"
+        );
         Ok(retirement)
     }
 
@@ -863,6 +905,10 @@ fn authentication_status_active(status: i32) -> bool {
     )
 }
 
+fn authentication_status_name(status: i32) -> &'static str {
+    AuthenticationStatus::try_from(status).map_or("UNKNOWN", |status| status.as_str_name())
+}
+
 #[derive(Debug)]
 pub enum ConnectionCoordinatorError<RepositoryError, AdapterError> {
     ConnectionNotFound,
@@ -933,9 +979,18 @@ where
         command: InspectConnection,
     ) -> ConnectionFuture<'_, ConnectionInspection, ApplicationError> {
         Box::pin(async move {
-            self.inspect(command)
-                .await
-                .map_err(IntoApplicationError::into_application_error)
+            let connection_id = command.connection_id;
+            let result = self.inspect(command).await;
+            if let Err(ConnectionCoordinatorError::Rejected(error)) = &result {
+                tracing::warn!(
+                    connection.id = %connection_id,
+                    provider.operation = "InspectConnection",
+                    failure.category = ?error.category,
+                    failure.retryable = error.retryable,
+                    "provider rejected connection operation"
+                );
+            }
+            result.map_err(IntoApplicationError::into_application_error)
         })
     }
 
@@ -944,9 +999,20 @@ where
         command: StartConnectionAuthentication,
     ) -> ConnectionFuture<'_, StartedConnectionAuthentication, ApplicationError> {
         Box::pin(async move {
-            self.start_authentication(command)
-                .await
-                .map_err(IntoApplicationError::into_application_error)
+            let connection_id = command.connection_id;
+            let authentication_id = command.authentication_id;
+            let result = self.start_authentication(command).await;
+            if let Err(ConnectionCoordinatorError::Rejected(error)) = &result {
+                tracing::warn!(
+                    connection.id = %connection_id,
+                    authentication.id = %authentication_id,
+                    provider.operation = "StartAuthentication",
+                    failure.category = ?error.category,
+                    failure.retryable = error.retryable,
+                    "provider rejected connection operation"
+                );
+            }
+            result.map_err(IntoApplicationError::into_application_error)
         })
     }
 
@@ -955,9 +1021,20 @@ where
         command: ContinueConnectionAuthentication,
     ) -> ConnectionFuture<'_, AdapterAuthenticationStep, ApplicationError> {
         Box::pin(async move {
-            self.continue_authentication(command)
-                .await
-                .map_err(IntoApplicationError::into_application_error)
+            let connection_id = command.connection_id;
+            let authentication_id = command.authentication_id;
+            let result = self.continue_authentication(command).await;
+            if let Err(ConnectionCoordinatorError::Rejected(error)) = &result {
+                tracing::warn!(
+                    connection.id = %connection_id,
+                    authentication.id = %authentication_id,
+                    provider.operation = "ContinueAuthentication",
+                    failure.category = ?error.category,
+                    failure.retryable = error.retryable,
+                    "provider rejected connection operation"
+                );
+            }
+            result.map_err(IntoApplicationError::into_application_error)
         })
     }
 
@@ -966,9 +1043,20 @@ where
         command: CancelConnectionAuthentication,
     ) -> ConnectionFuture<'_, (), ApplicationError> {
         Box::pin(async move {
-            self.cancel_authentication(command)
-                .await
-                .map_err(IntoApplicationError::into_application_error)
+            let connection_id = command.connection_id;
+            let authentication_id = command.authentication_id;
+            let result = self.cancel_authentication(command).await;
+            if let Err(ConnectionCoordinatorError::Rejected(error)) = &result {
+                tracing::warn!(
+                    connection.id = %connection_id,
+                    authentication.id = %authentication_id,
+                    provider.operation = "CancelAuthentication",
+                    failure.category = ?error.category,
+                    failure.retryable = error.retryable,
+                    "provider rejected connection operation"
+                );
+            }
+            result.map_err(IntoApplicationError::into_application_error)
         })
     }
 }
