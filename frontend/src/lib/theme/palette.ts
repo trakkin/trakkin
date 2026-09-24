@@ -1,4 +1,4 @@
-export const themePaletteStorageKey = "trakkin:theme-palette:v1";
+import { defineVersionedLocalStorage } from "$lib/storage/versionedLocalStorage";
 
 export type ThemePaletteSettings = {
   hue: number;
@@ -25,6 +25,14 @@ export const defaultThemePaletteSettings: ThemePaletteSettings = {
   lightness: 0.12,
   chroma: 0.007,
 };
+
+const themePalettePreference = defineVersionedLocalStorage<ThemePaletteSettings>({
+  name: "theme-palette",
+  version: 1,
+  decode: decodeThemePaletteSettings,
+});
+
+export const themePaletteStorageKey = themePalettePreference.key;
 
 const brandAccent = "#b9f45b";
 
@@ -79,30 +87,15 @@ export function clearThemePalette(): void {
   for (const variable of Object.values(paletteVariables)) {
     document.documentElement.style.removeProperty(variable);
   }
-  localStorage.removeItem(themePaletteStorageKey);
+  themePalettePreference.clear();
 }
 
 export function saveThemePaletteSettings(settings: ThemePaletteSettings): void {
-  localStorage.setItem(themePaletteStorageKey, JSON.stringify(settings));
+  themePalettePreference.write(settings);
 }
 
 export function loadThemePaletteSettings(): ThemePaletteSettings | null {
-  const stored = localStorage.getItem(themePaletteStorageKey);
-  if (!stored) return null;
-
-  try {
-    const value = JSON.parse(stored) as Partial<ThemePaletteSettings>;
-    if (typeof value.hue !== "number" || typeof value.lightness !== "number" || typeof value.chroma !== "number") {
-      return null;
-    }
-    return {
-      hue: normalizeHue(value.hue),
-      lightness: clamp(value.lightness, 0.1, 0.24),
-      chroma: clamp(value.chroma, 0, 0.05),
-    };
-  } catch {
-    return null;
-  }
+  return themePalettePreference.read() ?? null;
 }
 
 export function themePaletteCss(palette: ThemePalette): string {
@@ -140,6 +133,23 @@ function toHex(channel: number): string {
   return Math.round(channel * 255)
     .toString(16)
     .padStart(2, "0");
+}
+
+function decodeThemePaletteSettings(value: unknown): ThemePaletteSettings | undefined {
+  if (!isRecord(value)) return undefined;
+  const { hue, lightness, chroma } = value;
+  if (![hue, lightness, chroma].every((setting) => typeof setting === "number" && Number.isFinite(setting))) {
+    return undefined;
+  }
+  return {
+    hue: normalizeHue(hue as number),
+    lightness: clamp(lightness as number, 0.1, 0.24),
+    chroma: clamp(chroma as number, 0, 0.05),
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function normalizeHue(hue: number): number {
