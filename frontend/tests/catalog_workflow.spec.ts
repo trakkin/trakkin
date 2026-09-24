@@ -240,8 +240,23 @@ test("browses published hierarchy, artwork, and refresh tasks", async ({ page })
   await page.goto(`/w/${workspaceId}/catalog`);
   await expect(page.getByRole("button", { name: "Inspect Northstar" })).toBeVisible();
   await expect(page.locator('img[src*="/assets/"]').first()).toBeVisible();
+  const listViewTab = page.getByRole("tab", { name: "List view" });
+  await listViewTab.click();
+  await expect(listViewTab).toHaveAttribute("data-state", "active");
+  const catalogEntries = page.getByRole("list", { name: "Catalog entries" });
+  await expect(catalogEntries.locator("img")).toHaveCount(0);
+  await expect(catalogEntries).toContainText("media/northstar");
+  await expect(catalogEntries).toContainText("show");
+  await expect
+    .poll(() => page.evaluate(() => localStorage.getItem("dev.trakkin:root:catalog-view")))
+    .toBe(JSON.stringify({ version: 1, value: "list" }));
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Inspect Northstar" })).toBeVisible();
+  await expect(listViewTab).toHaveAttribute("data-state", "active");
+  await expect(catalogEntries.locator("img")).toHaveCount(0);
   await page.getByRole("button", { name: "Browse Northstar" }).click();
   await expect(page.getByRole("button", { name: "Inspect First light" })).toBeVisible();
+  await expect(listViewTab).toHaveAttribute("data-state", "active");
   await page.getByRole("button", { name: "Scan Fixture Catalog" }).click();
   await expect.poll(() => catalogReadCount).toBe(1);
   await expect(page.getByRole("button", { name: "Scan Fixture Catalog" })).toBeEnabled();

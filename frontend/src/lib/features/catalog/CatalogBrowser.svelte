@@ -8,12 +8,14 @@ import {
   Database,
   FolderOpen,
   Layers,
+  LayoutGrid,
+  List,
   RefreshCw,
   RotateCcw,
   Search,
   X,
 } from "@lucide/svelte";
-import { onDestroy } from "svelte";
+import { onDestroy, onMount } from "svelte";
 import { goto } from "$app/navigation";
 import { AlertDialog, Button, Chip, IconButton, MediaArtwork, Panel, Select, Spinner, Tabs, TextInput } from "$lib";
 import {
@@ -28,6 +30,7 @@ import {
   type ProviderKey,
 } from "$lib/api/catalog";
 import { pollCatalog, resetAndRefetch, waitForTask } from "$lib/api/operations";
+import { type CatalogViewMode, catalogViewPreference, decodeCatalogViewMode } from "./catalogPreferences";
 import { catalogPublicationIssue } from "./catalogPublicationIssue";
 import type { WorkspaceCatalog, WorkspaceCatalogSource } from "./workspaceCatalog";
 
@@ -57,6 +60,7 @@ let errorMessage = $state("");
 let focusedRelationId = $state("");
 let resetOpen = $state(false);
 let copiedReferenceId = $state("");
+let viewMode = $state<CatalogViewMode>("grid");
 let reloadSequence = $state(0);
 let requestSequence = 0;
 let operationSequence = 0;
@@ -96,6 +100,11 @@ $effect(() => {
   sourceFilter = data.sources[0]?.source.id ?? "";
   browsePath = [];
   focusedRelationId = "";
+});
+
+onMount(() => {
+  viewMode = catalogViewPreference.read() ?? "grid";
+  return catalogViewPreference.subscribe((value) => (viewMode = value ?? "grid"));
 });
 
 onDestroy(() => {
@@ -241,6 +250,13 @@ function changeSource(value: string) {
   sourceFilter = value;
   browsePath = [];
   focusedRelationId = "";
+}
+
+function changeViewMode(value: string): void {
+  const nextViewMode = decodeCatalogViewMode(value);
+  if (!nextViewMode) return;
+  viewMode = nextViewMode;
+  catalogViewPreference.write(nextViewMode);
 }
 
 function drillInto(entry: CatalogEntry) {
@@ -778,6 +794,39 @@ async function copyPortableReference(referenceId: string, value: string): Promis
             <p class="ml-2 shrink-0 border-l border-border-subtle px-2 text-meta tabular-nums text-text-muted">
               Page {pageIndex + 1}
             </p>
+            <Tabs.Root
+              class="w-auto! shrink-0"
+              onValueChange={changeViewMode}
+              value={viewMode}
+            >
+              <Tabs.List
+                aria-label="Catalog view"
+                class="min-h-0!"
+              >
+                <Tabs.Trigger
+                  aria-label="Grid view"
+                  class="w-7 px-0!"
+                  title="Grid view"
+                  value="grid"
+                >
+                  <LayoutGrid
+                    aria-hidden="true"
+                    size={13}
+                  />
+                </Tabs.Trigger>
+                <Tabs.Trigger
+                  aria-label="List view"
+                  class="w-7 px-0!"
+                  title="List view"
+                  value="list"
+                >
+                  <List
+                    aria-hidden="true"
+                    size={14}
+                  />
+                </Tabs.Trigger>
+              </Tabs.List>
+            </Tabs.Root>
           </div>
 
           {#if loading}
@@ -804,57 +853,116 @@ async function copyPortableReference(referenceId: string, value: string): Promis
               </div></Panel
             >
           {:else}
-            <ul
-              class="grid grid-cols-[repeat(auto-fill,minmax(8.5rem,1fr))] gap-4 sm:grid-cols-[repeat(auto-fill,minmax(9.5rem,1fr))]"
-            >
-              {#each visibleEntries as entry (relationId(entry))}
-                {@const artwork = preferredArtwork(entry)}
-                {@const entryId = relationId(entry)}
-                <li class="group min-w-0">
-                  <div class="group/poster relative">
-                    <button
-                      aria-label={`Inspect ${entryLabel(entry)}`}
-                      aria-pressed={focusedRelationId === entryId}
-                      class="block w-full rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-surface-canvas"
-                      onclick={() => (focusedRelationId = entryId)}
-                      title={formatProviderKey(entry.item?.key ?? entry.relation.key)}
-                      type="button"
-                    >
-                      <MediaArtwork
-                        alt=""
-                        class={[
-                          "w-full transition duration-200 group-hover:-translate-y-0.5 group-hover:border-border-strong group-hover:shadow-[0_14px_32px_rgb(0_0_0/38%)] motion-reduce:transform-none",
-                          focusedRelationId === entryId && "border-accent/70 ring-1 ring-accent/35",
-                        ]}
-                        shape="poster"
-                        src={artwork?.href}
+            {#if viewMode === "grid"}
+              <ul
+                aria-label="Catalog entries"
+                class="grid grid-cols-[repeat(auto-fill,minmax(8.5rem,1fr))] gap-4 sm:grid-cols-[repeat(auto-fill,minmax(9.5rem,1fr))]"
+              >
+                {#each visibleEntries as entry (relationId(entry))}
+                  {@const artwork = preferredArtwork(entry)}
+                  {@const entryId = relationId(entry)}
+                  <li class="group min-w-0">
+                    <div class="group/poster relative">
+                      <button
+                        aria-label={`Inspect ${entryLabel(entry)}`}
+                        aria-pressed={focusedRelationId === entryId}
+                        class="block w-full rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-surface-canvas"
+                        onclick={() => (focusedRelationId = entryId)}
+                        title={formatProviderKey(entry.item?.key ?? entry.relation.key)}
+                        type="button"
                       >
-                        <span class="absolute inset-x-0 bottom-0 truncate p-2.5 text-label font-[650] text-white">
-                          {entryLabel(entry)}
-                        </span>
-                      </MediaArtwork>
-                    </button>
-                    {#if entry.hasChildren}
-                      <div
-                        class="absolute top-2 right-2 z-10 opacity-100 transition sm:opacity-0 sm:group-hover/poster:opacity-100 sm:focus-within:opacity-100"
-                      >
-                        <IconButton
-                          class="border-border-strong bg-black/75 text-white shadow-[0_6px_18px_rgb(0_0_0/40%)] backdrop-blur-sm group-hover/poster:border-accent/45 group-hover/poster:bg-accent group-hover/poster:text-accent-contrast hover:bg-accent hover:text-accent-contrast"
-                          label={`Browse ${entryLabel(entry)}`}
-                          onclick={() => drillInto(entry)}
-                          size="md"
-                          title={`Browse ${entryLabel(entry)}`}
-                          ><FolderOpen
-                            aria-hidden="true"
-                            size={15}
-                          /></IconButton
+                        <MediaArtwork
+                          alt=""
+                          class={[
+                            "w-full transition duration-200 group-hover:-translate-y-0.5 group-hover:border-border-strong group-hover:shadow-[0_14px_32px_rgb(0_0_0/38%)] motion-reduce:transform-none",
+                            focusedRelationId === entryId && "border-accent/70 ring-1 ring-accent/35",
+                          ]}
+                          shape="poster"
+                          src={artwork?.href}
                         >
+                          <span class="absolute inset-x-0 bottom-0 truncate p-2.5 text-label font-[650] text-white">
+                            {entryLabel(entry)}
+                          </span>
+                        </MediaArtwork>
+                      </button>
+                      {#if entry.hasChildren}
+                        <div
+                          class="absolute top-2 right-2 z-10 opacity-100 transition sm:opacity-0 sm:group-hover/poster:opacity-100 sm:focus-within:opacity-100"
+                        >
+                          <IconButton
+                            class="border-border-strong bg-black/75 text-white shadow-[0_6px_18px_rgb(0_0_0/40%)] backdrop-blur-sm group-hover/poster:border-accent/45 group-hover/poster:bg-accent group-hover/poster:text-accent-contrast hover:bg-accent hover:text-accent-contrast"
+                            label={`Browse ${entryLabel(entry)}`}
+                            onclick={() => drillInto(entry)}
+                            size="md"
+                            title={`Browse ${entryLabel(entry)}`}
+                            ><FolderOpen
+                              aria-hidden="true"
+                              size={15}
+                            /></IconButton
+                          >
+                        </div>
+                      {/if}
+                    </div>
+                  </li>
+                {/each}
+              </ul>
+            {:else}
+              <div class="overflow-hidden rounded-md border border-border-subtle bg-surface-raised">
+                <div
+                  aria-hidden="true"
+                  class="hidden grid-cols-[minmax(0,1fr)_8rem_minmax(8rem,0.7fr)_2.5rem] items-center gap-4 border-b border-border-subtle bg-black/10 px-3 py-2 text-meta font-semibold uppercase text-text-disabled sm:grid"
+                >
+                  <span>Name</span>
+                  <span>Media type</span>
+                  <span>Provider key</span>
+                  <span></span>
+                </div>
+                <ul
+                  aria-label="Catalog entries"
+                  class="divide-y divide-border-subtle"
+                >
+                  {#each visibleEntries as entry (relationId(entry))}
+                    {@const entryId = relationId(entry)}
+                    {@const providerKey = formatProviderKey(entry.item?.key ?? entry.relation.key)}
+                    <li class="grid min-w-0 grid-cols-[minmax(0,1fr)_2.5rem] items-stretch">
+                      <button
+                        aria-label={`Inspect ${entryLabel(entry)}`}
+                        aria-pressed={focusedRelationId === entryId}
+                        class={[
+                          "grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-0.5 px-3 py-2.5 text-left outline-none transition-colors hover:bg-white/3 focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent sm:grid-cols-[minmax(0,1fr)_8rem_minmax(8rem,0.7fr)] sm:gap-4",
+                          focusedRelationId === entryId && "bg-accent/8",
+                        ]}
+                        onclick={() => (focusedRelationId = entryId)}
+                        title={providerKey}
+                        type="button"
+                      >
+                        <span class="truncate text-label font-semibold text-text-primary">{entryLabel(entry)}</span>
+                        <span class="text-meta capitalize text-text-muted sm:text-label">{entryKind(entry)}</span>
+                        <span
+                          class="col-span-2 truncate font-mono text-meta text-text-disabled sm:col-span-1 sm:text-text-muted"
+                        >
+                          {providerKey}
+                        </span>
+                      </button>
+                      <div class="flex items-center justify-center">
+                        {#if entry.hasChildren}
+                          <IconButton
+                            label={`Browse ${entryLabel(entry)}`}
+                            onclick={() => drillInto(entry)}
+                            size="sm"
+                            title={`Browse ${entryLabel(entry)}`}
+                            ><FolderOpen
+                              aria-hidden="true"
+                              size={14}
+                            /></IconButton
+                          >
+                        {/if}
                       </div>
-                    {/if}
-                  </div>
-                </li>
-              {/each}
-            </ul>
+                    </li>
+                  {/each}
+                </ul>
+              </div>
+            {/if}
             {#if pageIndex > 0 || nextCursor}
               <nav
                 aria-label="Catalog pages"
@@ -904,7 +1012,7 @@ async function copyPortableReference(referenceId: string, value: string): Promis
                   class="mx-auto text-text-disabled"
                   size={24}
                 />
-                <p class="mt-3">Select a poster to view its published details.</p>
+                <p class="mt-3">Select an entry to view its published details.</p>
               </div>
             </div>
           {/if}
