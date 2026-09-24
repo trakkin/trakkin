@@ -138,15 +138,22 @@ pub struct RecordSyncActionUncertainty {
     pub settled_at: OffsetDateTime,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum SyncActionAttemptError<E> {
+    #[error("sync action claim is invalid")]
     InvalidClaim,
+    #[error("sync action operation ID is invalid")]
     InvalidOperationId,
+    #[error("sync action attempt is already prepared")]
     AttemptAlreadyPrepared,
+    #[error("sync action transition is invalid")]
     InvalidTransition,
+    #[error("sync action is corrupt")]
     CorruptAction,
+    #[error("sync action repository invariant failed")]
     RepositoryInvariant,
-    Repository(E),
+    #[error("sync action repository operation failed: {0}")]
+    Repository(#[source] E),
 }
 
 pub trait SyncActionAttemptRepository: Send + Sync {

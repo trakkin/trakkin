@@ -362,10 +362,7 @@ async fn reset_rejects_active_read_then_succeeds_after_abandonment() {
     repository
         .abandon_read(AbandonRead {
             attempt_id: READ_ATTEMPT_ID,
-            outcome: ReadAbandonment::Failed(ReadFailure {
-                code: "superseded_by_reset".to_owned(),
-                retryable: false,
-            }),
+            outcome: ReadAbandonment::Failed(ReadFailure::coded("superseded_by_reset", false)),
             completed_at: timestamp(11),
         })
         .await
@@ -459,10 +456,7 @@ async fn adapter_failure_abandons_staged_catalog_atomically() {
         ]
     );
 
-    let failure = ReadFailure {
-        code: "adapter_unavailable".to_owned(),
-        retryable: true,
-    };
+    let failure = ReadFailure::new("adapter_unavailable", "Plex request timed out", true);
     repository
         .abandon_read(AbandonRead {
             attempt_id: READ_ATTEMPT_ID,
@@ -1423,6 +1417,6 @@ async fn task_failures(pool: &PgPool) -> serde_json::Value {
 
 fn assert_task_failure(value: serde_json::Value, failure: &ReadFailure) {
     assert_eq!(value["code"], failure.code);
-    assert_eq!(value["message"], failure.code.replace('_', " "));
+    assert_eq!(value["message"], failure.message);
     assert_eq!(value["retryable"], failure.retryable);
 }

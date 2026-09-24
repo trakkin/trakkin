@@ -247,7 +247,7 @@ FOR UPDATE
                 if task.status != "running" || task.cancellation_requested {
                     return Err(PublicationError::TaskNotAbandonable);
                 }
-                let failure = TaskFailure::coded(&failure.code, failure.retryable);
+                let failure = TaskFailure::new(&failure.code, &failure.message, failure.retryable);
                 ("failed", Some(super::task_manager::failure_json(&failure)))
             }
             ReadAbandonment::Cancelled => {

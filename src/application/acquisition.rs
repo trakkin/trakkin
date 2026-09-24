@@ -32,7 +32,24 @@ pub enum ReadAbandonment {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReadFailure {
     pub code: String,
+    pub message: String,
     pub retryable: bool,
+}
+
+impl ReadFailure {
+    pub fn new(code: impl Into<String>, message: impl Into<String>, retryable: bool) -> Self {
+        Self {
+            code: code.into(),
+            message: message.into(),
+            retryable,
+        }
+    }
+
+    pub fn coded(code: impl Into<String>, retryable: bool) -> Self {
+        let code = code.into();
+        let message = code.replace('_', " ");
+        Self::new(code, message, retryable)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

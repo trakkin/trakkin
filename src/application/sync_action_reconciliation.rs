@@ -90,15 +90,22 @@ pub struct RecordSyncActionReconciliation {
     pub settled_at: OffsetDateTime,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum SyncActionReconciliationError<E> {
+    #[error("sync action reconciliation claim is invalid")]
     InvalidClaim,
+    #[error("sync action reconciliation operation ID is invalid")]
     InvalidOperationId,
+    #[error("sync action reconciliation attempt is already prepared")]
     AttemptAlreadyPrepared,
+    #[error("sync action reconciliation transition is invalid")]
     InvalidTransition,
+    #[error("sync action reconciliation is corrupt")]
     CorruptAction,
+    #[error("sync action reconciliation repository invariant failed")]
     RepositoryInvariant,
-    Repository(E),
+    #[error("sync action reconciliation repository operation failed: {0}")]
+    Repository(#[source] E),
 }
 
 pub trait SyncActionReconciliationRepository: Send + Sync {

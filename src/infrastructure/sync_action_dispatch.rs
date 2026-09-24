@@ -348,13 +348,17 @@ fn generate_uuid() -> Result<Uuid, getrandom::Error> {
     Ok(Uuid::from_bytes(bytes))
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum SyncActionDispatchError<AttemptError, AdapterError> {
-    Attempt(SyncActionAttemptError<AttemptError>),
-    Adapter(AdapterError),
+    #[error("sync action attempt failed: {0}")]
+    Attempt(#[source] SyncActionAttemptError<AttemptError>),
+    #[error("sync action adapter operation failed: {0}")]
+    Adapter(#[source] AdapterError),
+    #[error("sync action settlement failed: settlement: {settlement}; uncertainty: {uncertainty}")]
     OutcomeSettlement {
         settlement: SyncActionAttemptError<AttemptError>,
         uncertainty: SyncActionAttemptError<AttemptError>,
     },
+    #[error("sync action adapter returned no outcome")]
     MissingOutcome,
 }

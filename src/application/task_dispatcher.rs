@@ -4,8 +4,8 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::task_manager::{
-    ClaimNextTask, ClaimedTask, CompleteTask, TaskCompletion, TaskKind, TaskManager,
-    TaskRepository, TaskSnapshot, TaskStatus,
+    ClaimNextTask, ClaimedTask, CompleteTask, TaskCompletion, TaskDefinition, TaskKind,
+    TaskManager, TaskRepository, TaskSnapshot, TaskStatus,
 };
 
 pub type TaskHandlerFuture<'a, E> =
@@ -16,6 +16,7 @@ pub enum TaskHandlerOutcome {
     Complete(TaskCompletion),
     Terminalized,
     RetryQueued,
+    Abandoned,
 }
 
 pub trait TaskHandler: Send + Sync {
@@ -55,10 +56,17 @@ where
         }
     }
 
+    pub fn accepted_kinds(&self) -> &'static [TaskKind] {
+        self.handler.accepted_kinds()
+    }
+
     pub async fn dispatch_next(
         &self,
         command: DispatchNextTask,
-    ) -> Result<Option<TaskSnapshot>, TaskDispatcherError<R::Error, H::Error>> {
+    ) -> Result<Option<TaskSnapshot>, TaskDispatcherError<R::Error, H::Error>>
+    where
+        H::Error: std::fmt::Display,
+    {
         let Some(claimed) = self
             .task_manager
             .claim_next(ClaimNextTask {
@@ -72,11 +80,34 @@ where
         else {
             return Ok(None);
         };
-        let outcome = self
-            .handler
-            .execute(&claimed, command.completed_at)
-            .await
-            .map_err(TaskDispatcherError::Handler)?;
+        let task_kind = task_kind(&claimed.task.definition);
+        tracing::debug!(
+            task.id = %claimed.task.id,
+            task.attempt.id = %claimed.attempt_id,
+            task.attempt.ordinal = claimed.attempt_ordinal,
+            task.kind = task_kind,
+            workspace.id = ?claimed.task.workspace_id,
+            connection.id = %claimed.task.connection_id,
+            "task claimed"
+        );
+        let outcome = match self.handler.execute(&claimed, command.completed_at).await {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                tracing::warn!(
+                    task.id = %claimed.task.id,
+                    task.attempt.id = %claimed.attempt_id,
+                    task.attempt.ordinal = claimed.attempt_ordinal,
+                    task.kind = task_kind,
+                    task.attempt.outcome = "handler_failed",
+                    workspace.id = ?claimed.task.workspace_id,
+                    connection.id = %claimed.task.connection_id,
+                    failure.stage = "handler",
+                    error.message = %error,
+                    "task dispatch failed"
+                );
+                return Err(TaskDispatcherError::Handler(error));
+            }
+        };
         let completed = match outcome {
             TaskHandlerOutcome::Complete(completion) => self
                 .task_manager
@@ -113,16 +144,119 @@ where
                 }
                 task
             }
+            TaskHandlerOutcome::Abandoned => return Ok(Some(claimed.task)),
         };
+        if completed.status.terminal() {
+            if matches!(
+                completed.status,
+                TaskStatus::Failed | TaskStatus::Interrupted
+            ) {
+                let (failure_code, failure_message, retryable) = completed.failure.as_ref().map_or(
+                    ("task_interrupted", "task interrupted", false),
+                    |failure| {
+                        (
+                            failure.code.as_str(),
+                            failure.message.as_str(),
+                            failure.retryable,
+                        )
+                    },
+                );
+                if matches!(
+                    claimed.task.definition,
+                    TaskDefinition::SyncAction { .. }
+                        | TaskDefinition::SyncActionReconciliation { .. }
+                ) {
+                    tracing::debug!(
+                        task.id = %completed.id,
+                        task.attempt.id = %claimed.attempt_id,
+                        task.attempt.ordinal = claimed.attempt_ordinal,
+                        task.kind = task_kind,
+                        task.status = ?completed.status,
+                        workspace.id = ?claimed.task.workspace_id,
+                        connection.id = %claimed.task.connection_id,
+                        failure.code = failure_code,
+                        failure.message = failure_message,
+                        failure.retryable = retryable,
+                        "synchronization task completed unsuccessfully"
+                    );
+                } else {
+                    tracing::warn!(
+                        task.id = %completed.id,
+                        task.attempt.id = %claimed.attempt_id,
+                        task.attempt.ordinal = claimed.attempt_ordinal,
+                        task.kind = task_kind,
+                        task.status = ?completed.status,
+                        workspace.id = ?claimed.task.workspace_id,
+                        connection.id = %claimed.task.connection_id,
+                        failure.code = failure_code,
+                        failure.message = failure_message,
+                        failure.retryable = retryable,
+                        "task completed unsuccessfully"
+                    );
+                }
+            } else {
+                tracing::debug!(
+                    task.id = %completed.id,
+                    task.attempt.id = %claimed.attempt_id,
+                    task.attempt.ordinal = claimed.attempt_ordinal,
+                    task.kind = task_kind,
+                    task.status = ?completed.status,
+                    workspace.id = ?claimed.task.workspace_id,
+                    connection.id = %claimed.task.connection_id,
+                    "task completed"
+                );
+            }
+        } else {
+            tracing::debug!(
+                task.id = %completed.id,
+                task.attempt.id = %claimed.attempt_id,
+                task.attempt.ordinal = claimed.attempt_ordinal,
+                task.kind = task_kind,
+                task.status = ?completed.status,
+                task.attempt.outcome = "retry_queued",
+                workspace.id = ?claimed.task.workspace_id,
+                connection.id = %claimed.task.connection_id,
+                "task attempt completed"
+            );
+        }
         Ok(Some(completed))
     }
 }
 
-#[derive(Debug)]
+fn task_kind(definition: &TaskDefinition) -> &'static str {
+    match definition {
+        TaskDefinition::SourceDiscovery { .. } => "source_discovery",
+        TaskDefinition::Read {
+            stream: super::task_manager::SourceStream::Catalog,
+            ..
+        } => "catalog_read",
+        TaskDefinition::Read {
+            stream: super::task_manager::SourceStream::State,
+            ..
+        } => "state_read",
+        TaskDefinition::Reset {
+            stream: super::task_manager::SourceStream::Catalog,
+            ..
+        } => "catalog_reset",
+        TaskDefinition::Reset {
+            stream: super::task_manager::SourceStream::State,
+            ..
+        } => "state_reset",
+        TaskDefinition::SyncAction { .. } => "sync_action",
+        TaskDefinition::SyncActionReconciliation { .. } => "sync_action_reconciliation",
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
 pub enum TaskDispatcherError<RepositoryError, HandlerError> {
-    Repository(RepositoryError),
-    Handler(HandlerError),
+    #[error("task repository operation failed: {0}")]
+    Repository(#[source] RepositoryError),
+    #[error("task handler failed: {0}")]
+    Handler(#[source] HandlerError),
+    #[error("terminal task no longer exists")]
     TerminalTaskMissing,
+    #[error("task handler returned without completing task in status {0:?}")]
     TerminalTaskNotCompleted(TaskStatus),
+    #[error("task handler returned a retry without queuing task in status {0:?}")]
     RetryTaskNotQueued(TaskStatus),
 }

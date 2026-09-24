@@ -142,10 +142,10 @@ async fn cancellation_wins_over_failed_staged_state_abandonment_atomically() {
     repository
         .abandon_read(AbandonRead {
             attempt_id: READ_ATTEMPT_ID,
-            outcome: ReadAbandonment::Failed(ReadFailure {
-                code: "adapter_state_stream_failed".to_owned(),
-                retryable: true,
-            }),
+            outcome: ReadAbandonment::Failed(ReadFailure::coded(
+                "adapter_state_stream_failed",
+                true,
+            )),
             completed_at: timestamp(12),
         })
         .await
@@ -218,10 +218,11 @@ async fn malformed_full_state_is_rejected_then_abandoned_as_failed() {
         )]
     );
 
-    let failure = ReadFailure {
-        code: "malformed_state".to_owned(),
-        retryable: false,
-    };
+    let failure = ReadFailure::new(
+        "malformed_state",
+        "state payload is internally inconsistent",
+        false,
+    );
     repository
         .abandon_read(AbandonRead {
             attempt_id: READ_ATTEMPT_ID,
@@ -721,6 +722,6 @@ async fn task_failures(pool: &PgPool) -> serde_json::Value {
 
 fn assert_task_failure(value: serde_json::Value, failure: &ReadFailure) {
     assert_eq!(value["code"], failure.code);
-    assert_eq!(value["message"], failure.code.replace('_', " "));
+    assert_eq!(value["message"], failure.message);
     assert_eq!(value["retryable"], failure.retryable);
 }

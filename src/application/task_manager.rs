@@ -84,14 +84,19 @@ pub struct TaskFailure {
 }
 
 impl TaskFailure {
-    pub fn coded(code: impl Into<String>, retryable: bool) -> Self {
-        let code = code.into();
+    pub fn new(code: impl Into<String>, message: impl Into<String>, retryable: bool) -> Self {
         Self {
-            message: code.replace('_', " "),
-            code,
+            code: code.into(),
+            message: message.into(),
             retryable,
             retry_after: None,
         }
+    }
+
+    pub fn coded(code: impl Into<String>, retryable: bool) -> Self {
+        let code = code.into();
+        let message = code.replace('_', " ");
+        Self::new(code, message, retryable)
     }
 
     pub fn from_adapter(error: &super::adapter_runtime::AdapterCallError) -> Self {

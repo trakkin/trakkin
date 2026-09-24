@@ -1606,7 +1606,7 @@ async fn sync_reconciliation_transport_failure_exhausts_without_rewriting() {
         writes: Arc::clone(&writes),
         reads: Arc::clone(&reads),
         write_outcomes: VecDeque::from([invalid_outcome]),
-        read_outcomes: VecDeque::from([Err(())]),
+        read_outcomes: VecDeque::from([Err(RecordingAdapterError)]),
     });
     let task_manager = TaskManager::new(PostgresTaskRepository::new(pool.clone()));
     TaskDispatcher::new(
@@ -1655,7 +1655,7 @@ async fn sync_reconciliation_transport_failure_exhausts_without_rewriting() {
                     writes: Arc::clone(&writes),
                     reads: Arc::clone(&reads),
                     write_outcomes: VecDeque::new(),
-                    read_outcomes: VecDeque::from([Err(())]),
+                    read_outcomes: VecDeque::from([Err(RecordingAdapterError)]),
                 },
             )
             .is_none()

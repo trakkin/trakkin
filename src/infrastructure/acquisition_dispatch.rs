@@ -1,7 +1,10 @@
-use std::{marker::PhantomData, time::Duration};
+use std::{future::pending, marker::PhantomData, time::Duration};
 
 use time::OffsetDateTime;
-use tokio::time::{Instant, MissedTickBehavior, interval, timeout_at};
+use tokio::{
+    sync::watch,
+    time::{Instant, MissedTickBehavior, interval, timeout_at},
+};
 use uuid::Uuid;
 
 use crate::application::{
@@ -35,6 +38,7 @@ pub struct AcquisitionTaskHandler<P, T, S> {
     preferred_batch_size: u32,
     cancellation_poll_interval: Duration,
     cancellation_grace_period: Duration,
+    shutdown: Option<watch::Receiver<bool>>,
     session: PhantomData<fn() -> S>,
 }
 
@@ -47,8 +51,14 @@ impl<P, T, S> AcquisitionTaskHandler<P, T, S> {
             preferred_batch_size: 100,
             cancellation_poll_interval: Duration::from_millis(50),
             cancellation_grace_period: Duration::from_secs(5),
+            shutdown: None,
             session: PhantomData,
         }
+    }
+
+    pub fn with_shutdown(mut self, shutdown: watch::Receiver<bool>) -> Self {
+        self.shutdown = Some(shutdown);
+        self
     }
 
     pub fn with_cancellation_timing(
@@ -65,11 +75,11 @@ impl<P, T, S> AcquisitionTaskHandler<P, T, S> {
 impl<P, T, S> TaskHandler for AcquisitionTaskHandler<P, T, S>
 where
     P: PublicationRepository,
-    P::Error: Send,
+    P::Error: Send + std::fmt::Display,
     T: TaskRepository,
-    T::Error: Send,
+    T::Error: Send + std::fmt::Display,
     S: AdapterSession,
-    S::Error: Send,
+    S::Error: Send + std::fmt::Display,
 {
     type Error = AcquisitionDispatchError<P::Error, T::Error, S::Error>;
 
@@ -96,7 +106,9 @@ where
                         .await
                     {
                         Ok(()) => TaskHandlerOutcome::Terminalized,
-                        Err(_) => failed_completion("source_reset_failed", false),
+                        Err(error) => {
+                            failed_completion_with_error("source_reset_failed", error, false)
+                        }
                     };
                     Ok(outcome)
                 }
@@ -104,23 +116,29 @@ where
                     let Some(mut session) = self.sessions.remove(claimed.task.connection_id) else {
                         return Ok(failed_completion("connection_session_unavailable", true));
                     };
+                    let mut shutdown = self.shutdown.clone();
                     let attempt_id = match generate_uuid() {
                         Ok(attempt_id) => attempt_id,
-                        Err(_) => {
+                        Err(error) => {
                             let _ = self
                                 .restore_session(claimed.task.connection_id, session)
                                 .await;
-                            return Ok(failed_completion("operation_id_generation_failed", false));
+                            return Ok(failed_completion_with_error(
+                                "operation_id_generation_failed",
+                                error,
+                                false,
+                            ));
                         }
                     };
                     let publication_id = match generate_uuid() {
                         Ok(publication_id) => publication_id,
-                        Err(_) => {
+                        Err(error) => {
                             let _ = self
                                 .restore_session(claimed.task.connection_id, session)
                                 .await;
-                            return Ok(failed_completion(
+                            return Ok(failed_completion_with_error(
                                 "publication_id_generation_failed",
+                                error,
                                 false,
                             ));
                         }
@@ -142,7 +160,7 @@ where
                     };
                     let fence = match fence {
                         Ok(fence) => fence,
-                        Err(_) => {
+                        Err(error) => {
                             let restored = self
                                 .restore_session(claimed.task.connection_id, session)
                                 .await;
@@ -151,7 +169,7 @@ where
                             } else {
                                 "connection_session_conflict"
                             };
-                            return Ok(failed_completion(code, false));
+                            return Ok(failed_completion_with_error(code, error, false));
                         }
                     };
                     let read_result = match stream {
@@ -159,10 +177,13 @@ where
                             self.run_catalog_read(
                                 claimed,
                                 completed_at,
-                                publication_id,
-                                attempt_id,
+                                ReadAttempt {
+                                    publication_id,
+                                    attempt_id,
+                                },
                                 fence,
                                 &mut session,
+                                &mut shutdown,
                             )
                             .await
                         }
@@ -170,29 +191,40 @@ where
                             self.run_state_read(
                                 claimed,
                                 completed_at,
-                                publication_id,
-                                attempt_id,
+                                ReadAttempt {
+                                    publication_id,
+                                    attempt_id,
+                                },
                                 fence,
                                 &mut session,
+                                &mut shutdown,
                             )
                             .await
                         }
                     };
-                    let retire = match read_result {
-                        Ok(retire) => retire,
+                    let disposition = match read_result {
+                        Ok(disposition) => disposition,
                         Err(error) => {
                             let _ = session.retire().await;
                             return Err(error);
                         }
                     };
-                    if retire {
-                        session
-                            .retire()
-                            .await
-                            .map_err(AcquisitionDispatchError::Adapter)?;
-                    } else {
-                        self.restore_session(claimed.task.connection_id, session)
-                            .await?;
+                    match disposition {
+                        ReadDisposition::Retire => {
+                            session
+                                .retire()
+                                .await
+                                .map_err(AcquisitionDispatchError::Adapter)?;
+                        }
+                        ReadDisposition::Restore => {
+                            self.restore_session(claimed.task.connection_id, session)
+                                .await?;
+                        }
+                        ReadDisposition::Shutdown => {
+                            self.restore_session(claimed.task.connection_id, session)
+                                .await?;
+                            return Ok(TaskHandlerOutcome::Abandoned);
+                        }
                     }
                     Ok(TaskHandlerOutcome::Terminalized)
                 }
@@ -211,16 +243,23 @@ where
     P: PublicationRepository,
     T: TaskRepository,
     S: AdapterSession,
+    P::Error: std::fmt::Display,
+    T::Error: std::fmt::Display,
+    S::Error: std::fmt::Display,
 {
     async fn run_catalog_read(
         &self,
         claimed: &ClaimedTask,
         completed_at: OffsetDateTime,
-        publication_id: Uuid,
-        attempt_id: Uuid,
+        attempt: ReadAttempt,
         fence: ReadFence,
         session: &mut S,
-    ) -> Result<bool, AcquisitionDispatchError<P::Error, T::Error, S::Error>> {
+        shutdown: &mut Option<watch::Receiver<bool>>,
+    ) -> Result<ReadDisposition, AcquisitionDispatchError<P::Error, T::Error, S::Error>> {
+        let ReadAttempt {
+            publication_id,
+            attempt_id,
+        } = attempt;
         let operation_id = attempt_id.as_bytes().to_vec();
         let mut stream = match session
             .read_catalog(read_command(
@@ -231,18 +270,15 @@ where
             .await
         {
             Ok(stream) => stream,
-            Err(_) => {
+            Err(error) => {
                 self.abandon_current(
                     claimed.task.id,
                     attempt_id,
                     completed_at,
-                    ReadFailure {
-                        code: "adapter_catalog_read_failed".to_owned(),
-                        retryable: true,
-                    },
+                    ReadFailure::new("adapter_catalog_read_failed", error.to_string(), true),
                 )
                 .await?;
-                return Ok(true);
+                return Ok(ReadDisposition::Retire);
             }
         };
         let mut cancellation = CancellationMonitor::new(self.cancellation_poll_interval);
@@ -254,6 +290,7 @@ where
                     session,
                     &mut stream,
                     &mut cancellation,
+                    shutdown,
                 )
                 .await;
             let event = match next {
@@ -263,44 +300,46 @@ where
                         claimed.task.id,
                         attempt_id,
                         completed_at,
-                        ReadFailure {
-                            code: "adapter_catalog_stream_ended".to_owned(),
-                            retryable: true,
-                        },
+                        ReadFailure::coded("adapter_catalog_stream_ended", true),
                     )
                     .await?;
-                    return Ok(true);
+                    return Ok(ReadDisposition::Retire);
                 }
                 Err(NextEventError::CancellationTimeout) => {
                     self.abandon_cancelled(attempt_id, completed_at).await?;
-                    return Ok(true);
+                    return Ok(ReadDisposition::Retire);
                 }
-                Err(NextEventError::Task(_)) | Err(NextEventError::TaskMissing) => {
+                Err(NextEventError::Task(error)) => {
                     self.abandon_current(
                         claimed.task.id,
                         attempt_id,
                         completed_at,
-                        ReadFailure {
-                            code: "task_state_unavailable".to_owned(),
-                            retryable: true,
-                        },
+                        ReadFailure::new("task_state_unavailable", error.to_string(), true),
                     )
                     .await?;
-                    return Ok(true);
+                    return Ok(ReadDisposition::Retire);
                 }
-                Err(NextEventError::Adapter(_)) => {
+                Err(NextEventError::TaskMissing) => {
                     self.abandon_current(
                         claimed.task.id,
                         attempt_id,
                         completed_at,
-                        ReadFailure {
-                            code: "adapter_catalog_stream_failed".to_owned(),
-                            retryable: true,
-                        },
+                        ReadFailure::coded("task_state_unavailable", true),
                     )
                     .await?;
-                    return Ok(true);
+                    return Ok(ReadDisposition::Retire);
                 }
+                Err(NextEventError::Adapter(error)) => {
+                    self.abandon_current(
+                        claimed.task.id,
+                        attempt_id,
+                        completed_at,
+                        ReadFailure::new("adapter_catalog_stream_failed", error.to_string(), true),
+                    )
+                    .await?;
+                    return Ok(ReadDisposition::Retire);
+                }
+                Err(NextEventError::Shutdown) => return Ok(ReadDisposition::Shutdown),
             };
             if cancellation.requested {
                 match event {
@@ -309,30 +348,26 @@ where
                     | AdapterReadEvent::Failed(_)
                     | AdapterReadEvent::Cancelled => {
                         self.abandon_cancelled(attempt_id, completed_at).await?;
-                        return Ok(false);
+                        return Ok(ReadDisposition::Restore);
                     }
                 }
             }
             match event {
                 AdapterReadEvent::Heartbeat { .. } => {}
                 AdapterReadEvent::Batch(batch) => {
-                    if self
+                    if let Err(error) = self
                         .publication
                         .stage_catalog_batch(StageCatalogBatch { attempt_id, batch })
                         .await
-                        .is_err()
                     {
                         self.abandon_current(
                             claimed.task.id,
                             attempt_id,
                             completed_at,
-                            ReadFailure {
-                                code: "catalog_staging_failed".to_owned(),
-                                retryable: false,
-                            },
+                            ReadFailure::new("catalog_staging_failed", error.to_string(), false),
                         )
                         .await?;
-                        return Ok(false);
+                        return Ok(ReadDisposition::Restore);
                     }
                 }
                 AdapterReadEvent::Completed(completed) => {
@@ -344,36 +379,34 @@ where
                             self.publication.publish_incremental_catalog(command).await
                         }
                     };
-                    if published.is_err() {
+                    if let Err(error) = published {
                         self.abandon_current(
                             claimed.task.id,
                             attempt_id,
                             completed_at,
-                            ReadFailure {
-                                code: "catalog_publication_failed".to_owned(),
-                                retryable: false,
-                            },
+                            ReadFailure::new(
+                                "catalog_publication_failed",
+                                error.to_string(),
+                                false,
+                            ),
                         )
                         .await?;
                     }
-                    return Ok(false);
+                    return Ok(ReadDisposition::Restore);
                 }
                 AdapterReadEvent::Failed(error) => {
                     self.abandon_current(
                         claimed.task.id,
                         attempt_id,
                         completed_at,
-                        ReadFailure {
-                            code: error.code,
-                            retryable: error.retryable,
-                        },
+                        ReadFailure::new(error.code, error.safe_message, error.retryable),
                     )
                     .await?;
-                    return Ok(false);
+                    return Ok(ReadDisposition::Restore);
                 }
                 AdapterReadEvent::Cancelled => {
                     self.abandon_cancelled(attempt_id, completed_at).await?;
-                    return Ok(false);
+                    return Ok(ReadDisposition::Restore);
                 }
             }
         }
@@ -383,11 +416,15 @@ where
         &self,
         claimed: &ClaimedTask,
         completed_at: OffsetDateTime,
-        publication_id: Uuid,
-        attempt_id: Uuid,
+        attempt: ReadAttempt,
         fence: ReadFence,
         session: &mut S,
-    ) -> Result<bool, AcquisitionDispatchError<P::Error, T::Error, S::Error>> {
+        shutdown: &mut Option<watch::Receiver<bool>>,
+    ) -> Result<ReadDisposition, AcquisitionDispatchError<P::Error, T::Error, S::Error>> {
+        let ReadAttempt {
+            publication_id,
+            attempt_id,
+        } = attempt;
         let operation_id = attempt_id.as_bytes().to_vec();
         let mut stream = match session
             .read_state(read_command(
@@ -398,18 +435,15 @@ where
             .await
         {
             Ok(stream) => stream,
-            Err(_) => {
+            Err(error) => {
                 self.abandon_current(
                     claimed.task.id,
                     attempt_id,
                     completed_at,
-                    ReadFailure {
-                        code: "adapter_state_read_failed".to_owned(),
-                        retryable: true,
-                    },
+                    ReadFailure::new("adapter_state_read_failed", error.to_string(), true),
                 )
                 .await?;
-                return Ok(true);
+                return Ok(ReadDisposition::Retire);
             }
         };
         let mut cancellation = CancellationMonitor::new(self.cancellation_poll_interval);
@@ -421,6 +455,7 @@ where
                     session,
                     &mut stream,
                     &mut cancellation,
+                    shutdown,
                 )
                 .await;
             let event = match next {
@@ -430,44 +465,46 @@ where
                         claimed.task.id,
                         attempt_id,
                         completed_at,
-                        ReadFailure {
-                            code: "adapter_state_stream_ended".to_owned(),
-                            retryable: true,
-                        },
+                        ReadFailure::coded("adapter_state_stream_ended", true),
                     )
                     .await?;
-                    return Ok(true);
+                    return Ok(ReadDisposition::Retire);
                 }
                 Err(NextEventError::CancellationTimeout) => {
                     self.abandon_cancelled(attempt_id, completed_at).await?;
-                    return Ok(true);
+                    return Ok(ReadDisposition::Retire);
                 }
-                Err(NextEventError::Task(_)) | Err(NextEventError::TaskMissing) => {
+                Err(NextEventError::Task(error)) => {
                     self.abandon_current(
                         claimed.task.id,
                         attempt_id,
                         completed_at,
-                        ReadFailure {
-                            code: "task_state_unavailable".to_owned(),
-                            retryable: true,
-                        },
+                        ReadFailure::new("task_state_unavailable", error.to_string(), true),
                     )
                     .await?;
-                    return Ok(true);
+                    return Ok(ReadDisposition::Retire);
                 }
-                Err(NextEventError::Adapter(_)) => {
+                Err(NextEventError::TaskMissing) => {
                     self.abandon_current(
                         claimed.task.id,
                         attempt_id,
                         completed_at,
-                        ReadFailure {
-                            code: "adapter_state_stream_failed".to_owned(),
-                            retryable: true,
-                        },
+                        ReadFailure::coded("task_state_unavailable", true),
                     )
                     .await?;
-                    return Ok(true);
+                    return Ok(ReadDisposition::Retire);
                 }
+                Err(NextEventError::Adapter(error)) => {
+                    self.abandon_current(
+                        claimed.task.id,
+                        attempt_id,
+                        completed_at,
+                        ReadFailure::new("adapter_state_stream_failed", error.to_string(), true),
+                    )
+                    .await?;
+                    return Ok(ReadDisposition::Retire);
+                }
+                Err(NextEventError::Shutdown) => return Ok(ReadDisposition::Shutdown),
             };
             if cancellation.requested {
                 match event {
@@ -476,30 +513,26 @@ where
                     | AdapterReadEvent::Failed(_)
                     | AdapterReadEvent::Cancelled => {
                         self.abandon_cancelled(attempt_id, completed_at).await?;
-                        return Ok(false);
+                        return Ok(ReadDisposition::Restore);
                     }
                 }
             }
             match event {
                 AdapterReadEvent::Heartbeat { .. } => {}
                 AdapterReadEvent::Batch(batch) => {
-                    if self
+                    if let Err(error) = self
                         .publication
                         .stage_state_batch(StageStateBatch { attempt_id, batch })
                         .await
-                        .is_err()
                     {
                         self.abandon_current(
                             claimed.task.id,
                             attempt_id,
                             completed_at,
-                            ReadFailure {
-                                code: "state_staging_failed".to_owned(),
-                                retryable: false,
-                            },
+                            ReadFailure::new("state_staging_failed", error.to_string(), false),
                         )
                         .await?;
-                        return Ok(false);
+                        return Ok(ReadDisposition::Restore);
                     }
                 }
                 AdapterReadEvent::Completed(completed) => {
@@ -511,36 +544,30 @@ where
                             self.publication.publish_incremental_state(command).await
                         }
                     };
-                    if published.is_err() {
+                    if let Err(error) = published {
                         self.abandon_current(
                             claimed.task.id,
                             attempt_id,
                             completed_at,
-                            ReadFailure {
-                                code: "state_publication_failed".to_owned(),
-                                retryable: false,
-                            },
+                            ReadFailure::new("state_publication_failed", error.to_string(), false),
                         )
                         .await?;
                     }
-                    return Ok(false);
+                    return Ok(ReadDisposition::Restore);
                 }
                 AdapterReadEvent::Failed(error) => {
                     self.abandon_current(
                         claimed.task.id,
                         attempt_id,
                         completed_at,
-                        ReadFailure {
-                            code: error.code,
-                            retryable: error.retryable,
-                        },
+                        ReadFailure::new(error.code, error.safe_message, error.retryable),
                     )
                     .await?;
-                    return Ok(false);
+                    return Ok(ReadDisposition::Restore);
                 }
                 AdapterReadEvent::Cancelled => {
                     self.abandon_cancelled(attempt_id, completed_at).await?;
-                    return Ok(false);
+                    return Ok(ReadDisposition::Restore);
                 }
             }
         }
@@ -553,15 +580,20 @@ where
         session: &mut S,
         stream: &mut R,
         cancellation: &mut CancellationMonitor,
+        shutdown: &mut Option<watch::Receiver<bool>>,
     ) -> Result<Option<AdapterReadEvent<B>>, NextEventError<T::Error, S::Error>>
     where
         R: AdapterReadStream<B, Error = S::Error>,
     {
         if let Some(deadline) = cancellation.deadline {
-            return timeout_at(deadline, stream.next_event())
-                .await
-                .map_err(|_| NextEventError::CancellationTimeout)?
-                .map_err(NextEventError::Adapter);
+            return tokio::select! {
+                result = timeout_at(deadline, stream.next_event()) => {
+                    result
+                        .map_err(|_| NextEventError::CancellationTimeout)?
+                        .map_err(NextEventError::Adapter)
+                }
+                () = wait_for_shutdown(shutdown) => Err(NextEventError::Shutdown),
+            };
         }
         loop {
             tokio::select! {
@@ -582,6 +614,9 @@ where
                         cancellation.requested = true;
                         cancellation.deadline = Some(Instant::now() + self.cancellation_grace_period);
                     }
+                }
+                () = wait_for_shutdown(shutdown) => {
+                    return Err(NextEventError::Shutdown);
                 }
             }
         }
@@ -641,6 +676,29 @@ struct CancellationMonitor {
     deadline: Option<Instant>,
 }
 
+#[derive(Clone, Copy)]
+struct ReadAttempt {
+    publication_id: Uuid,
+    attempt_id: Uuid,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReadDisposition {
+    Retire,
+    Restore,
+    Shutdown,
+}
+
+async fn wait_for_shutdown(shutdown: &mut Option<watch::Receiver<bool>>) {
+    let Some(shutdown) = shutdown else {
+        pending().await
+    };
+    if *shutdown.borrow() {
+        return;
+    }
+    let _ = shutdown.wait_for(|requested| *requested).await;
+}
+
 impl CancellationMonitor {
     fn new(poll_interval: Duration) -> Self {
         let mut interval = interval(poll_interval);
@@ -689,6 +747,18 @@ fn failed_completion(code: &str, retryable: bool) -> TaskHandlerOutcome {
     TaskHandlerOutcome::Complete(TaskCompletion::Failed(TaskFailure::coded(code, retryable)))
 }
 
+fn failed_completion_with_error(
+    code: &str,
+    error: impl std::fmt::Display,
+    retryable: bool,
+) -> TaskHandlerOutcome {
+    TaskHandlerOutcome::Complete(TaskCompletion::Failed(TaskFailure::new(
+        code,
+        error.to_string(),
+        retryable,
+    )))
+}
+
 fn generate_uuid() -> Result<Uuid, getrandom::Error> {
     let mut bytes = [0_u8; 16];
     getrandom::fill(&mut bytes)?;
@@ -697,11 +767,15 @@ fn generate_uuid() -> Result<Uuid, getrandom::Error> {
     Ok(Uuid::from_bytes(bytes))
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum AcquisitionDispatchError<PublicationError, TaskError, AdapterError> {
-    Publication(PublicationError),
-    Task(TaskError),
-    Adapter(AdapterError),
+    #[error("acquisition publication operation failed: {0}")]
+    Publication(#[source] PublicationError),
+    #[error("acquisition task operation failed: {0}")]
+    Task(#[source] TaskError),
+    #[error("acquisition adapter operation failed: {0}")]
+    Adapter(#[source] AdapterError),
+    #[error("acquisition session was replaced concurrently")]
     ConcurrentSession,
 }
 
@@ -710,4 +784,32 @@ enum NextEventError<TaskError, AdapterError> {
     TaskMissing,
     Adapter(AdapterError),
     CancellationTimeout,
+    Shutdown,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::pending;
+
+    use tokio::sync::watch;
+
+    use super::wait_for_shutdown;
+
+    #[tokio::test]
+    async fn shutdown_interrupts_a_pending_read() {
+        let (shutdown_sender, shutdown_receiver) = watch::channel(false);
+        let waiter = tokio::spawn(async move {
+            let mut shutdown = Some(shutdown_receiver);
+            tokio::select! {
+                () = pending() => false,
+                () = wait_for_shutdown(&mut shutdown) => true,
+            }
+        });
+
+        shutdown_sender
+            .send(true)
+            .expect("shutdown receiver exists");
+
+        assert!(waiter.await.expect("shutdown waiter completes"));
+    }
 }

@@ -454,11 +454,15 @@ struct ReconciliationRecordingSession {
     writes: Arc<Mutex<Vec<WriteAdapterTargetedState>>>,
     reads: Arc<Mutex<Vec<ReadAdapterTargetedState>>>,
     write_outcomes: VecDeque<AdapterTargetedStateWriteOutcome>,
-    read_outcomes: VecDeque<Result<AdapterTargetedStateReadOutcome, ()>>,
+    read_outcomes: VecDeque<Result<AdapterTargetedStateReadOutcome, RecordingAdapterError>>,
 }
 
+#[derive(Clone, Debug, thiserror::Error)]
+#[error("recording adapter failed")]
+struct RecordingAdapterError;
+
 impl SyncActionAdapterSession for ReconciliationRecordingSession {
-    type Error = ();
+    type Error = RecordingAdapterError;
 
     async fn write_sync_action(
         &mut self,
@@ -487,7 +491,7 @@ impl SyncActionAdapterSession for ReconciliationRecordingSession {
 }
 
 impl SyncActionReconciliationAdapterSession for ReconciliationRecordingSession {
-    type Error = ();
+    type Error = RecordingAdapterError;
 
     async fn read_sync_action_reconciliation(
         &mut self,

@@ -200,8 +200,10 @@ fn indeterminate_outcome(code: &str, safe_message: &str) -> AdapterTargetedState
     })
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum SyncActionReconciliationDispatchError<RepositoryError, AdapterError> {
-    Reconciliation(SyncActionReconciliationError<RepositoryError>),
-    Adapter(AdapterError),
+    #[error("sync action reconciliation failed: {0}")]
+    Reconciliation(#[source] SyncActionReconciliationError<RepositoryError>),
+    #[error("sync action reconciliation adapter operation failed: {0}")]
+    Adapter(#[source] AdapterError),
 }
