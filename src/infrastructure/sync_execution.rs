@@ -6,18 +6,17 @@ pub(crate) async fn reduce_sync_run(
     transaction: &mut Transaction<'_, Postgres>,
     run_id: Uuid,
     updated_at: OffsetDateTime,
-) -> Result<bool, sqlx::Error> {
-    if sqlx::query_scalar::<_, Uuid>(
-        "SELECT id FROM sync_runs WHERE id = $1 FOR UPDATE
+) -> Result<SyncRunReduction, sqlx::Error> {
+    let Some(previous_status) = sqlx::query_scalar::<_, String>(
+        "SELECT status FROM sync_runs WHERE id = $1 FOR UPDATE
 ",
     )
     .bind(run_id)
     .fetch_optional(&mut **transaction)
     .await?
-    .is_none()
-    {
-        return Ok(false);
-    }
+    else {
+        return Ok(SyncRunReduction::not_updated());
+    };
     let reduction = sqlx::query_as::<_, RunReductionRow>(
         "SELECT
     COUNT(*) FILTER (WHERE status = 'queued') AS queued,
@@ -36,7 +35,7 @@ WHERE run_id = $1
     .fetch_one(&mut **transaction)
     .await?;
     if reduction.total == 0 {
-        return Ok(false);
+        return Ok(SyncRunReduction::not_updated());
     }
     let (status, finished_at) = if reduction.queued == reduction.total {
         ("queued", None)
@@ -65,7 +64,86 @@ WHERE id = $4
     .bind(run_id)
     .execute(&mut **transaction)
     .await?;
-    Ok(run.rows_affected() == 1)
+    let updated = run.rows_affected() == 1;
+    let outcome =
+        (updated && reduction.active == 0 && previous_status != status).then(|| SyncRunOutcome {
+            run_id,
+            status,
+            total: reduction.total,
+            succeeded: reduction.succeeded,
+            indeterminate: reduction.indeterminate,
+            cancelled: reduction.cancelled,
+            failed: reduction
+                .total
+                .saturating_sub(reduction.succeeded)
+                .saturating_sub(reduction.indeterminate)
+                .saturating_sub(reduction.cancelled),
+        });
+    Ok(SyncRunReduction { updated, outcome })
+}
+
+pub(crate) struct SyncRunReduction {
+    pub(crate) updated: bool,
+    outcome: Option<SyncRunOutcome>,
+}
+
+impl SyncRunReduction {
+    fn not_updated() -> Self {
+        Self {
+            updated: false,
+            outcome: None,
+        }
+    }
+
+    pub(crate) fn record_outcome(self) {
+        let Some(outcome) = self.outcome else {
+            return;
+        };
+        if outcome.status == "indeterminate" {
+            tracing::warn!(
+                sync.run.id = %outcome.run_id,
+                run.status = outcome.status,
+                actions.total = outcome.total,
+                actions.succeeded = outcome.succeeded,
+                actions.indeterminate = outcome.indeterminate,
+                actions.cancelled = outcome.cancelled,
+                actions.failed = outcome.failed,
+                "synchronization run outcome is indeterminate"
+            );
+        } else if matches!(outcome.status, "succeeded" | "cancelled") {
+            tracing::info!(
+                sync.run.id = %outcome.run_id,
+                run.status = outcome.status,
+                actions.total = outcome.total,
+                actions.succeeded = outcome.succeeded,
+                actions.indeterminate = outcome.indeterminate,
+                actions.cancelled = outcome.cancelled,
+                actions.failed = outcome.failed,
+                "synchronization run completed"
+            );
+        } else {
+            tracing::warn!(
+                sync.run.id = %outcome.run_id,
+                run.status = outcome.status,
+                actions.total = outcome.total,
+                actions.succeeded = outcome.succeeded,
+                actions.indeterminate = outcome.indeterminate,
+                actions.cancelled = outcome.cancelled,
+                actions.failed = outcome.failed,
+                "synchronization run completed"
+            );
+        }
+    }
+}
+
+struct SyncRunOutcome {
+    run_id: Uuid,
+    status: &'static str,
+    total: i64,
+    succeeded: i64,
+    indeterminate: i64,
+    cancelled: i64,
+    failed: i64,
 }
 
 #[derive(FromRow)]

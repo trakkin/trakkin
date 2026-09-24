@@ -110,10 +110,13 @@ WHERE id = $3 AND status IN ('queued', 'retryable_failure')
             command.failed_at,
         )
         .await?;
-        if !reduce_sync_run(&mut transaction, claim.run_id, command.failed_at).await? {
+        let run_reduction =
+            reduce_sync_run(&mut transaction, claim.run_id, command.failed_at).await?;
+        if !run_reduction.updated {
             return Err(SyncActionAttemptError::InvalidTransition);
         }
         transaction.commit().await?;
+        run_reduction.record_outcome();
         Ok(())
     }
 
@@ -401,11 +404,14 @@ WHERE id = $2 AND status = 'running'
                 command.dispatched_at,
             )
             .await?;
-            if !reduce_sync_run(&mut transaction, claim.run_id, command.dispatched_at).await? {
+            let run_reduction =
+                reduce_sync_run(&mut transaction, claim.run_id, command.dispatched_at).await?;
+            if !run_reduction.updated {
                 return Err(SyncActionAttemptError::InvalidTransition);
             }
             let snapshot = load_attempt(&mut transaction, command.task_attempt_id).await?;
             transaction.commit().await?;
+            run_reduction.record_outcome();
             return Ok(SyncActionDispatchTransition::Cancelled(snapshot));
         }
         let updated = sqlx::query(
@@ -598,11 +604,14 @@ AND status = 'running'
                 }
             }
         }
-        if !reduce_sync_run(&mut transaction, claim.run_id, command.settled_at).await? {
+        let run_reduction =
+            reduce_sync_run(&mut transaction, claim.run_id, command.settled_at).await?;
+        if !run_reduction.updated {
             return Err(SyncActionAttemptError::InvalidTransition);
         }
         let snapshot = load_attempt(&mut transaction, command.task_attempt_id).await?;
         transaction.commit().await?;
+        run_reduction.record_outcome();
         Ok(SyncActionOutcomeSettlement {
             attempt: snapshot,
             disposition: if retry_queued {
@@ -739,11 +748,14 @@ VALUES ($1, $2, $3, $4)
             command.settled_at,
         )
         .await?;
-        if !reduce_sync_run(&mut transaction, claim.run_id, command.settled_at).await? {
+        let run_reduction =
+            reduce_sync_run(&mut transaction, claim.run_id, command.settled_at).await?;
+        if !run_reduction.updated {
             return Err(SyncActionAttemptError::InvalidTransition);
         }
         let snapshot = load_attempt(&mut transaction, command.task_attempt_id).await?;
         transaction.commit().await?;
+        run_reduction.record_outcome();
         Ok(snapshot)
     }
 }

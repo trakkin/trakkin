@@ -444,12 +444,13 @@ WHERE id = $2 AND status = 'running'
             .execute(&mut *transaction)
             .await?
         };
-        if task.rows_affected() != 1
-            || !reduce_sync_run(&mut transaction, row.run_id, command.settled_at).await?
-        {
+        let run_reduction =
+            reduce_sync_run(&mut transaction, row.run_id, command.settled_at).await?;
+        if task.rows_affected() != 1 || !run_reduction.updated {
             return Err(SyncActionReconciliationError::InvalidTransition);
         }
         transaction.commit().await?;
+        run_reduction.record_outcome();
         Ok(SyncActionReconciliationSettlement {
             attempt: SyncActionReconciliationSnapshot {
                 task_id: command.task_id,

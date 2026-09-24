@@ -194,6 +194,7 @@ WHERE
         let mut transaction = self.pool.begin().await?;
         let task = lock_task(&mut transaction, command.task_id).await?;
         let status = parse_status(&task.status)?;
+        let mut sync_run_reduction = None;
         let disposition = match status {
             TaskStatus::Queued => {
                 ensure_cancellation_supported(&task)?;
@@ -226,9 +227,12 @@ RETURNING sync_actions.run_id
                     .fetch_optional(&mut *transaction)
                     .await?
                     .ok_or(TaskManagerError::InvalidCompletion)?;
-                    if !reduce_sync_run(&mut transaction, run_id, command.requested_at).await? {
+                    let reduction =
+                        reduce_sync_run(&mut transaction, run_id, command.requested_at).await?;
+                    if !reduction.updated {
                         return Err(TaskManagerError::InvalidCompletion);
                     }
+                    sync_run_reduction = Some(reduction);
                 }
                 CancellationDisposition::CancelledBeforeStart
             }
@@ -251,6 +255,9 @@ WHERE id = $2
             _ => return Err(TaskManagerError::InvalidTaskStatus(task.status)),
         };
         transaction.commit().await?;
+        if let Some(reduction) = sync_run_reduction {
+            reduction.record_outcome();
+        }
         Ok(disposition)
     }
 

@@ -172,10 +172,14 @@ RETURNING sync_actions.run_id
         .await?;
         recovered_sync_run_ids.sort_unstable();
         recovered_sync_run_ids.dedup();
+        let mut run_reductions = Vec::with_capacity(recovered_sync_run_ids.len());
         for run_id in recovered_sync_run_ids {
-            if !reduce_sync_run(&mut transaction, run_id, command.interrupted_at).await? {
+            let reduction =
+                reduce_sync_run(&mut transaction, run_id, command.interrupted_at).await?;
+            if !reduction.updated {
                 return Err(TaskLifecycleError::ActiveSyncActionSetChanged);
             }
+            run_reductions.push(reduction);
         }
         for reconciliation in dispatched_reconciliations {
             let task_id = reconciliation_task_id(reconciliation.write_task_attempt_id);
@@ -277,6 +281,9 @@ WHERE id = ANY($2) AND status = 'interrupted'
         }
 
         transaction.commit().await?;
+        for reduction in run_reductions {
+            reduction.record_outcome();
+        }
         Ok(())
     }
 }
