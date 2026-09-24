@@ -35,9 +35,22 @@ pub struct DatabaseRuntime {
 impl DatabaseRuntime {
     #[cfg(feature = "embedded-database")]
     pub async fn start(data_directory: &Path) -> Result<Self, DatabaseError> {
+        tracing::debug!(database.mode = "embedded", "starting database");
         let root = data_directory.join("postgres");
-        fs::create_dir_all(&root)?;
-        let root = root.canonicalize()?;
+        fs::create_dir_all(&root).inspect_err(|_| {
+            tracing::error!(
+                database.mode = "embedded",
+                database.stage = "prepare_storage",
+                "database startup failed"
+            );
+        })?;
+        let root = root.canonicalize().inspect_err(|_| {
+            tracing::error!(
+                database.mode = "embedded",
+                database.stage = "prepare_storage",
+                "database startup failed"
+            );
+        })?;
         let runtime_directory = root.join("runtime").join(POSTGRESQL_VERSION);
         let data_directory = root.join("data");
         let password_file = root.join("password");
@@ -49,10 +62,23 @@ impl DatabaseRuntime {
                 &POSTGRESQL_ARCHIVE.to_vec(),
                 &runtime_directory,
             )
-            .await?;
+            .await
+            .inspect_err(|_| {
+                tracing::error!(
+                    database.mode = "embedded",
+                    database.stage = "install_engine",
+                    "database startup failed"
+                );
+            })?;
         }
 
-        let password = load_or_create_password(&password_file)?;
+        let password = load_or_create_password(&password_file).inspect_err(|_| {
+            tracing::error!(
+                database.mode = "embedded",
+                database.stage = "prepare_credentials",
+                "database startup failed"
+            );
+        })?;
         let mut builder = SettingsBuilder::new()
             .releases_url(zonky::URL)
             .installation_dir(runtime_directory)
@@ -74,8 +100,20 @@ impl DatabaseRuntime {
         }
 
         let mut postgresql = PostgreSQL::new(builder.build());
-        postgresql.setup().await?;
-        postgresql.start().await?;
+        postgresql.setup().await.inspect_err(|_| {
+            tracing::error!(
+                database.mode = "embedded",
+                database.stage = "setup_engine",
+                "database startup failed"
+            );
+        })?;
+        postgresql.start().await.inspect_err(|_| {
+            tracing::error!(
+                database.mode = "embedded",
+                database.stage = "start_engine",
+                "database startup failed"
+            );
+        })?;
 
         let pool_result = async {
             if !postgresql.database_exists(DATABASE_NAME).await? {
@@ -83,7 +121,14 @@ impl DatabaseRuntime {
             }
             let bootstrap_pool = connect_as_bootstrap(&postgresql, DATABASE_NAME).await?;
             provision_roles(&bootstrap_pool).await?;
-            MIGRATOR.run(&bootstrap_pool).await?;
+            MIGRATOR.run(&bootstrap_pool).await.inspect_err(|error| {
+                tracing::error!(
+                    database.mode = "embedded",
+                    database.stage = "migrate",
+                    error.message = %error,
+                    "database migration failed"
+                );
+            })?;
             grant_application_access(&bootstrap_pool).await?;
             sqlx::query(
                 "SELECT set_trakkin_password($1)
@@ -103,11 +148,19 @@ impl DatabaseRuntime {
         .await;
 
         match pool_result {
-            Ok(pool) => Ok(Self {
-                pool,
-                embedded: Some(Box::new(postgresql)),
-            }),
+            Ok(pool) => {
+                tracing::info!(database.mode = "embedded", "database ready");
+                Ok(Self {
+                    pool,
+                    embedded: Some(Box::new(postgresql)),
+                })
+            }
             Err(error) => {
+                tracing::error!(
+                    database.mode = "embedded",
+                    database.stage = "provision",
+                    "database startup failed"
+                );
                 let _ = postgresql.stop().await;
                 Err(error)
             }
@@ -120,12 +173,28 @@ impl DatabaseRuntime {
     }
 
     pub async fn connect(database_url: &str) -> Result<Self, DatabaseError> {
+        tracing::debug!(database.mode = "external", "connecting to database");
         let pool = PgPoolOptions::new()
             .max_connections(10)
             .acquire_timeout(Duration::from_secs(5))
             .connect(database_url)
-            .await?;
-        MIGRATOR.run(&pool).await?;
+            .await
+            .inspect_err(|_| {
+                tracing::error!(
+                    database.mode = "external",
+                    database.stage = "connect",
+                    "database startup failed"
+                );
+            })?;
+        MIGRATOR.run(&pool).await.inspect_err(|error| {
+            tracing::error!(
+                database.mode = "external",
+                database.stage = "migrate",
+                error.message = %error,
+                "database migration failed"
+            );
+        })?;
+        tracing::info!(database.mode = "external", "database ready");
         Ok(Self {
             pool,
             #[cfg(feature = "embedded-database")]
@@ -138,11 +207,27 @@ impl DatabaseRuntime {
     }
 
     pub async fn shutdown(self) -> Result<(), DatabaseError> {
+        #[cfg(feature = "embedded-database")]
+        let database_mode = if self.embedded.is_some() {
+            "embedded"
+        } else {
+            "external"
+        };
+        #[cfg(not(feature = "embedded-database"))]
+        let database_mode = "external";
+
         self.pool.close().await;
         #[cfg(feature = "embedded-database")]
         if let Some(postgresql) = self.embedded {
-            postgresql.stop().await?;
+            postgresql.stop().await.inspect_err(|_| {
+                tracing::error!(
+                    database.mode = database_mode,
+                    database.stage = "stop_engine",
+                    "database shutdown failed"
+                );
+            })?;
         }
+        tracing::info!(database.mode = database_mode, "database stopped");
         Ok(())
     }
 }

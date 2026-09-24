@@ -6,13 +6,17 @@ use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream},
     path::{Path, PathBuf},
     process::ExitCode,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
+use axum::extract::MatchedPath;
 use thiserror::Error;
 use time::OffsetDateTime;
 use tokio::net::TcpListener;
+use tracing::{debug, error, info};
 use trakkin::{host::Host, http, infrastructure::connection::ConnectionMasterKey};
+
+mod observability;
 
 const DEFAULT_BIND_ADDRESS: &str = "127.0.0.1:8725";
 const DEFAULT_DATA_DIRECTORY: &str = ".trakkin";
@@ -29,10 +33,14 @@ async fn main() -> ExitCode {
             ExitCode::FAILURE
         };
     }
-    if run().await.is_ok() {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::FAILURE
+    match run().await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            if matches!(&error, MainError::Configuration(_) | MainError::Logging(_)) {
+                eprintln!("trakkin failed during {}: {error}", error.stage());
+            }
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -74,27 +82,118 @@ fn healthy_http_status(response: &[u8]) -> bool {
 
 async fn run() -> Result<(), MainError> {
     let configuration = Configuration::load()?;
-    let listener = TcpListener::bind(configuration.bind_address).await?;
+    let _logging =
+        observability::initialize(&configuration.data_directory).map_err(MainError::Logging)?;
+    let database_mode = if configuration.database_url.is_some() {
+        "external"
+    } else {
+        "embedded"
+    };
+    debug!(
+        database.mode = database_mode,
+        "loaded runtime configuration"
+    );
+    info!(
+        version = env!("CARGO_PKG_VERSION"),
+        bind.address = %configuration.bind_address,
+        database.mode = database_mode,
+        "starting Trakkin"
+    );
+    let result = run_configured(configuration).await;
+    match &result {
+        Ok(()) => info!("Trakkin stopped"),
+        Err(error) => error!(
+            error.stage = error.stage(),
+            error.message = %error,
+            "Trakkin stopped with an error"
+        ),
+    }
+    result
+}
+
+async fn run_configured(configuration: Configuration) -> Result<(), MainError> {
+    let listener = match TcpListener::bind(configuration.bind_address).await {
+        Ok(listener) => listener,
+        Err(error) => {
+            error!(startup.stage = "listener_bind", "Trakkin startup failed");
+            return Err(error.into());
+        }
+    };
+    debug!(startup.stage = "listener_bound", "HTTP listener bound");
     let started_at = OffsetDateTime::now_utc();
-    let host = match configuration.database_url.as_deref() {
+    let host_result = match configuration.database_url.as_deref() {
         Some(database_url) => Host::connect(database_url, started_at).await?,
         None => start_embedded_host(&configuration.data_directory, started_at).await?,
     };
-    let runtime = host
+    let runtime = host_result
         .into_runtime(
             &configuration.data_directory,
             &configuration.provider_runtime_directory,
             configuration.connection_master_key,
         )
-        .await?;
+        .await
+        .inspect_err(|_| {
+            error!(
+                startup.stage = "runtime_initialize",
+                "Trakkin startup failed"
+            );
+        })?;
     let application = runtime.application();
-    let server = axum::serve(listener, http::router(application))
+    let router = http::router(application).layer(axum::middleware::from_fn(log_http_failure));
+    info!(startup.stage = "server_started", "HTTP server started");
+    let server = axum::serve(listener, router)
         .with_graceful_shutdown(shutdown_signal())
         .await;
     let shutdown = runtime.shutdown().await;
+    if server.is_err() {
+        error!(
+            shutdown.stage = "http_server",
+            "HTTP server stopped with an error"
+        );
+    }
+    if shutdown.is_err() {
+        error!(shutdown.stage = "host_runtime", "host shutdown failed");
+    }
     server?;
     shutdown?;
     Ok(())
+}
+
+async fn log_http_failure(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let method = request.method().clone();
+    let route = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map(MatchedPath::as_str)
+        .unwrap_or("unmatched")
+        .to_owned();
+    let started_at = Instant::now();
+    let response = next.run(request).await;
+    if response.status().is_server_error() {
+        if let Some(failure) = response.extensions().get::<http::HttpFailureContext>() {
+            tracing::warn!(
+                http.request.method = %method,
+                http.route = route,
+                http.response.status_code = response.status().as_u16(),
+                application.error.code = failure.code(),
+                application.error.message = failure.message(),
+                latency_ms = started_at.elapsed().as_millis(),
+                "HTTP request failed"
+            );
+        } else {
+            tracing::warn!(
+                http.request.method = %method,
+                http.route = route,
+                http.response.status_code = response.status().as_u16(),
+                latency_ms = started_at.elapsed().as_millis(),
+                "HTTP request failed"
+            );
+        }
+    }
+    response
 }
 
 #[cfg(feature = "embedded-database")]
@@ -253,8 +352,21 @@ enum MainError {
     Configuration(#[from] ConfigurationError),
     #[error(transparent)]
     Host(#[from] trakkin::host::HostError),
+    #[error("logging initialization failed: {0}")]
+    Logging(#[source] io::Error),
     #[error("HTTP server failed: {0}")]
     Server(#[from] io::Error),
+}
+
+impl MainError {
+    fn stage(&self) -> &'static str {
+        match self {
+            Self::Configuration(_) => "configuration",
+            Self::Host(_) => "host_runtime",
+            Self::Logging(_) => "logging",
+            Self::Server(_) => "http_server",
+        }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -325,5 +437,20 @@ mod tests {
         assert!(!healthy_http_status(
             b"HTTP/1.1 503 Service Unavailable\r\n"
         ));
+    }
+
+    #[test]
+    fn terminal_host_error_preserves_actionable_message() {
+        let error = MainError::Host(trakkin::host::HostError::Database(
+            trakkin::database::DatabaseError::Migration(
+                sqlx::migrate::MigrateError::VersionMismatch(202608300001),
+            ),
+        ));
+
+        assert_eq!(error.stage(), "host_runtime");
+        assert_eq!(
+            error.to_string(),
+            "database migration error: migration 202608300001 was previously applied but has been modified"
+        );
     }
 }
