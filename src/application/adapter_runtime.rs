@@ -65,7 +65,8 @@ pub enum AdapterFailureCategory {
     Internal,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("{code}: {safe_message}")]
 pub struct AdapterCallError {
     pub category: AdapterFailureCategory,
     pub code: String,

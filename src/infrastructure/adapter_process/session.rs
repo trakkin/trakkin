@@ -51,7 +51,16 @@ macro_rules! call_rpc {
     ($process:expr, $method:ident, $operation:literal, $message:expr) => {{
         let request = $process.request($message);
         let deadline = $process.rpc_timeout();
-        await_rpc(deadline, $operation, $process.client().$method(request)).await?
+        let provider_id = $process.identity().adapter_key.clone();
+        let process_instance_id = $process.identity().process_instance_id.clone();
+        await_rpc(
+            deadline,
+            $operation,
+            &provider_id,
+            &process_instance_id,
+            $process.client().$method(request),
+        )
+        .await?
     }};
 }
 
@@ -147,7 +156,7 @@ impl AdapterSession for AdapterProcess {
     }
 
     async fn health(&mut self) -> Result<trakkin_provider_sdk::v1::HealthResponse, Self::Error> {
-        let response = call_rpc!(self.process, health, "health", HealthRequest {});
+        let response = call_rpc!(self.process, health, "Health", HealthRequest {});
         validation::health_response(&response)
             .map_err(|_| AdapterProcessError::InvalidResponse("invalid health response"))?;
         Ok(response)
@@ -159,7 +168,7 @@ impl AdapterSession for AdapterProcess {
         let response = call_rpc!(
             self.process,
             describe_connection,
-            "describe connection",
+            "DescribeConnection",
             DescribeConnectionRequest {}
         );
         validation::describe_connection_response(&response).map_err(|_| {
@@ -176,7 +185,7 @@ impl AdapterSession for AdapterProcess {
         let response = call_rpc!(
             self.process,
             validate_connection,
-            "validate connection",
+            "ValidateConnection",
             ValidateConnectionRequest {
                 settings: map_settings(command.settings),
                 secrets: map_secrets(command.secrets),
@@ -195,7 +204,7 @@ impl AdapterSession for AdapterProcess {
         let response = call_rpc!(
             self.process,
             list_authentication_methods,
-            "list authentication methods",
+            "ListAuthenticationMethods",
             ListAuthenticationMethodsRequest {}
         );
         validation::list_authentication_methods_response(&response).map_err(|_| {
@@ -215,7 +224,7 @@ impl AdapterSession for AdapterProcess {
         let response = call_rpc!(
             self.process,
             start_authentication,
-            "start authentication",
+            "StartAuthentication",
             StartAuthenticationRequest {
                 method: command.method,
                 values: map_settings(command.values),
@@ -234,7 +243,7 @@ impl AdapterSession for AdapterProcess {
         let response = call_rpc!(
             self.process,
             continue_authentication,
-            "continue authentication",
+            "ContinueAuthentication",
             ContinueAuthenticationRequest {
                 authentication_id: command.authentication_id,
                 values: map_settings(command.values),
@@ -253,7 +262,7 @@ impl AdapterSession for AdapterProcess {
         let response = call_rpc!(
             self.process,
             cancel_authentication,
-            "cancel authentication",
+            "CancelAuthentication",
             CancelAuthenticationRequest { authentication_id }
         );
         validation::cancel_authentication_response(&response).map_err(|_| {
@@ -277,7 +286,7 @@ impl AdapterSession for AdapterProcess {
         let response = call_rpc!(
             self.process,
             open_connection,
-            "open connection",
+            "OpenConnection",
             OpenConnectionRequest {
                 settings: map_settings(command.settings),
                 secrets: map_secrets(command.secrets),
@@ -303,7 +312,7 @@ impl AdapterSession for AdapterProcess {
         let response = call_rpc!(
             self.process,
             discover_sources,
-            "discover sources",
+            "DiscoverSources",
             DiscoverSourcesRequest {}
         );
         validation::discover_sources_response(&self.account_keys, &response)
@@ -320,7 +329,7 @@ impl AdapterSession for AdapterProcess {
         let stream = call_rpc!(
             self.process,
             read_catalog,
-            "read catalog",
+            "ReadCatalog",
             map_read_catalog_request(command)?
         );
         Ok(AdapterCatalogReadStream {
@@ -339,7 +348,7 @@ impl AdapterSession for AdapterProcess {
         let stream = call_rpc!(
             self.process,
             read_state,
-            "read state",
+            "ReadState",
             map_read_state_request(command)?
         );
         Ok(AdapterStateReadStream {
@@ -377,7 +386,7 @@ impl AdapterSession for AdapterProcess {
         let response = call_rpc!(
             self.process,
             read_targeted_state,
-            "read targeted state",
+            "ReadTargetedState",
             request
         );
         validation::read_targeted_state_response(&request_message, &response)
@@ -426,10 +435,18 @@ impl AdapterSession for AdapterProcess {
         let response = call_rpc!(
             self.process,
             write_targeted_state,
-            "write targeted state",
+            "WriteTargetedState",
             request.clone()
         );
         if validation::targeted_state_write_response(&request, &capability, &response).is_err() {
+            tracing::warn!(
+                provider.id = %self.process.identity().adapter_key,
+                process.instance.id = %self.process.identity().process_instance_id,
+                provider.operation = "WriteTargetedState",
+                retirement.mode = "forced",
+                retirement.reason = "invalid_response",
+                "provider was forcefully stopped"
+            );
             self.process.force_stop().await;
             return Err(AdapterProcessError::InvalidResponse(
                 "invalid targeted state write response",
@@ -457,7 +474,7 @@ impl AdapterSession for AdapterProcess {
         let response = call_rpc!(
             self.process,
             lookup_portable_references,
-            "lookup portable references",
+            "LookupPortableReferences",
             LookupPortableReferencesRequest {
                 operation_id: command.operation_id,
                 references: requested.clone(),
@@ -501,7 +518,7 @@ impl AdapterSession for AdapterProcess {
         let response = call_rpc!(
             self.process,
             resolve_portable_endpoints,
-            "resolve portable endpoints",
+            "ResolvePortableEndpoints",
             ResolvePortableEndpointsRequest {
                 operation_id: command.operation_id,
                 endpoints: requested.clone(),
@@ -541,7 +558,7 @@ impl AdapterSession for AdapterProcess {
         let response = call_rpc!(
             self.process,
             read_asset,
-            "read asset",
+            "ReadAsset",
             ReadAssetRequest {
                 operation_id: command.operation_id,
                 source_key: Some(map_adapter_key(command.source_key)?),
@@ -578,7 +595,7 @@ impl AdapterSession for AdapterProcess {
         let response = call_rpc!(
             self.process,
             cancel_operation,
-            "cancel operation",
+            "CancelOperation",
             trakkin_provider_sdk::v1::CancelOperationRequest { operation_id }
         );
         validation::cancel_operation_response(&response).map_err(|_| {

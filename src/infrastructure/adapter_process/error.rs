@@ -28,16 +28,16 @@ pub enum AdapterProcessError {
     RpcTimeout(&'static str),
     #[error("adapter transport failed: {0}")]
     Transport(#[from] tonic::transport::Error),
-    #[error("adapter RPC failed with status {0}")]
-    Rpc(tonic::Code),
+    #[error("adapter RPC failed: {0}")]
+    Rpc(#[source] tonic::Status),
     #[error("adapter handshake failed validation")]
     InvalidHandshake,
     #[error("adapter activation probe did not shut down gracefully")]
     ProbeShutdown,
     #[error("adapter response failed validation: {0}")]
     InvalidResponse(&'static str),
-    #[error("adapter rejected the request: {0:?}")]
-    Adapter(Box<AdapterCallError>),
+    #[error("adapter rejected the request: {0}")]
+    Adapter(#[source] Box<AdapterCallError>),
     #[error("adapter connection is not open")]
     ConnectionNotOpen,
     #[error("adapter operation ID is invalid")]
@@ -62,6 +62,24 @@ pub enum AdapterProcessError {
 
 impl From<tonic::Status> for AdapterProcessError {
     fn from(status: tonic::Status) -> Self {
-        Self::Rpc(status.code())
+        Self::Rpc(status)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tonic::{Code, Status};
+
+    use super::AdapterProcessError;
+
+    #[test]
+    fn rpc_error_preserves_provider_status_context() {
+        let error = AdapterProcessError::from(Status::unavailable("Plex request timed out"));
+
+        let AdapterProcessError::Rpc(status) = error else {
+            panic!("expected RPC error");
+        };
+        assert_eq!(status.code(), Code::Unavailable);
+        assert_eq!(status.message(), "Plex request timed out");
     }
 }
