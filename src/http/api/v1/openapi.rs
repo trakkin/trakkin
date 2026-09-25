@@ -20,6 +20,7 @@ use crate::http::{
             DeleteConnectionRequest, ReconfigureConnectionRequest, RenameConnectionRequest,
             RetryAfterResponse, StartAuthenticationRequest,
         },
+        logs::{LogEntryResponse, LogPageResponse},
         mappings::{
             ActivateMappingRevisionRequest, CoordinateBackingResponse,
             CreateMappingDocumentRequest, ExactSegmentResponse, ExactTransformResponse,
@@ -72,7 +73,7 @@ use crate::http::{
     error::{ErrorResponse, FieldProblemResponse},
 };
 
-use super::{connections, providers, workspaces};
+use super::{connections, logs, providers, workspaces};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -91,6 +92,8 @@ use super::{connections, providers, workspaces};
         connections::start_source_discovery,
         connections::get_connection_task,
         connections::cancel_connection_task,
+        logs::list_logs,
+        logs::stream_logs,
         providers::list_provider_sources,
         providers::trust_provider_source,
         providers::refresh_provider_source,
@@ -166,6 +169,8 @@ use super::{connections, providers, workspaces};
         AuthenticationAccountResponse,
         RetryAfterResponse,
         AdapterCallErrorResponse,
+        LogPageResponse,
+        LogEntryResponse,
         TrustProviderSourceRequest,
         InstallProviderRequest,
         UpdateProviderRequest,
@@ -287,6 +292,7 @@ use super::{connections, providers, workspaces};
         (name = "catalog"),
         (name = "tasks"),
         (name = "activity"),
+        (name = "logs"),
         (name = "contract")
     )
 )]

@@ -71,7 +71,7 @@ async fn mapping_authoring_uses_hash_native_revisions_and_activation() {
             static_provider_registry(),
         ),
     );
-    let router = http::router(Arc::new(application));
+    let router = http::router(Arc::new(application), ".".into());
     let workspace = request(
         &router,
         Request::post("/api/v1/workspaces")

@@ -79,7 +79,7 @@ async fn activity_routes_page_runs_and_expose_bounded_provenance() {
             static_provider_registry(),
         ),
     );
-    let router = http::router(Arc::new(application));
+    let router = http::router(Arc::new(application), ".".into());
     let workspace = request(
         &router,
         Request::post("/api/v1/workspaces")

@@ -78,7 +78,7 @@ async fn mapping_resolution_previews_exact_revisions_with_bounded_closed_results
                 static_provider_registry(),
             ),
         );
-        http::router(Arc::new(application))
+        http::router(Arc::new(application), ".".into())
     };
     let router = router_for(Arc::new(MappingResolutionService::new(
         PostgresMappingResolutionRepository::new(database.pool()),

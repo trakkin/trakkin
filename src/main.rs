@@ -139,7 +139,8 @@ async fn run_configured(configuration: Configuration) -> Result<(), MainError> {
             );
         })?;
     let application = runtime.application();
-    let router = http::router(application).layer(axum::middleware::from_fn(log_http_failure));
+    let router = http::router(application, configuration.data_directory.clone())
+        .layer(axum::middleware::from_fn(log_http_failure));
     info!(startup.stage = "server_started", "HTTP server started");
     let server = axum::serve(listener, router)
         .with_graceful_shutdown(shutdown_signal())

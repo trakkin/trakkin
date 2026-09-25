@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 use crate::{application::facade::ApplicationApi, http::error::HttpError};
 use uuid::Uuid;
@@ -6,10 +6,17 @@ use uuid::Uuid;
 #[derive(Clone)]
 pub(in crate::http::api) struct HttpState {
     pub(super) application: Arc<dyn ApplicationApi>,
+    pub(super) data_directory: PathBuf,
 }
 
-pub(in crate::http::api) fn state(application: Arc<dyn ApplicationApi>) -> HttpState {
-    HttpState { application }
+pub(in crate::http::api) fn state(
+    application: Arc<dyn ApplicationApi>,
+    data_directory: PathBuf,
+) -> HttpState {
+    HttpState {
+        application,
+        data_directory,
+    }
 }
 
 pub(in crate::http::api) async fn method_not_allowed() -> HttpError {

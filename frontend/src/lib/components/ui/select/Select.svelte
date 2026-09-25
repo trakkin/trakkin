@@ -45,7 +45,7 @@ let {
       aria-invalid={ariaInvalid}
       aria-label={ariaLabel}
       class={[
-        'group inline-flex min-w-48 items-center justify-between gap-2 rounded-md border border-border-subtle bg-white/3 text-label font-[450] text-text-secondary outline-none transition-[background-color,border-color,box-shadow] duration-(--motion-standard) ease-standard hover:border-border-strong hover:bg-white/4 focus-visible:border-accent/60 focus-visible:bg-white/4 focus-visible:ring-2 focus-visible:ring-accent/10 aria-invalid:border-danger/60 aria-invalid:focus-visible:border-danger/70 aria-invalid:focus-visible:ring-danger/10 data-disabled:pointer-events-none data-disabled:text-text-disabled data-disabled:opacity-55 data-placeholder:text-text-disabled',
+        'group inline-flex w-full min-w-0 items-center justify-between gap-2 rounded-md border border-border-subtle bg-white/3 text-label font-[450] text-text-secondary outline-none transition-[background-color,border-color,box-shadow] duration-(--motion-standard) ease-standard hover:border-border-strong hover:bg-white/4 focus-visible:border-accent/60 focus-visible:bg-white/4 focus-visible:ring-2 focus-visible:ring-accent/10 aria-invalid:border-danger/60 aria-invalid:focus-visible:border-danger/70 aria-invalid:focus-visible:ring-danger/10 data-disabled:pointer-events-none data-disabled:text-text-disabled data-disabled:opacity-55 data-placeholder:text-text-disabled',
         controlSizes[controlSize],
         triggerClass
       ]}

@@ -81,7 +81,7 @@ async fn connection_and_acquisition_routes_are_closed_bounded_and_secret_safe() 
             static_provider_registry(),
         ),
     );
-    let router = http::router(Arc::new(application));
+    let router = http::router(Arc::new(application), ".".into());
 
     let created_connection = request(
         &router,
