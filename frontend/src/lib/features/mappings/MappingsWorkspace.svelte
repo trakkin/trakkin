@@ -194,6 +194,12 @@ function closeEditor(): void {
   editorConflict = null;
 }
 
+function handleEditorKeydown(event: KeyboardEvent): void {
+  if (event.key !== "Escape" || !editorOpen || editorMode !== "create") return;
+  event.preventDefault();
+  closeEditor();
+}
+
 async function submitEditor(mappings: string[][]): Promise<void> {
   if (editorBusy) return;
   const sequence = ++saveSequence;
@@ -370,6 +376,8 @@ function previousPage(): void {
 }
 </script>
 
+<svelte:window onkeydown={handleEditorKeydown} />
+
 <svelte:head>
   <title>Trakkin &middot; Mappings</title>
   <meta
@@ -379,37 +387,66 @@ function previousPage(): void {
 </svelte:head>
 
 <div class="flex h-full min-h-0 flex-col text-text-primary">
-  <PageHeader title="Mappings">
+  <PageHeader title={editorOpen && editorMode === "create" ? "New mapping" : "Mappings"}>
     {#snippet actions()}
-      <Button
-        disabled={loading || !registryLoaded}
-        onclick={openCreateEditor}
-        size="sm"
-        variant="primary"
-      >
-        <Plus
-          aria-hidden="true"
-          size={13}
-        />
-        New mapping
-      </Button>
-      <IconButton
-        disabled={loading || !registryLoaded}
-        label="Refresh mappings"
-        onclick={() => void loadCurrentPage()}
-        size="sm"
-        title="Refresh mappings"
-      >
-        <RefreshCw
-          aria-hidden="true"
-          size={14}
-        />
-      </IconButton>
+      {#if editorOpen && editorMode === "create"}
+        <Button
+          aria-label="Close mapping editor"
+          onclick={closeEditor}
+          size="sm"
+          variant="ghost"
+        >
+          <X
+            aria-hidden="true"
+            size={13}
+          />
+          Cancel
+        </Button>
+      {:else}
+        <Button
+          disabled={loading || !registryLoaded}
+          onclick={openCreateEditor}
+          size="sm"
+          variant="primary"
+        >
+          <Plus
+            aria-hidden="true"
+            size={13}
+          />
+          New mapping
+        </Button>
+        <IconButton
+          disabled={loading || !registryLoaded}
+          label="Refresh mappings"
+          onclick={() => void loadCurrentPage()}
+          size="sm"
+          title="Refresh mappings"
+        >
+          <RefreshCw
+            aria-hidden="true"
+            size={14}
+          />
+        </IconButton>
+      {/if}
     {/snippet}
   </PageHeader>
 
-  <div class="flex min-h-0 flex-1 px-4 py-4 sm:px-6 sm:py-5">
-    {#if loading && !registryLoaded}
+  <div class="flex min-h-0 flex-1 p-4 sm:p-6">
+    {#if editorOpen && editorMode === "create"}
+      <MappingEditorDrawer
+        baseContentHash={editorBaseContentHash}
+        busy={editorBusy}
+        conflict={editorConflict}
+        initialMappings={editorInitialMappings}
+        mappingId={editorMappingId}
+        mode={editorMode}
+        onclose={closeEditor}
+        onrebase={rebaseEditor}
+        onsubmit={(mappings) => void submitEditor(mappings)}
+        {workspaceId}
+        bind:open={editorOpen}
+      />
+    {:else if loading && !registryLoaded}
       <div
         class="flex min-h-48 flex-1 items-center justify-center gap-2 text-label text-text-muted"
         role="status"
@@ -450,6 +487,7 @@ function previousPage(): void {
           {historyLoading}
           {mappings}
           onactivate={(mapping, detail) => void activate(mapping, detail)}
+          oncreate={openCreateEditor}
           onedit={(mapping) => void openUpdateEditor(mapping)}
           onexpand={(mapping) => void expand(mapping)}
           oninspectrevision={(mapping, revision) => void inspectRevision(mapping, revision)}
@@ -465,19 +503,21 @@ function previousPage(): void {
   </div>
 </div>
 
-<MappingEditorDrawer
-  baseContentHash={editorBaseContentHash}
-  busy={editorBusy}
-  conflict={editorConflict}
-  initialMappings={editorInitialMappings}
-  mappingId={editorMappingId}
-  mode={editorMode}
-  onclose={closeEditor}
-  onrebase={rebaseEditor}
-  onsubmit={(mappings) => void submitEditor(mappings)}
-  {workspaceId}
-  bind:open={editorOpen}
-/>
+{#if editorMode === "update"}
+  <MappingEditorDrawer
+    baseContentHash={editorBaseContentHash}
+    busy={editorBusy}
+    conflict={editorConflict}
+    initialMappings={editorInitialMappings}
+    mappingId={editorMappingId}
+    mode={editorMode}
+    onclose={closeEditor}
+    onrebase={rebaseEditor}
+    onsubmit={(mappings) => void submitEditor(mappings)}
+    {workspaceId}
+    bind:open={editorOpen}
+  />
+{/if}
 
 {#if errorMessage && registryLoaded}
   <div class="pointer-events-none fixed right-4 bottom-4 left-4 z-50 flex justify-center">

@@ -1,7 +1,8 @@
 <script lang="ts">
-import { RefreshCw, Workflow } from "@lucide/svelte";
+import { ArrowRight, RefreshCw, Workflow } from "@lucide/svelte";
+import { goto } from "$app/navigation";
 import { page } from "$app/state";
-import { Button, Chip, PageHeader, Panel, Select, Spinner } from "$lib";
+import { Button, EmptyState, PageHeader, Panel, Select, Spinner } from "$lib";
 import { listSynchronizationPolicies, type SynchronizationPolicy } from "$lib/api/syncPolicies";
 import {
   loadWorkspaceSourceDirectory,
@@ -26,7 +27,11 @@ let policyItems = $derived(
   })),
 );
 let selectedPolicy = $derived(policies.find((policy) => policy.policyId === selectedPolicyId) ?? null);
-
+let pageDescription = $derived(
+  data
+    ? `${data.workspace.name} · ${data.sources.length} attached ${data.sources.length === 1 ? "source" : "sources"}`
+    : undefined,
+);
 $effect(() => {
   const activeWorkspaceId = workspaceId;
   const sequence = ++requestSequence;
@@ -109,12 +114,26 @@ function fieldLabel(semanticField: string): string {
   };
   return labels[semanticField] ?? semanticField;
 }
+
+function reducerLabel(reducer: string): string {
+  const labels: Record<string, string> = {
+    any: "Any contributor",
+    coverage_contiguous_prefix: "Longest contiguous progress",
+    equal: "All contributors agree",
+    maximum: "Highest value",
+    mean: "Average",
+  };
+  return labels[reducer] ?? reducer.replaceAll("_", " ");
+}
 </script>
 
 <svelte:head><title>Trakkin &middot; {data?.workspace.name ?? "Automation"}</title></svelte:head>
 
 <div class="flex h-full min-h-0 flex-col">
-  <PageHeader title="Automation">
+  <PageHeader
+    description={pageDescription}
+    title="Automation"
+  >
     {#snippet actions()}
       {#if data && data.sources.length > 0}
         <SynchronizationPolicyDrawer
@@ -157,229 +176,219 @@ function fieldLabel(semanticField: string): string {
         </div>
       </Panel>
     </div>
-  {:else}
+  {:else if policies.length && selectedPolicy}
     <div class="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
-      <section class="mx-auto w-full max-w-5xl">
-        <div class="flex items-start justify-between gap-4">
-          <div>
-            <h2 class="text-title font-semibold text-text-primary">Synchronization policies</h2>
-            <p class="mt-1 text-label text-text-muted">{data.workspace.name}</p>
+      <section
+        aria-label="Synchronization policies"
+        class="mx-auto w-full max-w-6xl"
+      >
+        <Panel
+          class="overflow-hidden"
+          element="section"
+        >
+          <div class="border-b border-border-strong bg-surface-raised/20 p-3 lg:hidden">
+            <label
+              class="sr-only"
+              for="synchronization-policy"
+              >Selected policy</label
+            >
+            <Select
+              ariaLabel="Stored synchronization policy"
+              items={policyItems}
+              name="synchronization-policy"
+              onValueChange={selectPolicy}
+              triggerClass="w-full"
+              value={selectedPolicyId}
+            />
           </div>
-          <span class="text-meta text-text-disabled">
-            {data.sources.length}
-            attached {data.sources.length === 1 ? "source" : "sources"}
-          </span>
-        </div>
 
-        {#if policies.length}
-          <Panel
-            aria-label="Synchronization policies"
-            class="mt-5 overflow-hidden"
-            element="section"
-          >
-            <div class="border-b border-border-strong bg-surface-raised/35 p-3 lg:hidden">
-              <label
-                class="block text-meta font-semibold text-text-secondary"
-                for="synchronization-policy"
+          <div class="lg:grid lg:grid-cols-[15rem_minmax(0,1fr)]">
+            <nav
+              aria-label="Stored synchronization policies"
+              class="hidden border-r border-border-strong bg-surface-raised/20 lg:block"
+            >
+              <div class="flex h-10 items-center justify-between border-b border-border-strong px-3">
+                <span class="text-meta font-[510] text-text-secondary">Policies</span>
+                <span class="font-mono text-meta text-text-disabled">{policies.length}</span>
+              </div>
+              <div class="py-1">
+                {#each policies as policy (policy.policyId)}
+                  {@const selected = policy.policyId === selectedPolicyId}
+                  <button
+                    aria-current={selected ? "true" : undefined}
+                    aria-label={`Select ${policyLabel(policy)}`}
+                    class={[
+                      "block w-full border-l px-3 py-2.5 text-left outline-none transition-colors hover:bg-white/3 focus-visible:bg-white/4 focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent",
+                      selected
+                        ? "border-accent bg-surface-selected/55"
+                        : "border-transparent text-text-secondary",
+                    ]}
+                    onclick={() => selectPolicy(policy.policyId)}
+                    type="button"
+                  >
+                    <span class="block truncate font-mono text-label font-[510] text-text-primary">
+                      Policy {policy.policyId.slice(0, 8)}
+                    </span>
+                    <span class="mt-0.5 block text-meta text-text-muted">
+                      Revision {policy.revision} &middot; {policy.document.rules.length}
+                      {policy.document.rules.length === 1 ? "field" : "fields"}
+                    </span>
+                  </button>
+                {/each}
+              </div>
+            </nav>
+
+            <div class="min-w-0">
+              <header
+                class="flex flex-wrap items-start justify-between gap-3 border-b border-border-strong px-4 py-3.5 sm:px-5"
               >
-                Selected policy
-              </label>
-              <Select
-                ariaLabel="Stored synchronization policy"
-                class="mt-2"
-                items={policyItems}
-                name="synchronization-policy"
-                onValueChange={selectPolicy}
-                triggerClass="w-full"
-                value={selectedPolicyId}
-              />
-            </div>
-
-            <div class="lg:grid lg:min-h-112 lg:grid-cols-[17rem_minmax(0,1fr)]">
-              <nav
-                aria-label="Stored synchronization policies"
-                class="hidden border-r border-border-strong bg-surface-raised/20 lg:block"
-              >
-                <div class="flex h-10 items-center justify-between border-b border-border-strong px-3">
-                  <span class="text-meta font-semibold text-text-secondary">Policies</span>
-                  <span class="font-mono text-meta text-text-disabled">{policies.length}</span>
-                </div>
-                <div class="py-1">
-                  {#each policies as policy (policy.policyId)}
-                    {@const selected = policy.policyId === selectedPolicyId}
-                    <button
-                      aria-current={selected ? "true" : undefined}
-                      aria-label={`Select ${policyLabel(policy)}`}
-                      class={[
-                        "block w-full border-l-2 px-3 py-2.5 text-left outline-none transition-colors hover:bg-white/3 focus-visible:bg-white/4",
-                        selected
-                          ? "border-accent bg-surface-selected/55"
-                          : "border-transparent text-text-secondary",
-                      ]}
-                      onclick={() => selectPolicy(policy.policyId)}
-                      type="button"
-                    >
-                      <span class="block truncate font-mono text-label font-semibold text-text-primary">
-                        Policy {policy.policyId.slice(0, 8)}
-                      </span>
-                      <span class="mt-1 block text-meta text-text-muted">
-                        Revision {policy.revision} &middot; {policy.document.rules.length}
-                        {policy.document.rules.length === 1 ? "field" : "fields"}
-                      </span>
-                    </button>
-                  {/each}
-                </div>
-              </nav>
-
-              {#if selectedPolicy}
                 <div class="min-w-0">
-                  <header
-                    class="flex flex-wrap items-start justify-between gap-3 border-b border-border-strong bg-surface-raised/35 p-4 sm:p-5"
-                  >
-                    <div class="flex min-w-0 items-start gap-3">
-                      <span
-                        class="grid size-9 shrink-0 place-items-center rounded-control border border-border-subtle bg-white/3 text-text-muted"
-                      >
-                        <Workflow
-                          aria-hidden="true"
-                          size={16}
-                        />
-                      </span>
-                      <div class="min-w-0">
-                        <h3 class="truncate font-mono text-heading font-semibold text-text-primary">
-                          Policy {selectedPolicy.policyId.slice(0, 8)}
-                        </h3>
-                        <div class="mt-1 flex flex-wrap items-center gap-2 text-meta text-text-muted">
-                          <span>Revision {selectedPolicy.revision}</span>
-                          <span aria-hidden="true">&middot;</span>
-                          <span class="capitalize">{selectedPolicy.document.resolutionMode} mappings</span>
-                        </div>
-                      </div>
-                    </div>
-                    <Button
-                      onclick={() => (previewOpen = true)}
-                      size="sm"
-                      variant="primary"
-                    >
-                      Generate preview
-                    </Button>
-                  </header>
+                  <h2 class="truncate font-mono text-heading font-[560] text-text-primary">
+                    Policy {selectedPolicy.policyId.slice(0, 8)}
+                  </h2>
+                  <p class="mt-0.5 text-meta text-text-muted">
+                    Revision {selectedPolicy.revision} &middot;
+                    <span class="capitalize">{selectedPolicy.document.resolutionMode} mappings</span>
+                  </p>
+                </div>
+                <Button
+                  onclick={() => (previewOpen = true)}
+                  size="sm"
+                  variant="primary"
+                  >Generate preview</Button
+                >
+              </header>
 
-                  <section
-                    aria-label="Policy source roles"
-                    class="grid border-b border-border-subtle sm:grid-cols-2"
-                  >
-                    <div class="border-b border-border-subtle p-4 sm:border-r sm:border-b-0 sm:p-5">
-                      <div class="flex items-center justify-between gap-3">
-                        <h4 class="text-label font-semibold text-text-primary">Contributors</h4>
-                        <span class="font-mono text-meta text-text-disabled">
-                          {selectedPolicy.document.contributors.length}
-                        </span>
-                      </div>
-                      <div class="mt-3 grid gap-2">
-                        {#each selectedPolicy.document.contributors as sourceId (sourceId)}
-                          {@const entry = data.sources.find((source) => source.source.id === sourceId)}
-                          <div class="min-w-0">
-                            <p
-                              class="wrap-break-word text-label text-text-primary sm:truncate"
-                              title={entry?.source.displayName ?? sourceId}
-                            >
-                              {entry?.source.displayName ?? sourceId}
-                            </p>
-                            {#if entry}
-                              <p
-                                class="truncate text-meta text-text-muted"
-                                title={entry.connection.displayName}
-                              >
-                                {entry.connection.displayName}
-                              </p>
-                            {/if}
-                          </div>
-                        {/each}
-                      </div>
-                    </div>
-                    <div class="p-4 sm:p-5">
-                      <div class="flex items-center justify-between gap-3">
-                        <h4 class="text-label font-semibold text-text-primary">Receivers</h4>
-                        <span class="font-mono text-meta text-text-disabled">
-                          {selectedPolicy.document.receivers.length}
-                        </span>
-                      </div>
-                      <div class="mt-3 grid gap-2">
-                        {#each selectedPolicy.document.receivers as sourceId (sourceId)}
-                          {@const entry = data.sources.find((source) => source.source.id === sourceId)}
-                          <div class="min-w-0">
-                            <p
-                              class="wrap-break-word text-label text-text-primary sm:truncate"
-                              title={entry?.source.displayName ?? sourceId}
-                            >
-                              {entry?.source.displayName ?? sourceId}
-                            </p>
-                            {#if entry}
-                              <p
-                                class="truncate text-meta text-text-muted"
-                                title={entry.connection.displayName}
-                              >
-                                {entry.connection.displayName}
-                              </p>
-                            {/if}
-                          </div>
-                        {/each}
-                      </div>
-                    </div>
-                  </section>
+              <section class="border-b border-border-subtle">
+                <header class="border-b border-border-subtle bg-surface-raised/20 px-4 py-3 sm:px-5">
+                  <h3 class="text-label font-[560] text-text-primary">Policy flow</h3>
+                  <p class="mt-0.5 text-meta text-text-muted">
+                    Contributions resolve through {selectedPolicy.document.rules.length}
+                    {selectedPolicy.document.rules.length === 1 ? "field" : "fields"}
+                    before writing to receivers.
+                  </p>
+                </header>
 
-                  <section class="border-b border-border-subtle p-4 sm:p-5">
+                <div
+                  class="grid divide-y divide-border-subtle lg:grid-cols-[minmax(0,0.8fr)_2rem_minmax(0,1.25fr)_2rem_minmax(0,0.8fr)] lg:divide-y-0"
+                >
+                  <section class="min-w-0 px-4 py-4 sm:px-5">
                     <div class="flex items-center justify-between gap-3">
-                      <h4 class="text-label font-semibold text-text-primary">Synchronized fields</h4>
-                      <span class="font-mono text-meta text-text-disabled">
-                        {selectedPolicy.document.rules.length}
+                      <h4 class="text-label font-[510] text-text-secondary">Contributors</h4>
+                      <span class="font-mono text-meta tabular-nums text-text-disabled">
+                        {selectedPolicy.document.contributors.length}
                       </span>
                     </div>
-                    <div class="mt-3 flex flex-wrap gap-2">
-                      {#each selectedPolicy.document.rules as rule (rule.semanticField)}
-                        <Chip>{fieldLabel(rule.semanticField)}</Chip>
+                    <div class="mt-2 divide-y divide-border-subtle border-y border-border-subtle">
+                      {#each selectedPolicy.document.contributors as sourceId (sourceId)}
+                        {@const entry = data.sources.find((source) => source.source.id === sourceId)}
+                        <div class="min-w-0 py-2.5">
+                          <p class="truncate text-label font-[450] text-text-primary">
+                            {entry?.source.displayName ?? sourceId}
+                          </p>
+                          <p class="mt-0.5 truncate text-meta text-text-muted">
+                            {entry?.connection.displayName ?? "Unavailable connection"}
+                          </p>
+                        </div>
                       {/each}
                     </div>
                   </section>
 
-                  <div class="px-4 sm:px-5">
-                    <SynchronizationScheduleControls
-                      policyId={selectedPolicy.policyId}
-                      {workspaceId}
-                    />
+                  <div
+                    aria-hidden="true"
+                    class="hidden items-center justify-center border-x border-border-subtle bg-surface-raised/15 text-text-disabled lg:flex"
+                  >
+                    <ArrowRight size={14} />
                   </div>
+
+                  <section class="min-w-0 px-4 py-4 sm:px-5">
+                    <div class="flex items-center justify-between gap-3">
+                      <h4 class="text-label font-[510] text-text-secondary">Synchronized fields</h4>
+                      <span class="font-mono text-meta tabular-nums text-text-disabled">
+                        {selectedPolicy.document.rules.length}
+                      </span>
+                    </div>
+                    <div class="mt-2 divide-y divide-border-subtle border-y border-border-subtle">
+                      {#each selectedPolicy.document.rules as rule (rule.semanticField)}
+                        <article class="grid gap-1 py-2.5">
+                          <div class="flex min-w-0 items-baseline justify-between gap-3">
+                            <p class="text-label font-[450] text-text-primary">{fieldLabel(rule.semanticField)}</p>
+                            <p class="shrink-0 text-meta text-text-muted">{reducerLabel(rule.reducer)}</p>
+                          </div>
+                          <p class="text-meta text-text-disabled">
+                            {rule.writeConstraints.requireStrongPrecondition ? "Strong precondition" : "Standard precondition"}
+                            &middot; {rule.writeConstraints.allowClear ? "Clears allowed" : "No clears"}
+                          </p>
+                        </article>
+                      {/each}
+                    </div>
+                  </section>
+
+                  <div
+                    aria-hidden="true"
+                    class="hidden items-center justify-center border-x border-border-subtle bg-surface-raised/15 text-text-disabled lg:flex"
+                  >
+                    <ArrowRight size={14} />
+                  </div>
+
+                  <section class="min-w-0 px-4 py-4 sm:px-5">
+                    <div class="flex items-center justify-between gap-3">
+                      <h4 class="text-label font-[510] text-text-secondary">Receivers</h4>
+                      <span class="font-mono text-meta tabular-nums text-text-disabled">
+                        {selectedPolicy.document.receivers.length}
+                      </span>
+                    </div>
+                    <div class="mt-2 divide-y divide-border-subtle border-y border-border-subtle">
+                      {#each selectedPolicy.document.receivers as sourceId (sourceId)}
+                        {@const entry = data.sources.find((source) => source.source.id === sourceId)}
+                        <div class="min-w-0 py-2.5">
+                          <p class="truncate text-label font-[450] text-text-primary">
+                            {entry?.source.displayName ?? sourceId}
+                          </p>
+                          <p class="mt-0.5 truncate text-meta text-text-muted">
+                            {entry?.connection.displayName ?? "Unavailable connection"}
+                          </p>
+                        </div>
+                      {/each}
+                    </div>
+                  </section>
                 </div>
-              {/if}
+              </section>
+
+              <div class="px-4 sm:px-5">
+                <SynchronizationScheduleControls
+                  policyId={selectedPolicy.policyId}
+                  {workspaceId}
+                />
+              </div>
             </div>
-          </Panel>
-        {:else}
-          <Panel
-            aria-label="Synchronization policies"
-            class="mt-5 grid min-h-56 place-items-center p-6 text-center"
-            element="section"
-            tone="dashed"
-          >
-            <div>
-              <Workflow
-                aria-hidden="true"
-                class="mx-auto text-text-disabled"
-                size={24}
-              />
-              {#if data.sources.length === 0}
-                <h2 class="mt-3 text-heading font-semibold text-text-primary">No sources attached</h2>
-                <p class="mt-1 max-w-sm text-label text-text-muted">
-                  Attach a source in Connections before creating a synchronization policy.
-                </p>
-              {:else}
-                <h2 class="mt-3 text-heading font-semibold text-text-primary">No synchronization policies</h2>
-                <p class="mt-1 max-w-sm text-label text-text-muted">
-                  Create a policy to define source roles and synchronized fields.
-                </p>
-              {/if}
-            </div>
-          </Panel>
-        {/if}
+          </div>
+        </Panel>
+      </section>
+    </div>
+  {:else}
+    <div class="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
+      <section class="mx-auto w-full max-w-6xl">
+        <EmptyState
+          aria-label="Synchronization policies"
+          description={data.sources.length === 0 ? "This workspace has no attached sources." : "No synchronization policies are configured."}
+          icon={Workflow}
+          title={data.sources.length === 0 ? "No sources attached" : "No synchronization policies"}
+        >
+          {#snippet actions()}
+            {#if data?.sources.length === 0}
+              <Button
+                onclick={() => goto(`/connections?workspace=${workspaceId}`)}
+                size="sm"
+              >
+                Attach sources<ArrowRight
+                  aria-hidden="true"
+                  size={14}
+                />
+              </Button>
+            {/if}
+          {/snippet}
+        </EmptyState>
       </section>
     </div>
   {/if}

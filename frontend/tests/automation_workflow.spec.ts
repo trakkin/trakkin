@@ -413,12 +413,12 @@ test("automation retries its initial load and explains missing sources", async (
   await loadError.getByRole("button", { name: "Retry" }).click();
 
   await expect(page.getByRole("heading", { name: "No sources attached" })).toBeVisible();
-  await expect(
-    page.getByText("Attach a source in Connections before creating a synchronization policy."),
-  ).toBeVisible();
+  await expect(page.getByText("This workspace has no attached sources.")).toBeVisible();
   await expect(page.getByRole("button", { name: "New policy" })).toHaveCount(0);
   await expect.poll(() => connectionRequests).toBe(2);
   await expectNoHorizontalOverflow(page);
+  await page.getByRole("button", { name: "Attach sources" }).click();
+  await expect(page).toHaveURL(new RegExp(`/connections\\?workspace=${workspaceId}$`));
 });
 
 function synchronizationPolicy(policyId: string, semanticField = "trakkin.state:progress") {

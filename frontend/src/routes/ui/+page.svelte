@@ -77,8 +77,8 @@ let indeterminate = $state(true);
           <ThemePaletteLab />
           <div class="grid gap-3 sm:grid-cols-2">
             <div>
-              <p class="text-title font-medium">Provider connections</p>
-              <p class="mt-1 text-label text-text-muted">Title &middot; 20px / 500</p>
+              <p class="text-title font-[640]">Provider connections</p>
+              <p class="mt-1 text-label text-text-muted">Title &middot; 20px / 640</p>
             </div>
             <div>
               <p class="text-body text-text-secondary">Values are validated by the running provider.</p>
@@ -112,7 +112,7 @@ let indeterminate = $state(true);
           <Chip>Default</Chip>
           {#each chipExamples as chip}
             <Chip
-              dot
+              status
               tone={chip.tone}
               >{chip.label}</Chip
             >
@@ -242,6 +242,15 @@ let indeterminate = $state(true);
               />
             </div>
             <div>
+              <span class="mb-1.5 block text-meta text-text-muted">Textarea invalid</span>
+              <Textarea
+                aria-invalid="true"
+                aria-label="Invalid description"
+                value="Sync every state without a conflict policy."
+              />
+              <span class="mt-1.5 block text-meta text-danger">Choose how conflicting states should resolve.</span>
+            </div>
+            <div>
               <span class="mb-1.5 block text-meta text-text-muted">Select</span>
               <Select
                 ariaLabel="Connection status"
@@ -249,6 +258,17 @@ let indeterminate = $state(true);
                 triggerClass="w-full"
                 bind:value={selectedStatus}
               />
+            </div>
+            <div>
+              <span class="mb-1.5 block text-meta text-text-muted">Select invalid</span>
+              <Select
+                ariaInvalid
+                ariaLabel="Invalid provider"
+                items={selectItems}
+                placeholder="Choose a provider"
+                triggerClass="w-full"
+              />
+              <span class="mt-1.5 block text-meta text-danger">Select a provider before continuing.</span>
             </div>
             <div>
               <span class="mb-1.5 block text-meta text-text-muted">Select placeholder</span>
@@ -433,7 +453,37 @@ let indeterminate = $state(true);
           <h2 class="text-label font-[510] text-text-secondary">Table</h2>
           <p class="mt-1 text-meta text-text-disabled">Dense data display</p>
         </div>
-        <div class="min-w-0 overflow-x-auto rounded-panel border border-border-subtle">
+        <div class="divide-y divide-border-subtle overflow-hidden rounded-panel border border-border-subtle sm:hidden">
+          {#each tableRows as [name, provider, status, tone]}
+            <article class="px-3 py-3">
+              <div class="flex min-w-0 items-start justify-between gap-3">
+                <p class="min-w-0 text-label font-[510] wrap-anywhere text-text-secondary">{name}</p>
+                <IconButton
+                  label={`Refresh ${name}`}
+                  size="sm"
+                >
+                  <RefreshCw
+                    aria-hidden="true"
+                    size={13}
+                  />
+                </IconButton>
+              </div>
+              <dl class="mt-2 grid grid-cols-[4.5rem_minmax(0,1fr)] items-center gap-x-3 gap-y-2 text-meta">
+                <dt class="text-text-disabled">Provider</dt>
+                <dd class="min-w-0 wrap-anywhere text-text-muted">{provider}</dd>
+                <dt class="text-text-disabled">Status</dt>
+                <dd>
+                  <Chip
+                    status
+                    {tone}
+                    >{status}</Chip
+                  >
+                </dd>
+              </dl>
+            </article>
+          {/each}
+        </div>
+        <div class="hidden min-w-0 overflow-x-auto rounded-panel border border-border-subtle sm:block">
           <table class="w-full min-w-136 border-collapse text-left">
             <thead class="bg-surface-raised/35 text-meta font-medium text-text-muted">
               <tr class="h-8 border-b border-border-subtle">
@@ -450,7 +500,7 @@ let indeterminate = $state(true);
                   <td class="px-3 text-text-muted">{provider}</td>
                   <td class="px-3">
                     <Chip
-                      dot
+                      status
                       {tone}
                       >{status}</Chip
                     >

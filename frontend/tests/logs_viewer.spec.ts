@@ -102,5 +102,11 @@ test("filters dense stdout-style runtime logs", async ({ page }) => {
   await page.getByRole("textbox", { name: "Search logs" }).fill("server started");
   await expect(page.getByText("Database connection unavailable", { exact: true })).not.toBeVisible();
   await expect(page.getByText("HTTP server started", { exact: true })).toBeVisible();
+  await page.getByRole("textbox", { name: "Search logs" }).fill("no-matching-log-entry");
+  await expect(page.getByRole("heading", { name: "No matching logs" })).toBeVisible();
+  await page.getByRole("button", { name: "Clear filters" }).click();
+  await expect(page.getByRole("textbox", { name: "Search logs" })).toHaveValue("");
+  await expect(page.getByText("HTTP server started", { exact: true })).toBeVisible();
+  await expect(errorLog).toBeVisible();
   await expectNoHorizontalOverflow(page);
 });

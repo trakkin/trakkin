@@ -17,7 +17,19 @@ import {
 } from "@lucide/svelte";
 import { onDestroy, onMount } from "svelte";
 import { goto } from "$app/navigation";
-import { AlertDialog, Button, Chip, IconButton, MediaArtwork, Panel, Select, Spinner, Tabs, TextInput } from "$lib";
+import {
+  AlertDialog,
+  Button,
+  EmptyState,
+  IconButton,
+  MediaArtwork,
+  PageToolbar,
+  Panel,
+  Select,
+  Spinner,
+  Tabs,
+  TextInput,
+} from "$lib";
 import {
   CATALOG_PAGE_LIMIT,
   type CatalogAsset,
@@ -35,6 +47,11 @@ import { catalogPublicationIssue } from "./catalogPublicationIssue";
 import type { WorkspaceCatalog, WorkspaceCatalogSource } from "./workspaceCatalog";
 
 type BrowsePart = { key: ProviderKey; label: string };
+type AttributeRow = { key: string; label: string; value: string };
+type EncodedAttribute = {
+  term?: { name?: unknown; namespace?: unknown };
+  value?: { kind?: unknown; value?: unknown };
+};
 
 type Props = {
   data: WorkspaceCatalog;
@@ -399,18 +416,77 @@ function termKey(term: { namespace: string; name: string }): string {
   return `${term.namespace}:${term.name}`;
 }
 
-function rawEntry(entry: CatalogEntry): string {
-  return JSON.stringify(entry, null, 2);
-}
-
-function attributeRows(attributes: Record<string, unknown>): { key: string; label: string; value: string }[] {
+function attributeRows(attributes: Record<string, unknown>): AttributeRow[] {
+  if (Array.isArray(attributes.entries)) return encodedAttributeRows(attributes.entries);
   return Object.entries(attributes)
     .map(([key, value]) => ({
       key,
-      label: key.replaceAll(/[-_]/g, " "),
-      value: typeof value === "string" ? value : (JSON.stringify(value) ?? "Unknown"),
+      label: formatAttributeLabel(key),
+      value: formatGenericAttributeValue(value),
     }))
     .sort((left, right) => left.label.localeCompare(right.label));
+}
+
+function encodedAttributeRows(entries: unknown[]): AttributeRow[] {
+  const grouped = new Map<string, AttributeRow & { values: string[] }>();
+  for (const candidate of entries) {
+    if (!isRecord(candidate) || !isRecord(candidate.term)) continue;
+    const attribute = candidate as EncodedAttribute;
+    const name = typeof attribute.term?.name === "string" ? attribute.term.name : "";
+    if (!name) continue;
+    const namespace = typeof attribute.term?.namespace === "string" ? attribute.term.namespace : "";
+    const encodedValue = isRecord(attribute.value) ? attribute.value : {};
+    const kind = typeof encodedValue.kind === "string" ? encodedValue.kind : "";
+    const value = formatEncodedAttributeValue(kind, encodedValue.value);
+    const key = `${namespace}:${name}`;
+    const existing = grouped.get(key);
+    if (existing) {
+      if (!existing.values.includes(value)) existing.values.push(value);
+      continue;
+    }
+    grouped.set(key, {
+      key,
+      label: formatAttributeLabel(name),
+      value: "",
+      values: [value],
+    });
+  }
+  return [...grouped.values()]
+    .sort((left, right) => left.label.localeCompare(right.label) || left.key.localeCompare(right.key))
+    .map(({ key, label, values }) => ({ key, label, value: values.join(", ") }));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function formatAttributeLabel(value: string): string {
+  return value
+    .replaceAll(/[-_]/g, " ")
+    .replaceAll(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/^./, (character) => character.toUpperCase());
+}
+
+function formatEncodedAttributeValue(kind: string, value: unknown): string {
+  if (kind === "timestamp_milliseconds" && typeof value === "number") {
+    return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
+  }
+  return formatGenericAttributeValue(value);
+}
+
+function formatGenericAttributeValue(value: unknown): string {
+  if (value === null || value === undefined || value === "") return "None";
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  if (typeof value === "number") return new Intl.NumberFormat().format(value);
+  if (Array.isArray(value)) {
+    return value.map(formatGenericAttributeValue).join(", ");
+  }
+  if (isRecord(value)) {
+    return Object.entries(value)
+      .map(([key, nestedValue]) => `${formatAttributeLabel(key)}: ${formatGenericAttributeValue(nestedValue)}`)
+      .join("; ");
+  }
+  return String(value);
 }
 
 async function copyPortableReference(referenceId: string, value: string): Promise<void> {
@@ -513,20 +589,12 @@ async function copyPortableReference(referenceId: string, value: string): Promis
                     {referenceValue}
                   </div>
                   {#if recommended || effective}
-                    <div class="mt-1 flex flex-wrap gap-1.5">
+                    <div class="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-meta font-[560]">
                       {#if recommended}
-                        <Chip
-                          dot
-                          tone="info"
-                          >Provider recommended</Chip
-                        >
+                        <span class="text-info">Provider recommended</span>
                       {/if}
                       {#if effective}
-                        <Chip
-                          dot
-                          tone="success"
-                          >Effective root</Chip
-                        >
+                        <span class="text-success">Effective root</span>
                       {/if}
                     </div>
                   {/if}
@@ -559,30 +627,36 @@ async function copyPortableReference(referenceId: string, value: string): Promis
       {#if itemAttributes.length || relationAttributes.length}
         <section>
           <h3 class="text-meta font-semibold uppercase text-text-disabled">Attributes</h3>
-          <dl class="mt-2 grid gap-1.5">
-            {#each [...itemAttributes, ...relationAttributes] as attribute}
-              <div
-                class="grid min-h-10 grid-cols-[minmax(6.5rem,2fr)_minmax(0,3fr)] items-center gap-4 rounded-md border border-border-subtle bg-black/10 px-3 py-2"
-              >
-                <dt class="truncate text-label leading-5 capitalize text-text-muted">{attribute.label}</dt>
-                <dd class="wrap-break-word text-label leading-5 text-text-secondary">{attribute.value}</dd>
-              </div>
-            {/each}
-          </dl>
+          {#if itemAttributes.length}
+            <h4 class="mt-2 text-meta font-[560] text-text-muted">Published item</h4>
+            <dl class="mt-1 divide-y divide-border-subtle border-y border-border-subtle">
+              {#each itemAttributes as attribute}
+                <div class="grid gap-1 px-1 py-2.5 sm:grid-cols-[minmax(7rem,2fr)_minmax(0,3fr)] sm:gap-4">
+                  <dt class="text-meta leading-5 text-text-muted">{attribute.label}</dt>
+                  <dd class="wrap-break-word text-label leading-5 text-text-secondary">{attribute.value}</dd>
+                </div>
+              {/each}
+            </dl>
+          {/if}
+          {#if relationAttributes.length}
+            <h4 class="mt-3 text-meta font-[560] text-text-muted">Provider relation</h4>
+            <dl class="mt-1 divide-y divide-border-subtle border-y border-border-subtle">
+              {#each relationAttributes as attribute}
+                <div class="grid gap-1 px-1 py-2.5 sm:grid-cols-[minmax(7rem,2fr)_minmax(0,3fr)] sm:gap-4">
+                  <dt class="text-meta leading-5 text-text-muted">{attribute.label}</dt>
+                  <dd class="wrap-break-word text-label leading-5 text-text-secondary">{attribute.value}</dd>
+                </div>
+              {/each}
+            </dl>
+          {/if}
         </section>
       {/if}
-      <details>
-        <summary class="cursor-pointer text-label text-text-muted">Raw published entry</summary>
-        <pre
-          class="mt-2 max-h-72 overflow-auto rounded-md border border-border-subtle bg-black/15 p-3 font-mono text-caption text-text-muted"
-        >{rawEntry(entry)}</pre>
-      </details>
     </div>
   </Panel>
 {/snippet}
 
 <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
-  <div class="shrink-0 border-b border-border-subtle bg-surface-panel px-4 py-3 sm:px-6">
+  <PageToolbar label="Catalog filters">
     {#if data.sources.length > 0}
       <div class="mb-2.5 flex min-w-0 items-center gap-2">
         <div
@@ -644,7 +718,7 @@ async function copyPortableReference(referenceId: string, value: string): Promis
           size={14}
         />
         <TextInput
-          class="w-full border-border-strong bg-surface-raised pl-8"
+          class="w-full pl-8"
           id="catalog-search"
           maxlength={200}
           oninput={(event) => (query = event.currentTarget.value)}
@@ -661,7 +735,7 @@ async function copyPortableReference(referenceId: string, value: string): Promis
         value={kindFilter}
       />
     </div>
-  </div>
+  </PageToolbar>
 
   {#if errorMessage}
     <div class="shrink-0 border-b border-danger/20 bg-danger/6 px-4 py-2.5 sm:px-6">
@@ -682,52 +756,40 @@ async function copyPortableReference(referenceId: string, value: string): Promis
   {/if}
 
   {#if data.sources.length === 0}
-    <div class="grid min-h-0 flex-1 place-items-center p-6">
-      <Panel
-        class="grid min-h-44 w-full max-w-xl place-items-center p-6 text-center"
-        tone="dashed"
-        ><div>
-          <Database
+    <EmptyState
+      class="flex-1"
+      description="This workspace has no attached sources."
+      icon={Database}
+      title="No attached sources"
+    >
+      {#snippet actions()}
+        <Button
+          onclick={() => goto(`/connections?workspace=${data.workspace.id}`)}
+          size="sm"
+        >
+          Attach sources
+          <ArrowRight
             aria-hidden="true"
-            class="mx-auto text-text-disabled"
-            size={25}
+            size={14}
           />
-          <h2 class="mt-3 text-heading font-semibold text-text-primary">No attached sources</h2>
-          <p class="mt-1 text-label text-text-muted">Attach a discovered source from Connections.</p>
-          <Button
-            class="mt-4"
-            onclick={() => goto(`/connections?workspace=${data.workspace.id}`)}
-            size="sm"
-          >
-            Attach sources
-            <ArrowRight
-              aria-hidden="true"
-              size={14}
-            />
-          </Button>
-        </div></Panel
-      >
-    </div>
+        </Button>
+      {/snippet}
+    </EmptyState>
   {:else if selectedSource?.error}
-    <div class="grid min-h-0 flex-1 place-items-center p-6">
-      <Panel
-        class="grid min-h-44 w-full max-w-xl place-items-center p-6 text-center"
-        tone="dashed"
-        ><div>
-          <Layers
-            aria-hidden="true"
-            class="mx-auto text-text-disabled"
-            size={25}
-          />
-          <h2 class="mt-3 text-heading font-semibold text-text-primary">Catalog unavailable</h2>
-          <p class="mt-1 text-label text-text-muted">{selectedSource.error}</p>
-        </div></Panel
-      >
-    </div>
+    <EmptyState
+      class="flex-1"
+      description={selectedSource.error}
+      icon={Layers}
+      role="alert"
+      title="Catalog unavailable"
+    />
   {:else}
     <div class="min-h-0 flex-1 overflow-hidden">
       <div
-        class="grid h-full min-h-0 w-full grid-rows-[minmax(0,1fr)_minmax(0,1fr)] lg:grid-cols-[minmax(0,1fr)_26rem] lg:grid-rows-1 xl:grid-cols-[minmax(0,1fr)_30rem]"
+        class={[
+          "grid h-full min-h-0 w-full lg:grid-cols-[minmax(0,1fr)_24rem] lg:grid-rows-1 xl:grid-cols-[minmax(0,1fr)_26rem]",
+          focusedEntry ? "grid-rows-[minmax(0,1fr)_minmax(14rem,0.8fr)]" : "grid-rows-1",
+        ]}
       >
         <section class="min-h-0 min-w-0 overflow-y-auto p-4 sm:p-5 lg:p-6">
           <div
@@ -837,21 +899,11 @@ async function copyPortableReference(referenceId: string, value: string): Promis
               <Spinner size={16} />Loading published catalog...
             </div>
           {:else if visibleEntries.length === 0}
-            <Panel
-              class="grid min-h-48 place-items-center p-6 text-center"
-              tone="dashed"
-              ><div>
-                <Layers
-                  aria-hidden="true"
-                  class="mx-auto text-text-disabled"
-                  size={24}
-                />
-                <h2 class="mt-3 text-heading font-semibold text-text-primary">No catalog entries</h2>
-                <p class="mt-1 text-label text-text-muted">
-                  {catalogSearch ? "No entries match this search." : "Run a catalog scan to publish this source."}
-                </p>
-              </div></Panel
-            >
+            <EmptyState
+              description={catalogSearch ? "No entries match this search." : "This source has no published entries."}
+              icon={Layers}
+              title="No catalog entries"
+            />
           {:else}
             {#if viewMode === "grid"}
               <ul
@@ -1001,22 +1053,24 @@ async function copyPortableReference(referenceId: string, value: string): Promis
           {/if}
         </section>
 
-        <aside class="min-h-0 min-w-0 overflow-y-auto border-t border-border-subtle lg:border-t-0 lg:border-l">
-          {#if focusedEntry}
+        {#if focusedEntry}
+          <aside class="min-h-0 min-w-0 overflow-y-auto border-t border-border-subtle lg:border-t-0 lg:border-l">
             {@render catalogDetails(focusedEntry)}
-          {:else}
-            <div class="grid h-full min-h-40 place-items-center p-5 text-center text-label text-text-muted">
-              <div>
-                <Layers
-                  aria-hidden="true"
-                  class="mx-auto text-text-disabled"
-                  size={24}
-                />
-                <p class="mt-3">Select an entry to view its published details.</p>
-              </div>
+          </aside>
+        {:else}
+          <aside
+            class="hidden min-h-0 min-w-0 place-items-center border-l border-border-subtle p-5 text-center lg:grid"
+          >
+            <div class="max-w-56 text-label text-text-muted">
+              <Layers
+                aria-hidden="true"
+                class="mx-auto text-text-disabled"
+                size={24}
+              />
+              <p class="mt-3">Select an entry to view its published details.</p>
             </div>
-          {/if}
-        </aside>
+          </aside>
+        {/if}
       </div>
     </div>
   {/if}

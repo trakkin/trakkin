@@ -11,9 +11,10 @@ import {
   Pause,
   Pencil,
   Play,
+  Plus,
   RotateCcw,
 } from "@lucide/svelte";
-import { Button, IconButton, Panel, Spinner } from "$lib";
+import { Button, EmptyState, IconButton, Spinner } from "$lib";
 import type { MappingDetail, MappingRevisionSummary, MappingSummary } from "$lib/api/mappings";
 import MappingResolutionPreview from "./MappingResolutionPreview.svelte";
 
@@ -30,6 +31,7 @@ type Props = {
   canGoNext: boolean;
   busyId?: string | null;
   onexpand: (mapping: MappingSummary) => void;
+  oncreate: () => void;
   onedit: (mapping: MappingSummary) => void;
   onactivate: (mapping: MappingSummary, detail: MappingDetail) => void;
   onretire: (mapping: MappingSummary) => void;
@@ -51,6 +53,7 @@ let {
   canGoNext,
   busyId = null,
   onexpand,
+  oncreate,
   onedit,
   onactivate,
   onretire,
@@ -88,22 +91,27 @@ function activationTone(mapping: MappingSummary): string {
 </script>
 
 {#if mappings.length === 0}
-  <Panel
+  <EmptyState
     aria-label="Mappings"
-    class="grid min-h-56 w-full flex-1 place-items-center p-6 text-center"
-    element="section"
-    tone="dashed"
+    class="flex-1"
+    description="No portable mapping records are registered."
+    icon={Link2}
+    title="No mappings"
   >
-    <div>
-      <Link2
-        aria-hidden="true"
-        class="mx-auto text-text-disabled"
-        size={24}
-      />
-      <h2 class="mt-3 text-heading font-semibold text-text-primary">No mappings</h2>
-      <p class="mt-1 text-label text-text-muted">No portable mapping records are registered.</p>
-    </div>
-  </Panel>
+    {#snippet actions()}
+      <Button
+        onclick={oncreate}
+        size="sm"
+        variant="primary"
+      >
+        <Plus
+          aria-hidden="true"
+          size={13}
+        />
+        Create first mapping
+      </Button>
+    {/snippet}
+  </EmptyState>
 {:else}
   <section
     aria-label="Mappings"

@@ -8,10 +8,13 @@ type Props = ButtonRootProps & {
 };
 
 let { children, class: className, size = "md", variant = "secondary", ...restProps }: Props = $props();
+let elementProps: ButtonRootProps = $derived(
+  "href" in restProps ? restProps : { ...restProps, type: restProps.type ?? "button" },
+);
 </script>
 
 <ButtonPrimitive.Root
-  {...restProps}
+  {...elementProps}
   class={[buttonBase, buttonSizes[size], buttonVariants[variant], className]}
 >
   {@render children?.()}

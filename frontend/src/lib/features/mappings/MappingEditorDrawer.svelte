@@ -123,182 +123,224 @@ function shortHash(value: string | null): string {
 }
 </script>
 
-<Dialog.Root
-  onOpenChange={changeOpen}
-  bind:open
->
-  <Dialog.Drawer style={open ? "translate: none" : undefined}>
-    <header class="flex shrink-0 items-start justify-between gap-4 border-b border-border-strong px-4 py-4 sm:px-5">
-      <div class="min-w-0">
-        <Dialog.Title class="text-title font-semibold text-text-primary">
-          {mode === "create" ? "New mapping" : "New revision"}
-        </Dialog.Title>
-        <Dialog.Description class="mt-1 truncate text-label text-text-muted">
-          {mode === "create" ? "Define portable reference correspondences." : `${mappingId} · ${shortHash(baseContentHash)}`}
-        </Dialog.Description>
-      </div>
-      <IconButton
-        disabled={busy}
-        label="Close mapping editor"
-        onclick={() => changeOpen(false)}
-        size="sm"
+{#snippet conflictNotice()}
+  {#if conflict}
+    <div class="px-4 pt-4 sm:px-5">
+      <Panel
+        class="px-3 py-3"
+        role="alert"
+        tone="warning"
       >
-        <X
-          aria-hidden="true"
-          size={15}
-        />
-      </IconButton>
-    </header>
-
-    <div class="min-h-0 flex-1 overflow-y-auto">
-      {#if conflict}
-        <div class="px-4 pt-4 sm:px-5">
-          <Panel
-            class="px-3 py-3"
-            role="alert"
-            tone="warning"
-          >
-            <div class="flex items-start gap-2.5">
+        <div class="flex items-start gap-2.5">
+          <GitBranch
+            aria-hidden="true"
+            class="mt-0.5 shrink-0 text-warning"
+            size={14}
+          />
+          <div class="min-w-0 flex-1">
+            <p class="text-label font-[620] text-warning">Mapping head moved</p>
+            <p class="mt-1 truncate font-mono text-meta text-text-muted">{conflict.currentHead}</p>
+            <p class="mt-2 text-meta text-text-secondary">
+              {conflict.added.length}
+              added · {conflict.removed.length} removed
+            </p>
+            <Button
+              class="mt-3"
+              disabled={busy}
+              onclick={onrebase}
+              size="sm"
+            >
               <GitBranch
                 aria-hidden="true"
-                class="mt-0.5 shrink-0 text-warning"
-                size={14}
+                size={13}
               />
-              <div class="min-w-0 flex-1">
-                <p class="text-label font-[620] text-warning">Mapping head moved</p>
-                <p class="mt-1 truncate font-mono text-meta text-text-muted">{conflict.currentHead}</p>
-                <p class="mt-2 text-meta text-text-secondary">
-                  {conflict.added.length}
-                  added · {conflict.removed.length} removed
-                </p>
-                <Button
-                  class="mt-3"
-                  disabled={busy}
-                  onclick={onrebase}
-                  size="sm"
-                >
-                  <GitBranch
-                    aria-hidden="true"
-                    size={13}
-                  />
-                  Rebase draft
-                </Button>
-              </div>
-            </div>
-          </Panel>
+              Rebase draft
+            </Button>
+          </div>
         </div>
-      {/if}
+      </Panel>
+    </div>
+  {/if}
+{/snippet}
 
-      <fieldset>
-        <legend class="sr-only">Portable mapping rows</legend>
-        {#each rowDrafts as row, index (index)}
-          <section
-            class="border-b border-border-subtle px-4 py-4 sm:px-5"
-            onfocusin={() => (targetRowIndex = index)}
+{#snippet editorFields()}
+  <fieldset>
+    <legend class="sr-only">Portable mapping rows</legend>
+    {#each rowDrafts as row, index (index)}
+      <section
+        class="border-b border-border-subtle px-4 py-4 sm:px-5"
+        onfocusin={() => (targetRowIndex = index)}
+      >
+        <div class="mb-3 flex items-center gap-3">
+          <div class="min-w-0 flex-1">
+            <h2 class="text-label font-semibold text-text-primary">Correspondence {index + 1}</h2>
+            <p class="mt-0.5 text-meta text-text-muted">
+              {row.filter((reference) => reference.trim()).length}
+              of {row.length} references set
+            </p>
+          </div>
+          <Button
+            disabled={busy}
+            onclick={() => selectCatalogRow(index)}
+            size="sm"
+            variant="secondary"
           >
-            <div class="mb-4 flex items-start gap-3">
-              <div class="min-w-0 flex-1">
-                <h2 class="text-label font-semibold text-text-primary">Correspondence {index + 1}</h2>
-                <p class="mt-1 text-meta text-text-muted">References that identify the same item.</p>
-              </div>
-              <IconButton
-                disabled={busy || rowDrafts.length === 1}
-                label={`Remove correspondence ${index + 1}`}
-                onclick={() => removeRow(index)}
-                size="sm"
-                variant="danger"
+            <LibraryBig
+              aria-hidden="true"
+              size={13}
+            />
+            Catalog
+          </Button>
+          <IconButton
+            disabled={busy || rowDrafts.length === 1}
+            label={`Remove correspondence ${index + 1}`}
+            onclick={() => removeRow(index)}
+            size="sm"
+            variant="danger"
+          >
+            <Trash2
+              aria-hidden="true"
+              size={12}
+            />
+          </IconButton>
+        </div>
+        <div class="grid gap-2">
+          {#each row as _, referenceIndex (`${index}:${referenceIndex}`)}
+            <div class="flex min-w-0 items-center gap-2">
+              <span
+                aria-hidden="true"
+                class="grid size-7 shrink-0 place-items-center rounded-control border border-border-subtle bg-white/3 font-mono text-meta text-text-muted"
               >
-                <Trash2
+                {referenceIndex + 1}
+              </span>
+              <label
+                class="sr-only"
+                for={`mapping-reference-${index}-${referenceIndex}`}
+              >
+                Portable reference {referenceIndex + 1}
+              </label>
+              <TextInput
+                aria-invalid={invalidRowIndex === index && !row[referenceIndex].trim()}
+                aria-label={`Portable reference ${referenceIndex + 1} for row ${index + 1}`}
+                class="min-w-0 flex-1 font-mono"
+                disabled={busy}
+                id={`mapping-reference-${index}-${referenceIndex}`}
+                onfocus={() => (targetRowIndex = index)}
+                oninput={() => clearRowValidation(index)}
+                placeholder="example.media://item/one"
+                bind:value={rowDrafts[index][referenceIndex]}
+              />
+              <IconButton
+                disabled={busy}
+                label={`Remove reference ${referenceIndex + 1} from correspondence ${index + 1}`}
+                onclick={() => removeReference(index, referenceIndex)}
+                size="sm"
+                variant="ghost"
+              >
+                <X
                   aria-hidden="true"
                   size={12}
                 />
               </IconButton>
             </div>
-            <div class="grid gap-3">
-              {#each row as _, referenceIndex (`${index}:${referenceIndex}`)}
-                <div class="grid min-w-0 gap-1.5">
-                  <div class="flex min-h-7 items-center justify-between gap-2">
-                    <label
-                      class="text-label text-text-secondary"
-                      for={`mapping-reference-${index}-${referenceIndex}`}
-                    >
-                      Portable reference {referenceIndex + 1}
-                    </label>
-                    <IconButton
-                      disabled={busy}
-                      label={`Remove reference ${referenceIndex + 1} from correspondence ${index + 1}`}
-                      onclick={() => removeReference(index, referenceIndex)}
-                      size="sm"
-                      variant="ghost"
-                    >
-                      <X
-                        aria-hidden="true"
-                        size={12}
-                      />
-                    </IconButton>
-                  </div>
-                  <TextInput
-                    aria-invalid={invalidRowIndex === index && !row[referenceIndex].trim()}
-                    aria-label={`Portable reference ${referenceIndex + 1} for row ${index + 1}`}
-                    class="w-full font-mono"
-                    disabled={busy}
-                    id={`mapping-reference-${index}-${referenceIndex}`}
-                    onfocus={() => (targetRowIndex = index)}
-                    oninput={() => clearRowValidation(index)}
-                    placeholder="example.media://item/one"
-                    bind:value={rowDrafts[index][referenceIndex]}
-                  />
-                </div>
-              {/each}
-            </div>
-            {#if invalidRowIndex === index}
-              <p
-                class="mt-2 text-meta text-danger"
-                role="alert"
-              >
-                Add at least two portable references to this correspondence.
-              </p>
-            {/if}
-            <div class="mt-3 flex flex-wrap items-center gap-2">
-              <Button
-                disabled={busy}
-                onclick={() => addReferenceField(index)}
-                size="sm"
-                variant="ghost"
-              >
-                <Plus
-                  aria-hidden="true"
-                  size={12}
-                />Add reference
-              </Button>
-              <Button
-                disabled={busy}
-                onclick={() => selectCatalogRow(index)}
-                size="sm"
-                variant="ghost"
-              >
-                <LibraryBig
-                  aria-hidden="true"
-                  size={12}
-                />Add from catalog
-              </Button>
-            </div>
-          </section>
-        {/each}
-      </fieldset>
+          {/each}
+        </div>
+        {#if invalidRowIndex === index}
+          <p
+            class="mt-2 text-meta text-danger"
+            role="alert"
+          >
+            Add at least two portable references to this correspondence.
+          </p>
+        {/if}
+        <div class="mt-3 flex flex-wrap items-center gap-2">
+          <Button
+            disabled={busy}
+            onclick={() => addReferenceField(index)}
+            size="sm"
+            variant="ghost"
+          >
+            <Plus
+              aria-hidden="true"
+              size={12}
+            />Add reference
+          </Button>
+        </div>
+      </section>
+    {/each}
+  </fieldset>
 
-      <CatalogReferencePicker
-        onselect={addCatalogReference}
-        targetRow={targetRowIndex + 1}
-        {workspaceId}
-        bind:open={catalogPickerOpen}
+  <CatalogReferencePicker
+    onselect={addCatalogReference}
+    targetRow={targetRowIndex + 1}
+    {workspaceId}
+    bind:open={catalogPickerOpen}
+  />
+
+  <div class="px-4 py-4 sm:px-5">
+    <Button
+      disabled={busy}
+      onclick={addRow}
+      size="sm"
+      variant="secondary"
+    >
+      <Plus
+        aria-hidden="true"
+        size={13}
       />
+      Add correspondence
+    </Button>
+  </div>
+{/snippet}
 
-      <div class="px-4 py-4 sm:px-5">
+{#snippet editorFooter()}
+  <footer class="flex shrink-0 items-center justify-end gap-2 border-t border-border-strong px-4 py-3 sm:px-5">
+    <Button
+      disabled={busy}
+      onclick={() => changeOpen(false)}
+      size="sm"
+      variant="ghost"
+      >Cancel</Button
+    >
+    <Button
+      disabled={busy}
+      onclick={submit}
+      size="sm"
+      variant="primary"
+    >
+      {#if busy}
+        <Spinner size={13} />
+      {:else}
+        <Save
+          aria-hidden="true"
+          size={13}
+        />
+      {/if}
+      {mode === "create" ? "Create mapping" : "Save revision"}
+    </Button>
+  </footer>
+{/snippet}
+
+{#if mode === "create"}
+  {#if open}
+    <section
+      aria-label="New mapping editor"
+      class="mx-auto flex min-h-0 w-full max-w-5xl flex-1 flex-col overflow-hidden rounded-panel border border-border-strong bg-surface-panel"
+    >
+      <header
+        class="flex shrink-0 items-center justify-between gap-4 border-b border-border-strong bg-surface-raised/20 px-4 py-3 sm:px-5"
+      >
+        <div class="min-w-0">
+          <h2 class="text-heading font-[560] text-text-primary">Portable correspondences</h2>
+          <p class="mt-0.5 text-meta text-text-muted">
+            {rowDrafts.length} {rowDrafts.length === 1 ? "correspondence" : "correspondences"}
+          </p>
+        </div>
         <Button
           disabled={busy}
           onclick={addRow}
           size="sm"
+          variant="secondary"
         >
           <Plus
             aria-hidden="true"
@@ -306,33 +348,45 @@ function shortHash(value: string | null): string {
           />
           Add correspondence
         </Button>
+      </header>
+      <div class="min-h-0 flex-1 overflow-y-auto">
+        {@render conflictNotice()}
+        {@render editorFields()}
       </div>
-    </div>
-
-    <footer class="flex shrink-0 items-center justify-end gap-2 border-t border-border-strong px-4 py-3 sm:px-5">
-      <Button
-        disabled={busy}
-        onclick={() => changeOpen(false)}
-        size="sm"
-        variant="ghost"
-        >Cancel</Button
-      >
-      <Button
-        disabled={busy}
-        onclick={submit}
-        size="sm"
-        variant="primary"
-      >
-        {#if busy}
-          <Spinner size={13} />
-        {:else}
-          <Save
+      {@render editorFooter()}
+    </section>
+  {/if}
+{:else}
+  <Dialog.Root
+    onOpenChange={changeOpen}
+    bind:open
+  >
+    <Dialog.Drawer style={open ? "translate: none" : undefined}>
+      <header class="flex shrink-0 items-start justify-between gap-4 border-b border-border-strong px-4 py-4 sm:px-5">
+        <div class="min-w-0">
+          <Dialog.Title class="text-title font-semibold text-text-primary">Create revision</Dialog.Title>
+          <Dialog.Description class="mt-1 truncate text-label text-text-muted">
+            {mappingId}
+            &middot; {shortHash(baseContentHash)}
+          </Dialog.Description>
+        </div>
+        <IconButton
+          disabled={busy}
+          label="Close mapping editor"
+          onclick={() => changeOpen(false)}
+          size="sm"
+        >
+          <X
             aria-hidden="true"
-            size={13}
+            size={15}
           />
-        {/if}
-        {mode === "create" ? "Create mapping" : "Save revision"}
-      </Button>
-    </footer>
-  </Dialog.Drawer>
-</Dialog.Root>
+        </IconButton>
+      </header>
+      <div class="min-h-0 flex-1 overflow-y-auto">
+        {@render conflictNotice()}
+        {@render editorFields()}
+      </div>
+      {@render editorFooter()}
+    </Dialog.Drawer>
+  </Dialog.Root>
+{/if}

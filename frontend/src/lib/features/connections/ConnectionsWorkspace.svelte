@@ -15,7 +15,19 @@ import {
 } from "@lucide/svelte";
 import { onDestroy, onMount, tick } from "svelte";
 import { page } from "$app/state";
-import { AlertDialog, Button, Checkbox, Chip, IconButton, PageHeader, Panel, Select, Spinner, TextInput } from "$lib";
+import {
+  AlertDialog,
+  Button,
+  Checkbox,
+  Chip,
+  EmptyState,
+  IconButton,
+  PageHeader,
+  Panel,
+  Select,
+  Spinner,
+  TextInput,
+} from "$lib";
 import {
   type AdapterField,
   type AdapterSetting,
@@ -825,7 +837,30 @@ function messageFor(error: unknown, fallback: string): string {
 {/snippet}
 
 <div class="flex h-full min-h-0 flex-col">
-  <PageHeader title="Connections" />
+  <PageHeader title="Connections">
+    {#snippet actions()}
+      {#if directoryLoaded}
+        <Button
+          aria-expanded={showComposer}
+          onclick={() => changeComposerOpen(!showComposer)}
+          size="sm"
+          variant={showComposer ? "ghost" : "secondary"}
+        >
+          {#if showComposer}
+            <X
+              aria-hidden="true"
+              size={14}
+            />Close
+          {:else}
+            <Plus
+              aria-hidden="true"
+              size={14}
+            />New connection
+          {/if}
+        </Button>
+      {/if}
+    {/snippet}
+  </PageHeader>
 
   <div class="min-h-0 flex-1 overflow-auto">
     <div class="mx-auto grid w-full max-w-5xl gap-4 p-4 sm:p-6">
@@ -839,22 +874,6 @@ function messageFor(error: unknown, fallback: string): string {
               <p class="mt-0.5 text-meta text-text-disabled">Attaching sources to {selectedWorkspace.name}</p>
             {/if}
           </div>
-          <Button
-            onclick={() => changeComposerOpen(!showComposer)}
-            size="sm"
-          >
-            {#if showComposer}
-              <X
-                aria-hidden="true"
-                size={14}
-              />Close
-            {:else}
-              <Plus
-                aria-hidden="true"
-                size={14}
-              />New connection
-            {/if}
-          </Button>
         </div>
       {/if}
 
@@ -1007,25 +1026,18 @@ function messageFor(error: unknown, fallback: string): string {
 
       {#if loading && !directoryLoaded}
         <div
-          class="flex min-h-36 items-center justify-center gap-2 text-label text-text-muted"
+          class="flex min-h-48 items-center justify-center gap-2 text-label text-text-muted"
           role="status"
         >
           <Spinner size={16} />Loading connections...
         </div>
       {:else if directoryLoaded && connections.length === 0 && !showComposer}
-        <Panel
-          class="grid min-h-40 place-items-center p-6 text-center"
-          tone="dashed"
+        <EmptyState
+          icon={Server}
+          title="No connections"
         >
-          <div>
-            <Server
-              aria-hidden="true"
-              class="mx-auto text-text-disabled"
-              size={24}
-            />
-            <p class="mt-3 text-heading font-semibold text-text-primary">No connections</p>
+          {#snippet actions()}
             <Button
-              class="mt-4"
               onclick={() => changeComposerOpen(true)}
               size="sm"
               ><Plus
@@ -1033,8 +1045,8 @@ function messageFor(error: unknown, fallback: string): string {
                 size={14}
               />New connection</Button
             >
-          </div>
-        </Panel>
+          {/snippet}
+        </EmptyState>
       {:else if directoryLoaded}
         <div class="grid gap-3">
           {#each connections as connection (connection.id)}
@@ -1121,7 +1133,7 @@ function messageFor(error: unknown, fallback: string): string {
                   >
                 </span>
                 <Chip
-                  dot
+                  status
                   tone={statusTone(connection)}
                   >{statusLabel(connection)}</Chip
                 >

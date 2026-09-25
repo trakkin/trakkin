@@ -3,6 +3,7 @@ import {
   Check,
   Download,
   PackageOpen,
+  PackagePlus,
   Plus,
   RefreshCw,
   Search,
@@ -16,13 +17,14 @@ import {
   AlertDialog,
   Button,
   Checkbox,
-  Chip,
   Dialog,
+  EmptyState,
   IconButton,
   PageHeader,
   Panel,
   Select,
   Spinner,
+  Switch,
   TextInput,
 } from "$lib";
 import { ApiRequestError } from "$lib/api/client";
@@ -45,12 +47,6 @@ import {
 import ProviderReleaseReview from "./ProviderReleaseReview.svelte";
 
 type RemovalTarget = { kind: "provider"; provider: Provider } | { kind: "source"; source: ProviderSource };
-type SourceProviderEntry = { providerId: string; versions: string[]; installed?: Provider };
-
-const policyItems = [
-  { value: "manual", label: "Manual updates" },
-  { value: "automatic", label: "Automatic updates" },
-];
 
 let sources = $state<ProviderSource[]>([]);
 let providers = $state<Provider[]>([]);
@@ -85,6 +81,24 @@ let versionItems = $derived(
 );
 let selectedInstalledProvider = $derived(
   providers.find((provider) => provider.sourceId === installSourceId && provider.providerId === installProviderId),
+);
+let availableProviders = $derived(
+  sources
+    .flatMap((source) =>
+      source.availableProviders
+        .filter(
+          (available) =>
+            !providers.some(
+              (provider) => provider.sourceId === source.id && provider.providerId === available.providerId,
+            ),
+        )
+        .map((available) => ({
+          source,
+          providerId: available.providerId,
+          versions: available.versions,
+        })),
+    )
+    .sort((left, right) => left.providerId.localeCompare(right.providerId)),
 );
 
 onMount(() => {
@@ -179,8 +193,8 @@ function requestProviderUpdate(provider: Provider) {
   requestProviderRelease(provider.sourceId, provider.providerId, update.version);
 }
 
-async function changePolicy(provider: Provider, value: string) {
-  const updatePolicy: ProviderUpdatePolicy = value === "automatic" ? "automatic" : "manual";
+async function changePolicy(provider: Provider, automatic: boolean) {
+  const updatePolicy: ProviderUpdatePolicy = automatic ? "automatic" : "manual";
   if (updatePolicy === provider.updatePolicy) return;
   await runMutation(`provider:${provider.providerId}`, (signal) =>
     changeProviderUpdatePolicy(provider.providerId, { updatePolicy }, signal),
@@ -354,28 +368,20 @@ function releasePending(installed: Provider | undefined): boolean {
   return Boolean(pending[installed ? `provider:${installed.providerId}` : "provider:install"]);
 }
 
-function sourceProviderEntries(source: ProviderSource): SourceProviderEntry[] {
-  const entries = source.availableProviders.map((available) => ({
-    providerId: available.providerId,
-    versions: available.versions,
-    installed: providers.find(
-      (provider) => provider.sourceId === source.id && provider.providerId === available.providerId,
-    ),
-  }));
-  for (const installed of providers.filter((provider) => provider.sourceId === source.id)) {
-    if (!entries.some((entry) => entry.providerId === installed.providerId)) {
-      entries.push({ providerId: installed.providerId, versions: [], installed });
-    }
+function sourceLabel(sourceId: string): string {
+  const repositoryUrl = sources.find((source) => source.id === sourceId)?.repositoryUrl;
+  if (!repositoryUrl) return sourceId;
+  try {
+    const url = new URL(repositoryUrl);
+    return `${url.host}${url.pathname}`.replace(/\/$/, "");
+  } catch {
+    return repositoryUrl;
   }
-  return entries.sort((left, right) => {
-    const leftLabel = left.installed?.name ?? left.providerId;
-    const rightLabel = right.installed?.name ?? right.providerId;
-    return leftLabel.localeCompare(rightLabel);
-  });
 }
 
-function installedProviderCount(source: ProviderSource): number {
-  return providers.filter((provider) => provider.sourceId === source.id).length;
+function shortIdentity(value: string): string {
+  const digest = value.includes(":") ? value.slice(value.indexOf(":") + 1) : value;
+  return `${digest.slice(0, 12)}${digest.length > 12 ? "..." : ""}`;
 }
 
 function formatTimestamp(value: string): string {
@@ -385,11 +391,6 @@ function formatTimestamp(value: string): string {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(timestamp);
-}
-
-function shortIdentity(value: string): string {
-  const digest = value.includes(":") ? (value.split(":").at(-1) ?? value) : value;
-  return `${digest.slice(0, 12)}${digest.length > 12 ? "..." : ""}`;
 }
 
 function removalTitle(): string {
@@ -413,33 +414,10 @@ function messageFor(error: unknown, fallback: string): string {
 </script>
 
 <div class="flex h-full min-h-0 flex-col">
-  <PageHeader title="Providers">
-    {#snippet actions()}
-      <Button
-        id="trust-provider-source"
-        onclick={toggleSourceForm}
-        size="sm"
-        variant={showSourceForm ? "ghost" : "secondary"}
-      >
-        {#if showSourceForm}
-          <X
-            aria-hidden="true"
-            size={14}
-          />
-          Close
-        {:else}
-          <Plus
-            aria-hidden="true"
-            size={14}
-          />
-          Trust source
-        {/if}
-      </Button>
-    {/snippet}
-  </PageHeader>
+  <PageHeader title="Providers" />
 
-  <div class="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-6">
-    <div class="mx-auto flex w-full max-w-6xl flex-col gap-4 pb-8">
+  <div class="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
+    <div class="mx-auto flex w-full max-w-5xl flex-col gap-4">
       {#if errorMessage}
         <Panel
           class="flex items-center justify-between gap-3 px-4 py-3"
@@ -447,12 +425,17 @@ function messageFor(error: unknown, fallback: string): string {
           tone="danger"
         >
           <p class="text-label text-danger">{errorMessage}</p>
-          <Button
+          <IconButton
+            label="Dismiss error"
             onclick={() => (errorMessage = "")}
             size="sm"
             variant="ghost"
-            >Dismiss</Button
           >
+            <X
+              aria-hidden="true"
+              size={14}
+            />
+          </IconButton>
         </Panel>
       {/if}
 
@@ -471,8 +454,8 @@ function messageFor(error: unknown, fallback: string): string {
             <p class="text-label font-[560] text-text-primary">Trusted provider repository</p>
             <p class="break-all font-mono text-meta text-text-muted">{sourceConfirmation.repositoryUrl}</p>
           </div>
-          <Button
-            aria-label="Dismiss source confirmation"
+          <IconButton
+            label="Dismiss source confirmation"
             onclick={() => (sourceConfirmation = undefined)}
             size="sm"
             variant="ghost"
@@ -481,25 +464,52 @@ function messageFor(error: unknown, fallback: string): string {
               aria-hidden="true"
               size={14}
             />
-          </Button>
+          </IconButton>
         </Panel>
       {/if}
 
-      {#if showSourceForm}
-        <Panel
-          class="p-4 sm:p-5"
-          element="section"
-        >
-          <div class="mb-4 flex items-center gap-2">
-            <ShieldCheck
-              aria-hidden="true"
-              class="text-accent"
-              size={16}
-            />
-            <h2 class="text-heading font-[620] text-text-primary">Trust provider source</h2>
+      <Panel
+        aria-labelledby="trusted-sources-heading"
+        class="overflow-hidden"
+        element="section"
+      >
+        <header class="flex min-h-12 items-center justify-between gap-3 border-b border-border-subtle px-3 sm:px-4">
+          <div class="flex min-w-0 items-center gap-2">
+            <h2
+              class="text-label font-[510] text-text-primary"
+              id="trusted-sources-heading"
+            >
+              Trusted sources
+            </h2>
+            <span class="font-mono text-meta tabular-nums text-text-disabled">{sources.length}</span>
           </div>
+          <Button
+            aria-controls="provider-source-form"
+            aria-expanded={showSourceForm}
+            id="trust-provider-source"
+            onclick={toggleSourceForm}
+            size="sm"
+            variant="ghost"
+          >
+            {#if showSourceForm}
+              <X
+                aria-hidden="true"
+                size={14}
+              />
+              Close
+            {:else}
+              <Plus
+                aria-hidden="true"
+                size={14}
+              />
+              Trust source
+            {/if}
+          </Button>
+        </header>
+        {#if showSourceForm}
           <form
-            class="grid gap-4"
+            class="grid gap-4 border-b border-border-subtle px-3 py-4 sm:px-4"
+            id="provider-source-form"
             onsubmit={(event) => {
               event.preventDefault();
               void addSource();
@@ -548,339 +558,303 @@ function messageFor(error: unknown, fallback: string): string {
               </Button>
             </div>
           </form>
-        </Panel>
-      {/if}
-
-      <section
-        aria-labelledby="provider-sources-heading"
-        class="flex flex-col gap-2"
-      >
-        <div class="flex items-center justify-between gap-3 px-1">
-          <h2
-            class="text-heading font-[620] text-text-primary"
-            id="provider-sources-heading"
-          >
-            Provider sources
-          </h2>
-          {#if !loading}
-            <span class="text-meta text-text-muted">
-              {sources.length} {sources.length === 1 ? "source" : "sources"}
-            </span>
-          {/if}
-        </div>
-        {#if loading && sources.length === 0}
-          <Panel
-            class="flex items-center justify-center gap-2 px-4 py-10"
-            element="section"
-          >
-            <Spinner size={16} />
-            <p class="text-label text-text-muted">Loading trusted sources</p>
-          </Panel>
-        {:else if sources.length === 0}
-          <Panel
-            class="flex flex-col items-center justify-center gap-3 px-4 py-10"
-            element="section"
-          >
-            <ShieldCheck
-              aria-hidden="true"
-              class="text-text-muted"
-              size={24}
-            />
-            <div class="text-center">
-              <p class="text-label font-[560] text-text-primary">No trusted sources yet</p>
-              <p class="mt-1 text-meta text-text-muted">Trust an OCI repository before installing its providers.</p>
-            </div>
-            <Button
-              onclick={() => {
-                cancelProviderInstall();
-                showSourceForm = true;
-              }}
-              size="sm"
-              variant="secondary"
-            >
-              <Plus
-                aria-hidden="true"
-                size={14}
-              />
-              Trust source
-            </Button>
-          </Panel>
+        {/if}
+        {#if sources.length === 0}
+          <p class="px-3 py-5 text-label text-text-muted sm:px-4">No trusted provider sources.</p>
         {:else}
-          <div class="grid gap-4">
+          <ul
+            aria-label="Trusted provider sources"
+            class="divide-y divide-border-subtle"
+          >
             {#each sources as source (source.id)}
-              {@const sourceProviders = sourceProviderEntries(source)}
-              {@const installedCount = installedProviderCount(source)}
-              <Panel
-                class="overflow-hidden"
-                element="section"
-              >
-                <div class="flex flex-wrap items-center gap-3 bg-surface-muted/55 px-4 py-3 sm:px-5">
-                  <div
-                    class="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border bg-surface"
+              <li class="flex min-w-0 items-center gap-3 px-3 py-2.5 sm:px-4">
+                <ShieldCheck
+                  aria-hidden="true"
+                  class="shrink-0 text-text-muted"
+                  size={15}
+                />
+                <div class="min-w-0 flex-1">
+                  <p
+                    class="truncate font-mono text-label text-text-secondary"
+                    title={source.repositoryUrl}
                   >
-                    <ShieldCheck
+                    {source.repositoryUrl}
+                  </p>
+                  <p class="mt-0.5 text-meta text-text-muted">
+                    {source.availableProviders.length}
+                    provider{source.availableProviders.length === 1 ? "" : "s"}
+                  </p>
+                  {#if source.lastError}
+                    <p
+                      class="mt-1 text-meta text-danger"
+                      role="alert"
+                    >
+                      Last refresh failed: {source.lastError}
+                    </p>
+                  {/if}
+                </div>
+                <IconButton
+                  disabled={Boolean(pending[`source:${source.id}`]) || Boolean(pending[`source:${source.id}:remove`])}
+                  label={`Refresh ${source.repositoryUrl}`}
+                  onclick={() => refreshSource(source)}
+                  size="sm"
+                  title="Refresh source"
+                >
+                  {#if pending[`source:${source.id}`]}
+                    <Spinner size={13} />
+                  {:else}
+                    <RefreshCw
                       aria-hidden="true"
-                      class="text-accent"
-                      size={16}
+                      size={13}
                     />
+                  {/if}
+                </IconButton>
+                <IconButton
+                  disabled={Boolean(pending[`source:${source.id}:remove`]) || Boolean(pending[`source:${source.id}`])}
+                  label={`Remove source ${source.repositoryUrl}`}
+                  onclick={() => requestSourceRemoval(source)}
+                  size="sm"
+                  title="Remove source"
+                  variant="danger"
+                >
+                  <Trash2
+                    aria-hidden="true"
+                    size={13}
+                  />
+                </IconButton>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </Panel>
+
+      <Panel
+        aria-labelledby="provider-directory-heading"
+        class="overflow-hidden"
+        element="section"
+      >
+        <header class="flex min-h-12 items-center justify-between gap-3 border-b border-border-subtle px-3 sm:px-4">
+          <div>
+            <h2
+              class="text-label font-[510] text-text-primary"
+              id="provider-directory-heading"
+            >
+              Provider directory
+            </h2>
+            <p class="mt-0.5 text-meta text-text-muted">
+              {providers.length}
+              installed &middot; {availableProviders.length} available
+            </p>
+          </div>
+        </header>
+
+        {#if loading && providers.length === 0 && availableProviders.length === 0}
+          <div class="flex min-h-40 items-center justify-center gap-2 text-label text-text-muted">
+            <Spinner size={16} />
+            Loading providers...
+          </div>
+        {:else if providers.length === 0 && availableProviders.length === 0}
+          <EmptyState
+            class="min-h-56 border-0"
+            description="Trust a provider source to discover integrations."
+            icon={PackageOpen}
+            title="No providers available"
+          >
+            {#snippet actions()}
+              <Button
+                onclick={() => (showSourceForm = true)}
+                size="sm"
+                variant="secondary"
+              >
+                <ShieldCheck
+                  aria-hidden="true"
+                  size={14}
+                />
+                Trust source
+              </Button>
+            {/snippet}
+          </EmptyState>
+        {:else}
+          <div
+            aria-hidden="true"
+            class="hidden h-8 grid-cols-[minmax(12rem,1.4fr)_minmax(9rem,1fr)_5rem_8rem_7rem] items-center gap-3 border-b border-border-subtle px-4 text-meta font-medium text-text-muted sm:grid"
+          >
+            <span>Provider</span>
+            <span>Source</span>
+            <span>Version</span>
+            <span>Updates</span>
+            <span class="text-right">Actions</span>
+          </div>
+          <ul
+            aria-label={sources.length === 1 ? `Providers from ${sources[0].repositoryUrl}` : "Provider directory"}
+            class="max-h-96 divide-y divide-border-subtle overflow-y-auto overscroll-y-contain scrollbar-gutter-stable"
+          >
+            {#each providers as provider (provider.providerId)}
+              <li
+                class="grid min-w-0 gap-3 px-3 py-3 sm:grid-cols-[minmax(12rem,1.4fr)_minmax(9rem,1fr)_5rem_8rem_7rem] sm:items-center sm:px-4 sm:py-2.5"
+              >
+                <div class="min-w-0">
+                  <div class="flex min-w-0 items-center gap-2">
+                    <h3 class="truncate text-label font-[510] text-text-primary">
+                      {provider.name ?? provider.providerId}
+                    </h3>
+                    <span class={provider.availableUpdate ? "text-meta text-warning" : "text-meta text-text-disabled"}>
+                      {provider.availableUpdate ? `${provider.availableUpdate.version} available` : "Installed"}
+                    </span>
                   </div>
-                  <div class="min-w-0 flex-1">
-                    <div class="flex flex-wrap items-center gap-2">
-                      <h3 class="break-all font-mono text-label font-[560] text-text-primary">
-                        {source.repositoryUrl}
-                      </h3>
-                      <Chip
-                        dot
-                        tone="neutral"
-                      >
-                        {sourceProviders.length} {sourceProviders.length === 1 ? "provider" : "providers"}
-                      </Chip>
-                      {#if installedCount > 0}
-                        <Chip
-                          dot
-                          tone="success"
-                          >{installedCount}
-                          installed</Chip
-                        >
-                      {/if}
-                    </div>
-                    {#if source.lastError}
-                      <p
-                        class="mt-1.5 flex items-start gap-1.5 text-meta text-danger"
-                        role="alert"
-                      >
-                        <TriangleAlert
-                          aria-hidden="true"
-                          class="mt-0.5 shrink-0"
-                          size={13}
-                        />
-                        <span class="wrap-break-word">Last refresh failed: {source.lastError}</span>
-                      </p>
-                    {/if}
-                  </div>
-                  <div class="flex w-full items-center justify-end gap-2 sm:w-auto sm:shrink-0">
-                    <Button
-                      aria-label={`Refresh ${source.repositoryUrl}`}
-                      disabled={Boolean(pending[`source:${source.id}`]) || Boolean(pending[`source:${source.id}:remove`])}
-                      onclick={() => refreshSource(source)}
-                      size="sm"
-                      variant="secondary"
+                  <p class="mt-0.5 truncate font-mono text-meta text-text-muted">{provider.providerId}</p>
+                  <p class="mt-0.5 flex flex-wrap gap-x-2 font-mono text-meta text-text-disabled">
+                    <span>Index {shortIdentity(provider.indexDigest)}</span>
+                    <time datetime={provider.updatedAt}>Updated {formatTimestamp(provider.updatedAt)}</time>
+                  </p>
+                  {#if provider.lastUpdateError}
+                    <p
+                      class="mt-1 flex items-start gap-1.5 text-meta text-danger"
+                      role="alert"
                     >
-                      {#if pending[`source:${source.id}`]}
-                        <Spinner size={14} />
-                      {:else}
-                        <RefreshCw
-                          aria-hidden="true"
-                          size={14}
-                        />
-                      {/if}
-                      Refresh
-                    </Button>
-                    <Button
-                      aria-label={`Remove source ${source.repositoryUrl}`}
-                      class="max-sm:size-8 max-sm:px-1"
-                      disabled={Boolean(pending[`source:${source.id}:remove`]) || Boolean(pending[`source:${source.id}`])}
-                      onclick={() => requestSourceRemoval(source)}
-                      size="sm"
-                      variant="danger"
-                    >
-                      {#if pending[`source:${source.id}:remove`]}
-                        <Spinner size={14} />
-                      {:else}
-                        <Trash2
-                          aria-hidden="true"
-                          size={16}
-                        />
-                      {/if}
-                      <span class="hidden sm:inline">Remove</span>
-                    </Button>
+                      <TriangleAlert
+                        aria-hidden="true"
+                        class="mt-0.5 shrink-0"
+                        size={12}
+                      />
+                      <span class="wrap-break-word">Update failed: {provider.lastUpdateError}</span>
+                    </p>
+                  {/if}
+                </div>
+                <div class="grid min-w-0 grid-cols-[4.5rem_minmax(0,1fr)] items-center gap-2 sm:block">
+                  <span class="text-meta text-text-disabled sm:hidden">Source</span>
+                  <p
+                    class="min-w-0 truncate text-label text-text-muted"
+                    title={sourceLabel(provider.sourceId)}
+                  >
+                    {sourceLabel(provider.sourceId)}
+                  </p>
+                </div>
+                <div class="grid grid-cols-[4.5rem_minmax(0,1fr)] items-center gap-2 sm:block">
+                  <span class="text-meta text-text-disabled sm:hidden">Version</span>
+                  <p class="font-mono text-label text-text-secondary">{provider.version}</p>
+                </div>
+                <div class="grid grid-cols-[4.5rem_minmax(0,1fr)] items-center gap-2 sm:block">
+                  <span class="text-meta text-text-disabled sm:hidden">Updates</span>
+                  <div class="flex items-center gap-2">
+                    <Switch
+                      aria-label={`Automatic updates for ${provider.name ?? provider.providerId}`}
+                      checked={provider.updatePolicy === "automatic"}
+                      disabled={Boolean(pending[`provider:${provider.providerId}`])}
+                      onCheckedChange={(checked) => void changePolicy(provider, Boolean(checked))}
+                    />
+                    <span class="text-meta text-text-muted">
+                      {provider.updatePolicy === "automatic" ? "Auto" : "Manual"}
+                    </span>
                   </div>
                 </div>
-
-                {#if sourceProviders.length === 0}
-                  <div class="border-t border-border px-4 py-8 text-center sm:px-5">
-                    <PackageOpen
-                      aria-hidden="true"
-                      class="mx-auto text-text-muted"
-                      size={22}
-                    />
-                    <p class="mt-2 text-label font-[560] text-text-primary">No providers published</p>
-                    <p class="mt-1 text-meta text-text-muted">Refresh this source to check for new providers.</p>
-                  </div>
-                {:else}
-                  <ul
-                    aria-label={`Providers from ${source.repositoryUrl}`}
-                    class="max-h-96 overflow-y-auto overscroll-y-contain border-t border-border scrollbar-gutter-stable"
+                <div class="flex items-center justify-end gap-1">
+                  {#if provider.availableUpdate && provider.updatePolicy === "manual"}
+                    <IconButton
+                      disabled={Boolean(pending[`provider:${provider.providerId}`])}
+                      label={`Update ${provider.name ?? provider.providerId}`}
+                      onclick={() => requestProviderUpdate(provider)}
+                      size="sm"
+                      title="Update provider"
+                      variant="primary"
+                    >
+                      <Download
+                        aria-hidden="true"
+                        size={13}
+                      />
+                    </IconButton>
+                  {/if}
+                  <IconButton
+                    disabled={Boolean(pending[`provider:${provider.providerId}`])}
+                    label={`Review current release for ${provider.name ?? provider.providerId}`}
+                    onclick={() => requestProviderRelease(provider.sourceId, provider.providerId, provider.version)}
+                    size="sm"
+                    title="Review release"
                   >
-                    {#each sourceProviders as entry (entry.providerId)}
-                      {@const installed = entry.installed}
-                      <li class="border-b border-border px-4 py-2 last:border-b-0 sm:px-5 sm:py-2.5">
-                        <div class="flex flex-wrap items-center gap-2.5">
-                          <div class="min-w-0 flex-1">
-                            <div class="flex flex-wrap items-center gap-2">
-                              <h4 class="text-label font-[560] text-text-primary">
-                                {installed?.name ?? entry.providerId}
-                              </h4>
-                              {#if installed?.name && installed.name !== entry.providerId}
-                                <code class="font-mono text-meta text-text-muted">{entry.providerId}</code>
-                              {/if}
-                              {#if installed}
-                                <Chip
-                                  dot
-                                  tone="success"
-                                  >Installed</Chip
-                                >
-                                {#if installed.availableUpdate}
-                                  <Chip
-                                    dot
-                                    tone="warning"
-                                    >{installed.availableUpdate.version}
-                                    available</Chip
-                                  >
-                                {/if}
-                              {/if}
-                            </div>
-                            {#if installed}
-                              <p
-                                class="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-meta text-text-muted"
-                              >
-                                <span>Version {installed.version}</span>
-                                <span aria-hidden="true">&middot;</span>
-                                <span title={installed.indexDigest}>Index {shortIdentity(installed.indexDigest)}</span>
-                                <span aria-hidden="true">&middot;</span>
-                                <time datetime={installed.updatedAt}
-                                  >Updated {formatTimestamp(installed.updatedAt)}</time
-                                >
-                              </p>
-                            {:else if entry.versions[0]}
-                              <p class="mt-0.5 font-mono text-meta text-text-muted">
-                                Latest
-                                {entry.versions[0]}
-                                {#if entry.versions.length > 1}
-                                  &middot; {entry.versions.length} versions
-                                {/if}
-                              </p>
-                            {/if}
-                            {#if installed?.lastUpdateError}
-                              <p
-                                class="mt-1.5 flex items-start gap-1.5 text-meta text-danger"
-                                role="alert"
-                              >
-                                <TriangleAlert
-                                  aria-hidden="true"
-                                  class="mt-0.5 shrink-0"
-                                  size={13}
-                                />
-                                <span class="wrap-break-word">Update failed: {installed.lastUpdateError}</span>
-                              </p>
-                            {/if}
-                          </div>
-                          <div
-                            class={installed
-                              ? "flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto sm:shrink-0"
-                              : "flex shrink-0 items-center justify-end gap-2"}
-                          >
-                            {#if installed}
-                              {#if installed.availableUpdate && installed.updatePolicy === "manual"}
-                                <Button
-                                  disabled={Boolean(pending[`provider:${entry.providerId}`])}
-                                  onclick={() => requestProviderUpdate(installed)}
-                                  size="sm"
-                                  variant="primary"
-                                >
-                                  {#if pending[`provider:${entry.providerId}`]}
-                                    <Spinner size={14} />
-                                  {:else}
-                                    <Download
-                                      aria-hidden="true"
-                                      size={14}
-                                    />
-                                  {/if}
-                                  Update
-                                </Button>
-                              {/if}
-                              <Button
-                                aria-label={`Review current release for ${installed.name ?? entry.providerId}`}
-                                class="max-sm:size-8 max-sm:px-1"
-                                disabled={Boolean(pending[`provider:${entry.providerId}`])}
-                                onclick={() => requestProviderRelease(installed.sourceId, installed.providerId, installed.version)}
-                                size="sm"
-                                variant="secondary"
-                              >
-                                <Search
-                                  aria-hidden="true"
-                                  size={14}
-                                />
-                                <span class="hidden sm:inline">Review</span>
-                              </Button>
-                              <Select
-                                ariaLabel={`Update policy for ${installed.name ?? entry.providerId}`}
-                                disabled={Boolean(pending[`provider:${entry.providerId}`])}
-                                items={policyItems}
-                                onValueChange={(value) => changePolicy(installed, value)}
-                                triggerClass="w-44"
-                                value={installed.updatePolicy}
-                              />
-                              <Button
-                                aria-label={`Remove provider ${installed.name ?? entry.providerId}`}
-                                class="max-sm:size-8 max-sm:px-1"
-                                disabled={Boolean(pending[`provider:${entry.providerId}`])}
-                                onclick={() => requestProviderRemoval(installed)}
-                                size="sm"
-                                variant="danger"
-                              >
-                                {#if pending[`provider:${entry.providerId}`]}
-                                  <Spinner size={14} />
-                                {:else}
-                                  <Trash2
-                                    aria-hidden="true"
-                                    size={16}
-                                  />
-                                {/if}
-                                <span class="hidden sm:inline">Remove</span>
-                              </Button>
-                            {:else}
-                              <Button
-                                aria-expanded={installSourceId === source.id && installProviderId === entry.providerId}
-                                aria-label={installSourceId === source.id && installProviderId === entry.providerId
-                                  ? `Cancel installing ${entry.providerId}`
-                                  : `Install ${entry.providerId}`}
-                                class="max-sm:size-8 max-sm:px-1"
-                                onclick={() =>
-                                  installSourceId === source.id && installProviderId === entry.providerId
-                                    ? cancelProviderInstall()
-                                    : requestProviderInstall(source.id, entry.providerId)}
-                                size="sm"
-                                variant={installSourceId === source.id && installProviderId === entry.providerId
-                                  ? "ghost"
-                                  : "secondary"}
-                              >
-                                {#if installSourceId === source.id && installProviderId === entry.providerId}
-                                  <X
-                                    aria-hidden="true"
-                                    size={16}
-                                  />
-                                  <span class="hidden sm:inline">Cancel</span>
-                                {:else}
-                                  <Download
-                                    aria-hidden="true"
-                                    size={16}
-                                  />
-                                  <span class="hidden sm:inline">Install</span>
-                                {/if}
-                              </Button>
-                            {/if}
-                          </div>
-                        </div>
-                      </li>
-                    {/each}
-                  </ul>
-                {/if}
-              </Panel>
+                    <Search
+                      aria-hidden="true"
+                      size={13}
+                    />
+                  </IconButton>
+                  <IconButton
+                    disabled={Boolean(pending[`provider:${provider.providerId}`])}
+                    label={`Remove provider ${provider.name ?? provider.providerId}`}
+                    onclick={() => requestProviderRemoval(provider)}
+                    size="sm"
+                    title="Remove provider"
+                    variant="danger"
+                  >
+                    {#if pending[`provider:${provider.providerId}`]}
+                      <Spinner size={13} />
+                    {:else}
+                      <Trash2
+                        aria-hidden="true"
+                        size={13}
+                      />
+                    {/if}
+                  </IconButton>
+                </div>
+              </li>
             {/each}
-          </div>
+            {#each availableProviders as entry (`${entry.source.id}:${entry.providerId}`)}
+              <li
+                class="grid min-w-0 gap-3 px-3 py-3 sm:grid-cols-[minmax(12rem,1.4fr)_minmax(9rem,1fr)_5rem_8rem_7rem] sm:items-center sm:px-4 sm:py-2.5"
+              >
+                <div class="min-w-0">
+                  <div class="flex min-w-0 items-center gap-2">
+                    <h3 class="truncate text-label font-[510] text-text-primary">{entry.providerId}</h3>
+                    <span class="text-meta text-text-disabled">Available</span>
+                  </div>
+                </div>
+                <div class="grid min-w-0 grid-cols-[4.5rem_minmax(0,1fr)] items-center gap-2 sm:block">
+                  <span class="text-meta text-text-disabled sm:hidden">Source</span>
+                  <p
+                    class="min-w-0 truncate text-label text-text-muted"
+                    title={entry.source.repositoryUrl}
+                  >
+                    {sourceLabel(entry.source.id)}
+                  </p>
+                </div>
+                <div class="grid grid-cols-[4.5rem_minmax(0,1fr)] items-center gap-2 sm:block">
+                  <span class="text-meta text-text-disabled sm:hidden">Version</span>
+                  <p class="font-mono text-label text-text-secondary">{entry.versions[0] ?? "Unknown"}</p>
+                </div>
+                <div class="grid grid-cols-[4.5rem_minmax(0,1fr)] items-center gap-2 sm:block">
+                  <span class="text-meta text-text-disabled sm:hidden">Updates</span>
+                  <span class="text-label text-text-disabled">Not configured</span>
+                </div>
+                <div class="flex items-center justify-end gap-1">
+                  <IconButton
+                    disabled={entry.versions.length === 0}
+                    label={`Preview release for ${entry.providerId}`}
+                    onclick={() => requestProviderRelease(entry.source.id, entry.providerId)}
+                    size="sm"
+                    title="Preview release"
+                  >
+                    <Search
+                      aria-hidden="true"
+                      size={13}
+                    />
+                  </IconButton>
+                  <IconButton
+                    disabled={entry.versions.length === 0}
+                    label={`Install ${entry.providerId}`}
+                    onclick={() => requestProviderInstall(entry.source.id, entry.providerId)}
+                    size="sm"
+                    title="Install provider"
+                    variant="success"
+                  >
+                    <PackagePlus
+                      aria-hidden="true"
+                      size={13}
+                    />
+                  </IconButton>
+                </div>
+              </li>
+            {/each}
+          </ul>
         {/if}
-      </section>
+      </Panel>
     </div>
   </div>
 
@@ -899,7 +873,7 @@ function messageFor(error: unknown, fallback: string): string {
         <header class="flex shrink-0 items-start justify-between gap-4 border-b border-border-strong px-4 py-4 sm:px-5">
           <div class="min-w-0">
             <Dialog.Title class="text-title font-semibold text-text-primary">
-              {selectedInstalledProvider ? "Review provider release" : "Install provider"}
+              {selectedInstalledProvider ? "Review provider release" : "Preview provider release"}
             </Dialog.Title>
             <Dialog.Description
               class="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 font-mono text-meta text-text-muted"
@@ -927,7 +901,7 @@ function messageFor(error: unknown, fallback: string): string {
         <div class="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto">
           {#if !selectedInstalledProvider}
             <section
-              class="grid gap-3 border-b border-border-subtle bg-surface-muted/35 px-4 py-4 sm:grid-cols-2 sm:px-5"
+              class="grid gap-3 border-b border-border-subtle bg-surface-raised/35 px-4 py-4 sm:grid-cols-2 sm:px-5"
             >
               <div class="grid gap-1.5 text-label text-text-muted">
                 <span>Version</span>
@@ -943,16 +917,19 @@ function messageFor(error: unknown, fallback: string): string {
                   value={providerVersion}
                 />
               </div>
-              <div class="grid gap-1.5 text-label text-text-muted">
-                <span>Update policy</span>
-                <Select
-                  ariaLabel={`Update policy for ${installProviderId}`}
-                  items={policyItems}
-                  onValueChange={(value) => {
-                    installPolicy = value as ProviderUpdatePolicy;
+              <div
+                class="flex items-center justify-between gap-3 rounded-control border border-border-subtle bg-white/2 px-3 py-2"
+              >
+                <div>
+                  <p class="text-label text-text-secondary">Automatic updates</p>
+                  <p class="mt-0.5 text-meta text-text-muted">Install future compatible releases</p>
+                </div>
+                <Switch
+                  aria-label={`Install updates automatically for ${installProviderId}`}
+                  checked={installPolicy === "automatic"}
+                  onCheckedChange={(checked) => {
+                    installPolicy = checked ? "automatic" : "manual";
                   }}
-                  triggerClass="w-full"
-                  value={installPolicy}
                 />
               </div>
             </section>

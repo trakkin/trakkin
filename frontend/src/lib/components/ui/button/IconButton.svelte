@@ -8,13 +8,25 @@ type Props = ButtonRootProps & {
   variant?: ButtonVariant;
 };
 
-let { children, class: className, label, size = "md", variant = "ghost", ...restProps }: Props = $props();
+let {
+  children,
+  class: className,
+  label,
+  size = "md",
+  title = label,
+  variant = "ghost",
+  ...restProps
+}: Props = $props();
+let elementProps: ButtonRootProps = $derived(
+  "href" in restProps ? restProps : { ...restProps, type: restProps.type ?? "button" },
+);
 </script>
 
 <ButtonPrimitive.Root
-  {...restProps}
+  {...elementProps}
   aria-label={label}
   class={[buttonBase, iconButtonSizes[size], buttonVariants[variant], className]}
+  {title}
 >
   {@render children?.()}
 </ButtonPrimitive.Root>

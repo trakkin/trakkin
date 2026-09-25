@@ -1,8 +1,8 @@
 <script lang="ts">
-import { ArrowRight, Clock3, RefreshCw, RotateCcw, Search, TimerReset } from "@lucide/svelte";
+import { ArrowRight, Clock3, RefreshCw, RotateCcw, Search } from "@lucide/svelte";
 import { untrack } from "svelte";
 import { page } from "$app/state";
-import { Button, Chip, IconButton, PageHeader, Panel, Select, Spinner, TextInput } from "$lib";
+import { Button, Chip, EmptyState, IconButton, PageHeader, PageToolbar, Panel, Select, Spinner, TextInput } from "$lib";
 import { type ActivityAction, type ActivityQuery, type ActivityRun, listActivity } from "$lib/api/activity";
 import ActivityActionDrawer from "./ActivityActionDrawer.svelte";
 
@@ -46,6 +46,9 @@ let requestSequence = 0;
 let pollTimer: ReturnType<typeof setTimeout> | undefined;
 let workspaceId = $derived(page.params.workspaceId ?? "");
 let focusedRunId = $derived(page.url.searchParams.get("runId") ?? "");
+let hasActiveFilters = $derived(
+  Object.entries(activeQuery).some(([key, value]) => key !== "limit" && value !== undefined),
+);
 
 $effect(() => {
   const activeWorkspaceId = workspaceId;
@@ -231,12 +234,10 @@ function statusTone(status: string): "neutral" | "accent" | "success" | "warning
     {/snippet}
   </PageHeader>
 
-  <section
-    aria-label="Activity filters"
-    class="shrink-0 border-b border-border-strong bg-surface-raised/35 px-4 py-3 sm:px-6"
-  >
-    <div
-      class="grid min-w-0 gap-2 md:grid-cols-2 xl:grid-cols-[minmax(10rem,0.8fr)_minmax(12rem,1fr)_minmax(11rem,0.9fr)_minmax(11rem,0.9fr)_minmax(11rem,0.9fr)_auto]"
+  <PageToolbar label="Activity filters">
+    <form
+      class="grid min-w-0 grid-cols-2 items-end gap-2 xl:grid-cols-[minmax(0,0.8fr)_minmax(0,1fr)_minmax(0,0.9fr)_minmax(0,1.2fr)_minmax(0,1.2fr)_auto]"
+      onsubmit={(event) => { event.preventDefault(); applyFilters(); }}
     >
       <Select
         ariaLabel="Activity run status"
@@ -257,45 +258,44 @@ function statusTone(status: string): "neutral" | "accent" | "success" | "warning
       </div>
       <Select
         ariaLabel="Activity state field"
+        class="col-span-2 xl:col-span-1"
         items={fieldItems}
         onValueChange={(value) => (fieldFilter = value)}
         placeholder="All state fields"
         triggerClass="w-full min-w-0"
         value={fieldFilter}
       />
-      <div class="relative block min-w-0">
-        <Clock3
-          aria-hidden="true"
-          class="pointer-events-none absolute top-1/2 left-2.5 z-10 -translate-y-1/2 text-text-muted"
-          size={14}
-        />
+      <label
+        class="grid min-w-0 gap-1 text-meta text-text-muted"
+        for="activity-from"
+      >
+        From
         <TextInput
           aria-label="Activity from"
-          class="w-full pl-8"
+          id="activity-from"
           oninput={(event) => (occurredAfter = event.currentTarget.value)}
           type="datetime-local"
           value={occurredAfter}
         />
-      </div>
-      <div class="relative block min-w-0">
-        <TimerReset
-          aria-hidden="true"
-          class="pointer-events-none absolute top-1/2 left-2.5 z-10 -translate-y-1/2 text-text-muted"
-          size={14}
-        />
+      </label>
+      <label
+        class="grid min-w-0 gap-1 text-meta text-text-muted"
+        for="activity-before"
+      >
+        Before
         <TextInput
           aria-label="Activity before"
-          class="w-full pl-8"
+          id="activity-before"
           oninput={(event) => (occurredBefore = event.currentTarget.value)}
           type="datetime-local"
           value={occurredBefore}
         />
-      </div>
-      <div class="flex items-center justify-end gap-2 md:col-span-2 xl:col-span-1">
+      </label>
+      <div class="col-span-2 flex items-center justify-end gap-2 xl:col-span-1">
         <IconButton
           label="Reset activity filters"
           onclick={resetFilters}
-          size="sm"
+          size="md"
           title="Reset activity filters"
         >
           <RotateCcw
@@ -303,10 +303,7 @@ function statusTone(status: string): "neutral" | "accent" | "success" | "warning
             size={14}
           />
         </IconButton>
-        <Button
-          onclick={applyFilters}
-          size="sm"
-        >
+        <Button type="submit">
           <Search
             aria-hidden="true"
             size={14}
@@ -314,8 +311,8 @@ function statusTone(status: string): "neutral" | "accent" | "success" | "warning
           Apply
         </Button>
       </div>
-    </div>
-  </section>
+    </form>
+  </PageToolbar>
 
   <div class="flex min-h-0 flex-1 flex-col p-4 sm:p-6">
     {#if loading}
@@ -348,22 +345,27 @@ function statusTone(status: string): "neutral" | "accent" | "success" | "warning
         </div>
       </Panel>
     {:else if runs.length === 0}
-      <Panel
+      <EmptyState
         aria-label="Synchronization activity"
-        class="grid min-h-56 flex-1 place-items-center p-6 text-center"
-        element="section"
-        tone="dashed"
+        class="flex-1"
+        description="No retained sync runs match the current filters."
+        icon={Clock3}
+        title="No synchronization activity"
       >
-        <div>
-          <Clock3
-            aria-hidden="true"
-            class="mx-auto text-text-disabled"
-            size={24}
-          />
-          <h2 class="mt-3 text-heading font-semibold text-text-primary">No synchronization activity</h2>
-          <p class="mt-1 text-label text-text-muted">No retained sync runs match the current filters.</p>
-        </div>
-      </Panel>
+        {#snippet actions()}
+          {#if hasActiveFilters}
+            <Button
+              onclick={resetFilters}
+              size="sm"
+            >
+              <RotateCcw
+                aria-hidden="true"
+                size={14}
+              />Clear filters
+            </Button>
+          {/if}
+        {/snippet}
+      </EmptyState>
     {:else}
       <section
         aria-label="Synchronization activity"
@@ -392,7 +394,7 @@ function statusTone(status: string): "neutral" | "accent" | "success" | "warning
                   <div class="flex flex-wrap items-center gap-2">
                     <h2 class="font-mono text-label font-semibold text-text-primary">Run {shortIdentity(run.runId)}</h2>
                     <Chip
-                      dot
+                      status
                       tone={statusTone(run.status)}
                       >{run.status}</Chip
                     >
@@ -429,7 +431,7 @@ function statusTone(status: string): "neutral" | "accent" | "success" | "warning
                     </span>
                     <span class="justify-self-end">
                       <Chip
-                        dot
+                        status
                         tone={statusTone(action.status)}
                         >{action.status.replaceAll("_", " ")}</Chip
                       >

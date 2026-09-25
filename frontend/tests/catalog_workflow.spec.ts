@@ -19,6 +19,27 @@ import { catalogEntry, catalogPage, childCatalog, rootCatalog } from "./support/
 
 test("preserves healthy sources and keeps mobile inspection in a persistent lower pane", async ({ page }) => {
   const unavailableConnectionId = "22222222-2222-2222-2222-444444444444";
+  const firstEntry = catalogEntry("First entry", "media/first", "first", false, false);
+  firstEntry.item.attributes = {
+    entries: [
+      {
+        term: { namespace: "dev.trakkin.media", name: "release_note" },
+        value: { kind: "text", value: "A quiet first entry." },
+      },
+      {
+        term: { namespace: "dev.trakkin.media", name: "sample_count" },
+        value: { kind: "integer", value: 1_440_000 },
+      },
+      {
+        term: { namespace: "dev.trakkin.media", name: "category_marker" },
+        value: { kind: "text", value: "Short" },
+      },
+      {
+        term: { namespace: "dev.trakkin.media", name: "category_marker" },
+        value: { kind: "text", value: "Drama" },
+      },
+    ],
+  };
   const unavailableConnection = {
     ...connection,
     id: unavailableConnectionId,
@@ -42,10 +63,7 @@ test("preserves healthy sources and keeps mobile inspection in a persistent lowe
     if (url.pathname === `/api/v1/workspaces/${workspaceId}/sources/${sourceId}/catalog` && method === "GET") {
       return json(
         route,
-        catalogPage([
-          catalogEntry("First entry", "media/first", "first", false, false),
-          catalogEntry("Second entry", "media/second", "second", false, false),
-        ]),
+        catalogPage([firstEntry, catalogEntry("Second entry", "media/second", "second", false, false)]),
       );
     }
     return fallback(route);
@@ -62,6 +80,14 @@ test("preserves healthy sources and keeps mobile inspection in a persistent lowe
   await expect(details.getByText("Provider recommended", { exact: true })).toBeVisible();
   await expect(details.getByText("Effective root", { exact: true })).toBeVisible();
   await expect(details.getByText("Reference 1", { exact: true })).toHaveCount(0);
+  await expect(details.getByText("Release note", { exact: true })).toBeVisible();
+  await expect(details.getByText("A quiet first entry.", { exact: true })).toBeVisible();
+  await expect(details.getByText("Sample count", { exact: true })).toBeVisible();
+  await expect(details.getByText("1,440,000", { exact: true })).toBeVisible();
+  await expect(details.getByText("Category marker", { exact: true })).toBeVisible();
+  await expect(details.getByText("Short, Drama", { exact: true })).toBeVisible();
+  await expect(details.getByText(/Term \/ Namespace/)).toHaveCount(0);
+  await expect(details.getByText("Raw published entry", { exact: true })).toHaveCount(0);
   if ((page.viewportSize()?.width ?? 0) < 1024) {
     const detailsBox = await details.boundingBox();
     const secondEntryBox = await page.getByRole("button", { name: "Inspect Second entry" }).boundingBox();

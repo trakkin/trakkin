@@ -9,6 +9,41 @@ import {
   workspaceId,
 } from "./support/api.ts";
 
+test("shared controls use consistent dimensions and visible keyboard focus", async ({ page }) => {
+  await mockApi(page, async (route) => {
+    if (new URL(route.request().url()).pathname === "/api/v1/workspaces") return json(route, [workspace]);
+    return fallback(route);
+  });
+
+  await page.goto("/ui");
+  const buttons = page.getByRole("button", { name: "primary", exact: true });
+  await expect(buttons).toHaveCount(3);
+  for (const [index, size] of ["sm", "md", "lg"].entries()) {
+    const input = page.getByRole("textbox", { name: `Input ${size}`, exact: true });
+    const icon = page.getByRole("button", { name: new RegExp(`^Add item.*${size}$`) });
+    const height = await input.evaluate((element) => element.getBoundingClientRect().height);
+    expect(await buttons.nth(index).evaluate((element) => element.getBoundingClientRect().height)).toBe(height);
+    expect(await icon.evaluate((element) => element.getBoundingClientRect().height)).toBe(height);
+    expect(await icon.evaluate((element) => element.getBoundingClientRect().width)).toBe(height);
+    await expect(buttons.nth(index)).toHaveAttribute("type", "button");
+    await expect(icon).toHaveAttribute("type", "button");
+  }
+  const inputHeight = await page
+    .getByRole("textbox", { name: "Input md", exact: true })
+    .evaluate((element) => element.getBoundingClientRect().height);
+  expect(
+    await page
+      .getByRole("button", { name: "Connection status", exact: true })
+      .evaluate((element) => element.getBoundingClientRect().height),
+  ).toBe(inputHeight);
+
+  await buttons.nth(0).focus();
+  await page.keyboard.press("Tab");
+  await expect(buttons.nth(1)).toBeFocused();
+  expect(await buttons.nth(1).evaluate((element) => getComputedStyle(element).boxShadow)).not.toBe("none");
+  await expectNoHorizontalOverflow(page);
+});
+
 test("global pages preserve the selected workspace", async ({ page }) => {
   await mockApi(page, async (route) => {
     const url = new URL(route.request().url());

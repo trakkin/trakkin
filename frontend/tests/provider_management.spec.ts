@@ -129,12 +129,31 @@ test("trusts a local OCI source and installs one provider identity", async ({ pa
   });
 
   const calendarRow = page.getByRole("listitem").filter({ hasText: "dev.example.calendar" });
+  const previewButton = calendarRow.getByRole("button", {
+    name: "Preview release for dev.example.calendar",
+    exact: true,
+  });
+  const installButton = calendarRow.getByRole("button", { name: "Install dev.example.calendar", exact: true });
+  await expect
+    .poll(async () => {
+      const previewBox = await previewButton.boundingBox();
+      const installBox = await installButton.boundingBox();
+      return {
+        equalHeight: previewBox?.height === installBox?.height,
+        equalWidth: previewBox?.width === installBox?.width,
+        installIsSquare: installBox?.width === installBox?.height,
+        previewIsSquare: previewBox?.width === previewBox?.height,
+      };
+    })
+    .toEqual({ equalHeight: true, equalWidth: true, installIsSquare: true, previewIsSquare: true });
+  await previewButton.click();
+  await expect(page.getByRole("dialog", { name: "Preview provider release" })).toBeVisible();
+  await page.getByRole("button", { name: "Close provider release review" }).click();
   await calendarRow.getByRole("button", { name: "Install dev.example.calendar", exact: true }).click();
-  const releaseReview = page.getByRole("dialog", { name: "Install provider" });
+  const releaseReview = page.getByRole("dialog", { name: "Preview provider release" });
   await releaseReview.getByLabel("Version for dev.example.calendar").click();
   await page.getByRole("option", { name: "2.1.0" }).click();
-  await releaseReview.getByLabel("Update policy for dev.example.calendar").click();
-  await page.getByRole("option", { name: "Automatic updates" }).click();
+  await releaseReview.getByRole("switch", { name: "Install updates automatically for dev.example.calendar" }).check();
   await expect(releaseReview.getByRole("heading", { name: "Calendar", exact: true })).toBeVisible();
   await expect(releaseReview.getByText("Trakkin", { exact: true }).first()).toBeVisible();
   const releaseDetails = releaseReview.getByRole("region", {
@@ -239,7 +258,7 @@ test("notifies and applies a manual update without creating another installation
 
   await page.goto("/providers");
   await expect(page.getByText("1.1.0 available", { exact: true })).toBeVisible();
-  const updateButton = page.getByRole("button", { name: "Update", exact: true });
+  const updateButton = page.getByRole("button", { name: "Update Fixture provider", exact: true });
   await updateButton.click();
   await expect(page.getByText("Immutable release digest", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Update provider", exact: true }).click();
@@ -248,9 +267,9 @@ test("notifies and applies a manual update without creating another installation
 
   await expect(page.getByText("1.1.0 available", { exact: true })).toHaveCount(0);
   await expect(page.getByText("Version 1.1.0", { exact: true })).toHaveCount(1);
-  await page.getByLabel("Update policy for Fixture provider").click();
-  await page.getByRole("option", { name: "Automatic updates" }).click();
-  await expect(page.getByText("Automatic updates", { exact: true }).first()).toBeVisible();
+  const automaticUpdates = page.getByRole("switch", { name: "Automatic updates for Fixture provider" });
+  await automaticUpdates.check();
+  await expect(automaticUpdates).toBeChecked();
   await expectNoHorizontalOverflow(page);
 });
 

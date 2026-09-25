@@ -16,6 +16,29 @@ import {
 } from "./support/api.ts";
 import { rootCatalog } from "./support/catalog.ts";
 
+test("activity filters support keyboard submission and reset", async ({ page }) => {
+  const queries: URLSearchParams[] = [];
+  await mockApi(page, async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname === "/api/v1/workspaces") return json(route, [workspace]);
+    if (url.pathname === `/api/v1/workspaces/${workspaceId}/activity`) {
+      queries.push(url.searchParams);
+      return json(route, { runs: [], nextCursor: null });
+    }
+    return fallback(route);
+  });
+
+  await page.goto(`/w/${workspaceId}/activity`);
+  await expect(page.getByRole("heading", { name: "No synchronization activity" })).toBeVisible();
+  await page.getByLabel("Receiver source ID").fill(sourceId);
+  await page.getByLabel("Receiver source ID").press("Enter");
+  await expect.poll(() => queries.at(-1)?.get("sourceId")).toBe(sourceId);
+  await page.getByRole("button", { name: "Reset activity filters" }).click();
+  await expect.poll(() => queries.at(-1)?.get("sourceId")).toBeNull();
+  await expect(page.getByLabel("Receiver source ID")).toHaveValue("");
+  await expectNoHorizontalOverflow(page);
+});
+
 test("loads and polls a focused run with structured failure evidence", async ({ page }) => {
   const runId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
   const actionId = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";

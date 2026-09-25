@@ -125,8 +125,8 @@ function formatTimestamp(value: string | null | undefined): string {
 }
 </script>
 
-<section class="border-b border-border-subtle py-4">
-  <div class="flex items-start justify-between gap-4">
+<section class="grid gap-4 py-4 sm:grid-cols-[minmax(0,1fr)_minmax(16rem,20rem)] sm:items-end">
+  <div class="flex items-start justify-between gap-4 sm:self-start">
     <div class="min-w-0">
       <h2 class="text-label font-semibold text-text-primary">Recurring schedule</h2>
       <p
@@ -153,12 +153,12 @@ function formatTimestamp(value: string | null | undefined): string {
     />
   </div>
 
-  <div class="mt-3 flex flex-wrap items-end gap-2">
+  <div class="flex flex-wrap items-end gap-2">
     <label
       class="min-w-36 flex-1 text-meta font-medium text-text-secondary"
       for="synchronization-schedule-interval"
     >
-      Interval in minutes
+      Run every
       <TextInput
         aria-invalid={!intervalValid}
         aria-label="Schedule interval in minutes"
@@ -194,7 +194,7 @@ function formatTimestamp(value: string | null | undefined): string {
 
   {#if errorMessage}
     <Panel
-      class="mt-3 flex items-center justify-between gap-3 px-3 py-2 text-meta text-danger"
+      class="flex items-center justify-between gap-3 px-3 py-2 text-meta text-danger sm:col-span-2"
       role="alert"
       tone="danger"
     >

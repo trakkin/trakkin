@@ -1,7 +1,18 @@
 <script lang="ts">
-import { RefreshCw, ScrollText, Search, X } from "@lucide/svelte";
+import { RefreshCw, RotateCcw, ScrollText, Search, X } from "@lucide/svelte";
 import { onDestroy, onMount, tick } from "svelte";
-import { Button, IconButton, PageHeader, Panel, Select, Spinner, Switch, TextInput } from "$lib";
+import {
+  Button,
+  EmptyState,
+  IconButton,
+  PageHeader,
+  PageToolbar,
+  Panel,
+  Select,
+  Spinner,
+  Switch,
+  TextInput,
+} from "$lib";
 import { type LogEntry, listLogs, streamLogs } from "$lib/api/logs";
 
 const levelItems = [
@@ -264,10 +275,7 @@ function levelClass(level: string): string {
     {/snippet}
   </PageHeader>
 
-  <section
-    aria-label="Log filters"
-    class="shrink-0 border-b border-border-strong bg-surface-raised/35 px-4 py-3 sm:px-6"
-  >
+  <PageToolbar label="Log filters">
     <div class="flex min-w-0 flex-wrap items-center gap-2">
       <div class="relative w-full min-w-0 sm:min-w-60 sm:flex-1">
         <Search
@@ -313,7 +321,7 @@ function levelClass(level: string): string {
         <span>Live updates</span>
       </div>
     </div>
-  </section>
+  </PageToolbar>
 
   <div class="flex min-h-0 flex-1 flex-col p-4 sm:p-6">
     {#if loading}
@@ -346,22 +354,27 @@ function levelClass(level: string): string {
         </div>
       </Panel>
     {:else if filteredEntries.length === 0}
-      <Panel
+      <EmptyState
         aria-label="Runtime logs"
-        class="grid min-h-48 flex-1 place-items-center p-6 text-center"
-        element="section"
-        tone="dashed"
+        class="flex-1"
+        description={normalizedSearch || levelFilter !== "ALL" ? "No logs match the current filters." : "No runtime logs have been recorded."}
+        icon={ScrollText}
+        title="No matching logs"
       >
-        <div>
-          <ScrollText
-            aria-hidden="true"
-            class="mx-auto text-text-disabled"
-            size={24}
-          />
-          <p class="mt-3 text-heading font-[580] text-text-secondary">No matching logs</p>
-          <p class="mt-1 text-label text-text-muted">Adjust the search or severity filter.</p>
-        </div>
-      </Panel>
+        {#snippet actions()}
+          {#if normalizedSearch || levelFilter !== "ALL"}
+            <Button
+              onclick={() => { searchQuery = ""; levelFilter = "ALL"; }}
+              size="sm"
+            >
+              <RotateCcw
+                aria-hidden="true"
+                size={14}
+              />Clear filters
+            </Button>
+          {/if}
+        {/snippet}
+      </EmptyState>
     {:else}
       <section
         aria-label="Runtime logs"

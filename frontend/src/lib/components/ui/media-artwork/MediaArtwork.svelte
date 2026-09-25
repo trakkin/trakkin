@@ -23,7 +23,7 @@ const shapeClasses = {
 <div
   {...restProps}
   class={[
-    "relative isolate overflow-hidden rounded-md border border-border-subtle bg-surface-raised shadow-[0_8px_24px_rgb(0_0_0/18%)]",
+    "relative isolate overflow-hidden rounded-panel border border-border-subtle bg-surface-raised",
     shapeClasses[shape],
     className,
   ]}

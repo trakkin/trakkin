@@ -4,6 +4,7 @@ export * from "./checkbox/index.ts";
 export * from "./chip/index.ts";
 export * as Dialog from "./dialog/index.ts";
 export * as DropdownMenu from "./dropdown-menu/index.ts";
+export { default as EmptyState } from "./EmptyState.svelte";
 export * from "./input/index.ts";
 export * from "./media-artwork/index.ts";
 export * from "./panel/index.ts";

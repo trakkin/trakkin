@@ -1,7 +1,7 @@
 <script lang="ts">
 import { Check, ChevronsUpDown } from "@lucide/svelte";
 import { Select as SelectPrimitive } from "bits-ui";
-import { controlSizes } from "../input/styles";
+import { controlBase, controlSizes } from "../input/styles";
 import type { SelectProps } from "./types";
 
 let {
@@ -45,7 +45,8 @@ let {
       aria-invalid={ariaInvalid}
       aria-label={ariaLabel}
       class={[
-        'group inline-flex w-full min-w-0 items-center justify-between gap-2 rounded-md border border-border-subtle bg-white/3 text-label font-[450] text-text-secondary outline-none transition-[background-color,border-color,box-shadow] duration-(--motion-standard) ease-standard hover:border-border-strong hover:bg-white/4 focus-visible:border-accent/60 focus-visible:bg-white/4 focus-visible:ring-2 focus-visible:ring-accent/10 aria-invalid:border-danger/60 aria-invalid:focus-visible:border-danger/70 aria-invalid:focus-visible:ring-danger/10 data-disabled:pointer-events-none data-disabled:text-text-disabled data-disabled:opacity-55 data-placeholder:text-text-disabled',
+        controlBase,
+        'group inline-flex items-center justify-between gap-2 data-placeholder:text-text-disabled',
         controlSizes[controlSize],
         triggerClass
       ]}
@@ -65,7 +66,7 @@ let {
     <SelectPrimitive.Portal>
       <SelectPrimitive.Content
         class={[
-          'z-50 min-w-(--bits-select-anchor-width) max-w-[calc(100vw-1rem)] origin-(--bits-select-content-transform-origin) rounded-md border border-border-subtle bg-surface-raised p-1 text-label text-text-secondary shadow-[0_8px_24px_rgb(0_0_0/28%)] outline-none transition-[opacity,transform] duration-(--motion-emphasis) ease-kinetic data-starting-style:translate-y-1 data-starting-style:opacity-0 data-ending-style:translate-y-1 data-ending-style:opacity-0',
+          'z-50 min-w-(--bits-select-anchor-width) max-w-[calc(100vw-1rem)] origin-(--bits-select-content-transform-origin) rounded-overlay border border-border-subtle bg-surface-raised p-1 text-label text-text-secondary shadow-[0_8px_24px_rgb(0_0_0/28%)] outline-none transition-[opacity,transform] duration-(--motion-emphasis) ease-kinetic data-starting-style:translate-y-1 data-starting-style:opacity-0 data-ending-style:translate-y-1 data-ending-style:opacity-0',
           contentClass
         ]}
         collisionPadding={8}

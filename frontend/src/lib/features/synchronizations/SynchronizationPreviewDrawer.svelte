@@ -227,19 +227,19 @@ function viewActivity() {
         <section class="shrink-0 border-b border-border-subtle px-4 py-3 sm:px-5">
           <div class="flex flex-wrap gap-2">
             <Chip
-              dot
+              status
               tone="accent"
               >{preview.counts.proposed}
               proposed</Chip
             >
             <Chip
-              dot
+              status
               tone="neutral"
               >{preview.counts.noOp}
               unchanged</Chip
             >
             <Chip
-              dot
+              status
               tone="warning"
               >{preview.counts.findings}
               findings</Chip

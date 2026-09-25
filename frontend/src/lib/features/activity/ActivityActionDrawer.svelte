@@ -220,7 +220,7 @@ function retryLabel(failure: NonNullable<TaskRun["failure"]>): string {
         <section class="border-b border-border-subtle px-4 py-4 sm:px-5">
           <div class="flex flex-wrap items-center gap-2">
             <Chip
-              dot
+              status
               tone={statusTone(detail.action.status)}
               >{guidanceLabel(detail.action.status)}</Chip
             >
@@ -256,7 +256,7 @@ function retryLabel(failure: NonNullable<TaskRun["failure"]>): string {
                     <div class="flex items-center gap-2">
                       <span class="truncate text-label font-medium text-text-primary">{task.kind}</span>
                       <Chip
-                        dot
+                        status
                         tone={statusTone(task.status)}
                         >{task.status}</Chip
                       >
@@ -412,7 +412,7 @@ function retryLabel(failure: NonNullable<TaskRun["failure"]>): string {
               <div class="mt-4 border-t border-border-subtle pt-3 text-label">
                 <div class="flex flex-wrap items-center gap-2">
                   <Chip
-                    dot
+                    status
                     tone={statusTone(provenance.attempt.outcome.status)}
                     >{guidanceLabel(provenance.attempt.outcome.status)}</Chip
                   >
