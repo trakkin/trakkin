@@ -7,6 +7,7 @@ import { listWorkspaces, type Workspace } from "$lib/api/workspaces";
 import { DropdownMenu, IconButton, Select, Tooltip } from "$lib/components/ui";
 import { navigationFor } from "./navigation";
 import WorkspaceActivityPopover from "./WorkspaceActivityPopover.svelte";
+import { activeWorkspacePreference } from "./workspacePreference";
 
 type Props = {
   children: Snippet;
@@ -30,16 +31,28 @@ let workspacePlaceholder = $derived(
 );
 
 $effect(() => {
-  if (routeWorkspaceId) rememberedWorkspaceId = routeWorkspaceId;
+  if (!routeWorkspaceId) return;
+  rememberedWorkspaceId = routeWorkspaceId;
+  if (workspaces.some((workspace) => workspace.id === routeWorkspaceId)) {
+    activeWorkspacePreference.write(routeWorkspaceId);
+  }
 });
 
 onMount(() => {
+  if (!routeWorkspaceId) rememberedWorkspaceId = activeWorkspacePreference.read() ?? "";
+
   async function refreshWorkspaces() {
     const sequence = ++workspaceRequestSequence;
     workspaceError = "";
     try {
       const loadedWorkspaces = (await listWorkspaces()).filter((workspace) => workspace.status === "active");
-      if (sequence === workspaceRequestSequence) workspaces = loadedWorkspaces;
+      if (sequence === workspaceRequestSequence) {
+        workspaces = loadedWorkspaces;
+        if (rememberedWorkspaceId && !loadedWorkspaces.some((workspace) => workspace.id === rememberedWorkspaceId)) {
+          rememberedWorkspaceId = "";
+          activeWorkspacePreference.clear();
+        }
+      }
     } catch (error) {
       if (sequence === workspaceRequestSequence) {
         workspaceError = error instanceof Error ? error.message : "Workspaces unavailable";
@@ -52,7 +65,10 @@ onMount(() => {
 });
 
 function selectWorkspace(workspaceId: string) {
-  if (workspaceId) void goto(`/w/${workspaceId}/catalog`);
+  if (!workspaceId) return;
+  rememberedWorkspaceId = workspaceId;
+  activeWorkspacePreference.write(workspaceId);
+  void goto(`/w/${workspaceId}/catalog`);
 }
 
 function isCurrent(href: string): boolean {

@@ -65,6 +65,8 @@ test("global pages preserve the selected workspace", async ({ page }) => {
 
   await expect(page).toHaveURL(/\/providers$/);
   await expect(workspaceSelector).toHaveText(workspace.name);
+  await page.reload();
+  await expect(workspaceSelector).toHaveText(workspace.name);
 });
 
 test("root workspace lookup cannot replace later navigation", async ({ page }) => {
