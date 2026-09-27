@@ -52,7 +52,6 @@ pub struct ConnectionSummary {
     pub provider_id: String,
     pub display_name: String,
     pub status: ConnectionStatus,
-    pub capability_revision: i64,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }

@@ -9,11 +9,9 @@ use crate::{
         QueryCatalogPage, SourceStateInspection,
     },
     application::error::{ApplicationError, ApplicationErrorCode, IntoApplicationError},
-    application::workspaces::MappingRootPolicy,
     domain::acquisition::{
         BinaryAssetKey, BinaryAssetReference, CatalogItem, CatalogRelation, CatalogRelationKey,
-        PortableReference, ProviderItemKey, StateField, StateObservation, StateSubject, StateValue,
-        Term,
+        ProviderItemKey, StateField, StateObservation, StateSubject, StateValue, Term,
     },
 };
 
@@ -36,8 +34,7 @@ impl PostgresCatalogQueryRepository {
         }
         let search = normalize_search(query.search.as_deref());
         let mut transaction = begin_snapshot(&self.pool).await?;
-        let mapping_root_policy =
-            load_attachment_policy(&mut transaction, query.workspace_id, query.source_id).await?;
+        ensure_attachment(&mut transaction, query.workspace_id, query.source_id).await?;
         let stream = load_stream(&mut transaction, query.source_id, "catalog").await?;
         let publication_id = available_publication(&stream, "catalog")?;
 
@@ -147,10 +144,7 @@ LIMIT $8
         };
         let mut entries = Vec::with_capacity(rows.len());
         for row in rows {
-            entries.push(
-                map_catalog_entry(&mut transaction, query.source_id, &mapping_root_policy, row)
-                    .await?,
-            );
+            entries.push(map_catalog_entry(&mut transaction, query.source_id, row).await?);
         }
         transaction.commit().await?;
         Ok(CatalogPage {
@@ -165,7 +159,7 @@ LIMIT $8
         query: InspectSourceState,
     ) -> Result<SourceStateInspection, CatalogQueryError> {
         let mut transaction = begin_snapshot(&self.pool).await?;
-        load_attachment_policy(&mut transaction, query.workspace_id, query.source_id).await?;
+        ensure_attachment(&mut transaction, query.workspace_id, query.source_id).await?;
         let stream = load_stream(&mut transaction, query.source_id, "state").await?;
         let publication_id = available_publication(&stream, "state")?;
         let (subject_kind, subject_namespace, subject_value) =
@@ -244,23 +238,27 @@ async fn begin_snapshot(pool: &PgPool) -> Result<Transaction<'_, Postgres>, sqlx
         .await
 }
 
-async fn load_attachment_policy(
+async fn ensure_attachment(
     transaction: &mut Transaction<'_, Postgres>,
     workspace_id: Uuid,
     source_id: Uuid,
-) -> Result<MappingRootPolicy, CatalogQueryError> {
-    sqlx::query_scalar::<_, Option<Vec<String>>>(
-        "SELECT mapping_root_namespace_allowlist
-FROM workspace_sources
-WHERE workspace_id = $1 AND source_id = $2
+) -> Result<(), CatalogQueryError> {
+    let attached = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(
+    SELECT 1 FROM workspace_sources
+    WHERE workspace_id = $1 AND source_id = $2
+)
 ",
     )
     .bind(workspace_id)
     .bind(source_id)
-    .fetch_optional(&mut **transaction)
-    .await?
-    .ok_or(CatalogQueryError::SourceNotAttached)
-    .map(MappingRootPolicy::from)
+    .fetch_one(&mut **transaction)
+    .await?;
+    if attached {
+        Ok(())
+    } else {
+        Err(CatalogQueryError::SourceNotAttached)
+    }
 }
 
 async fn load_stream(
@@ -298,88 +296,26 @@ fn available_publication(
 async fn map_catalog_entry(
     transaction: &mut Transaction<'_, Postgres>,
     source_id: Uuid,
-    mapping_root_policy: &MappingRootPolicy,
     row: CatalogRow,
 ) -> Result<CatalogEntry, CatalogQueryError> {
     let relation = row.relation()?;
     let has_children = row.has_children;
-    let (item, effective_mapping_roots) = if let Some(item_key_namespace) = &row.item_key_namespace
-    {
+    let item = if let Some(item_key_namespace) = &row.item_key_namespace {
         let item_key_value = row
             .item_key_value
             .as_ref()
             .ok_or(CatalogQueryError::InvalidStoredData("catalog item key"))?;
-        let (reference_candidates, recommended_mapping_roots, effective_mapping_roots) =
-            load_references(
-                transaction,
-                source_id,
-                item_key_namespace,
-                item_key_value,
-                mapping_root_policy,
-            )
-            .await?;
         let assets =
             load_assets(transaction, source_id, item_key_namespace, item_key_value).await?;
-        (
-            Some(row.item(reference_candidates, recommended_mapping_roots, assets)?),
-            effective_mapping_roots,
-        )
+        Some(row.item(assets)?)
     } else {
-        (None, Vec::new())
+        None
     };
     Ok(CatalogEntry {
         relation,
         item,
-        effective_mapping_roots,
         has_children,
     })
-}
-
-async fn load_references(
-    transaction: &mut Transaction<'_, Postgres>,
-    source_id: Uuid,
-    item_namespace: &str,
-    item_value: &[u8],
-    mapping_root_policy: &MappingRootPolicy,
-) -> Result<
-    (
-        Vec<PortableReference>,
-        Vec<PortableReference>,
-        Vec<PortableReference>,
-    ),
-    CatalogQueryError,
-> {
-    sqlx::query_as::<_, ReferenceRow>(
-        "SELECT reference_namespace, reference_value, recommended_mapping_root
-FROM catalog_item_references
-WHERE
-    source_id = $1
-    AND item_key_namespace = $2
-    AND item_key_value = $3
-ORDER BY reference_namespace, reference_value
-",
-    )
-    .bind(source_id)
-    .bind(item_namespace)
-    .bind(item_value)
-    .fetch_all(&mut **transaction)
-    .await?
-    .into_iter()
-    .try_fold(
-        (Vec::new(), Vec::new(), Vec::new()),
-        |(mut candidates, mut recommended, mut effective), row| {
-            let reference = PortableReference::new(row.reference_namespace, row.reference_value)
-                .map_err(|_| CatalogQueryError::InvalidStoredData("portable reference"))?;
-            if row.recommended_mapping_root {
-                recommended.push(reference.clone());
-            }
-            if mapping_root_policy.selects(reference.namespace(), row.recommended_mapping_root) {
-                effective.push(reference.clone());
-            }
-            candidates.push(reference);
-            Ok((candidates, recommended, effective))
-        },
-    )
 }
 
 async fn load_assets(
@@ -625,12 +561,7 @@ impl CatalogRow {
         .map_err(|_| CatalogQueryError::InvalidStoredData("catalog relation"))
     }
 
-    fn item(
-        self,
-        reference_candidates: Vec<PortableReference>,
-        recommended_mapping_roots: Vec<PortableReference>,
-        assets: Vec<BinaryAssetReference>,
-    ) -> Result<CatalogItem, CatalogQueryError> {
+    fn item(self, assets: Vec<BinaryAssetReference>) -> Result<CatalogItem, CatalogQueryError> {
         let key_namespace = self
             .item_key_namespace
             .ok_or(CatalogQueryError::InvalidStoredData("catalog item key"))?;
@@ -653,19 +584,10 @@ impl CatalogRow {
                 .ok_or(CatalogQueryError::InvalidStoredData(
                     "catalog item attributes",
                 ))?,
-            reference_candidates,
-            recommended_mapping_roots,
             assets,
         )
         .map_err(|_| CatalogQueryError::InvalidStoredData("catalog item"))
     }
-}
-
-#[derive(FromRow)]
-struct ReferenceRow {
-    reference_namespace: String,
-    reference_value: Vec<u8>,
-    recommended_mapping_root: bool,
 }
 
 #[derive(FromRow)]

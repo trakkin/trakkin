@@ -2,17 +2,14 @@ use trakkin_provider_sdk::{
     v1::{
         CancelAuthenticationRequest, ContinueAuthenticationRequest, DescribeConnectionRequest,
         DiscoverSourcesRequest, HealthRequest, Key, ListAuthenticationMethodsRequest,
-        LookupPortableReferencesRequest, OpenConnectionRequest,
-        PortableEndpoint as ProtoPortableEndpoint, ReadAssetRequest,
-        ReadCatalogResponse as ProtoCatalogReadEvent, ReadStateResponse as ProtoStateReadEvent,
-        ReadTargetedStateRequest, ResolvePortableEndpointsRequest, StartAuthenticationRequest,
-        TargetedStateClear, TargetedStateReadCapability as ProtoTargetedStateReadCapability,
-        TargetedStateWriteIntent, ValidateConnectionRequest, WriteTargetedStateRequest,
-        cancel_authentication_response, cancel_operation_response, describe_connection_response,
-        discover_sources_response, list_authentication_methods_response,
-        lookup_portable_references_response, open_connection_response, read_asset_response,
-        resolve_portable_endpoints_response, targeted_state_write_intent,
-        validate_connection_response,
+        OpenConnectionRequest, ReadAssetRequest, ReadCatalogResponse as ProtoCatalogReadEvent,
+        ReadStateResponse as ProtoStateReadEvent, ReadTargetedStateRequest,
+        StartAuthenticationRequest, TargetedStateClear,
+        TargetedStateReadCapability as ProtoTargetedStateReadCapability, TargetedStateWriteIntent,
+        ValidateConnectionRequest, WriteTargetedStateRequest, cancel_authentication_response,
+        cancel_operation_response, describe_connection_response, discover_sources_response,
+        list_authentication_methods_response, open_connection_response, read_asset_response,
+        targeted_state_write_intent, validate_connection_response,
     },
     validation,
 };
@@ -21,14 +18,12 @@ use crate::{
     application::adapter_runtime::{
         AdapterAuthenticationMethod, AdapterAuthenticationStep, AdapterBinaryAsset,
         AdapterCallError, AdapterConnectionDescription, AdapterConnectionValidation,
-        AdapterIdentity, AdapterOperationResult, AdapterPortableEndpointResolution,
-        AdapterPortableReferenceLookup, AdapterReadEvent, AdapterReadStream, AdapterRetirement,
-        AdapterSession, AdapterTargetedStateReadOutcome, AdapterTargetedStateWriteOperation,
-        AdapterTargetedStateWriteOutcome, ContinueAdapterAuthentication, DiscoveredAdapterSources,
-        LookupAdapterPortableReferences, OpenAdapterConnection, OpenedAdapterConnection,
-        ReadAdapterAsset, ReadAdapterSource, ReadAdapterTargetedState,
-        ResolveAdapterPortableEndpoints, StartAdapterAuthentication, ValidateAdapterConnection,
-        WriteAdapterTargetedState,
+        AdapterIdentity, AdapterOperationResult, AdapterReadEvent, AdapterReadStream,
+        AdapterRetirement, AdapterSession, AdapterTargetedStateReadOutcome,
+        AdapterTargetedStateWriteOperation, AdapterTargetedStateWriteOutcome,
+        ContinueAdapterAuthentication, DiscoveredAdapterSources, OpenAdapterConnection,
+        OpenedAdapterConnection, ReadAdapterAsset, ReadAdapterSource, ReadAdapterTargetedState,
+        StartAdapterAuthentication, ValidateAdapterConnection, WriteAdapterTargetedState,
     },
     domain::acquisition::{CatalogBatch, StateBatch},
 };
@@ -37,8 +32,7 @@ use super::{
     AdapterProcessError,
     codec::{
         map_adapter_error, map_adapter_key, map_catalog_event,
-        map_continue_authentication_response, map_domain_state_value, map_endpoint_result,
-        map_lookup_result, map_portable_endpoint, map_portable_reference, map_read_catalog_request,
+        map_continue_authentication_response, map_domain_state_value, map_read_catalog_request,
         map_read_state_request, map_secrets, map_settings, map_source_membership,
         map_start_authentication_response, map_state_event, map_state_field, map_state_subject,
         map_targeted_state_outcome, map_targeted_state_write_capability_to_proto,
@@ -453,96 +447,6 @@ impl AdapterSession for AdapterProcess {
             ));
         }
         map_targeted_state_write_outcome(response)
-    }
-
-    async fn lookup_portable_references(
-        &mut self,
-        command: LookupAdapterPortableReferences,
-    ) -> Result<Result<Vec<AdapterPortableReferenceLookup>, AdapterCallError>, Self::Error> {
-        if command.operation_id.is_empty()
-            || command.source_key.namespace.is_empty()
-            || command.source_key.value.is_empty()
-            || command.references.is_empty()
-        {
-            return Err(AdapterProcessError::InvalidLookupRequest);
-        }
-        let requested = command
-            .references
-            .iter()
-            .map(map_portable_reference)
-            .collect::<Vec<_>>();
-        let response = call_rpc!(
-            self.process,
-            lookup_portable_references,
-            "LookupPortableReferences",
-            LookupPortableReferencesRequest {
-                operation_id: command.operation_id,
-                references: requested.clone(),
-                source_key: Some(Key {
-                    namespace: command.source_key.namespace,
-                    value: command.source_key.value,
-                }),
-            }
-        );
-        validation::lookup_response(&requested, &response)
-            .map_err(|_| AdapterProcessError::InvalidResponse("invalid lookup response"))?;
-        let result = operation_result!(response, lookup_portable_references_response);
-        Ok(Ok(result
-            .results
-            .into_iter()
-            .map(map_lookup_result)
-            .collect::<Result<_, _>>()?))
-    }
-
-    async fn resolve_portable_endpoints(
-        &mut self,
-        command: ResolveAdapterPortableEndpoints,
-    ) -> Result<Result<Vec<AdapterPortableEndpointResolution>, AdapterCallError>, Self::Error> {
-        if command.operation_id.is_empty()
-            || command.source_key.namespace.is_empty()
-            || command.source_key.value.is_empty()
-            || command.endpoints.is_empty()
-            || command.maximum_response_bytes == 0
-            || command
-                .endpoints
-                .iter()
-                .any(|endpoint| endpoint.selector().is_none())
-        {
-            return Err(AdapterProcessError::InvalidEndpointLookupRequest);
-        }
-        let requested = command
-            .endpoints
-            .iter()
-            .map(map_portable_endpoint)
-            .collect::<Vec<ProtoPortableEndpoint>>();
-        let response = call_rpc!(
-            self.process,
-            resolve_portable_endpoints,
-            "ResolvePortableEndpoints",
-            ResolvePortableEndpointsRequest {
-                operation_id: command.operation_id,
-                endpoints: requested.clone(),
-                maximum_response_bytes: command.maximum_response_bytes,
-                source_key: Some(Key {
-                    namespace: command.source_key.namespace,
-                    value: command.source_key.value,
-                }),
-            }
-        );
-        validation::resolve_endpoints_response(
-            &requested,
-            &response,
-            command.maximum_response_bytes,
-        )
-        .map_err(|_| {
-            AdapterProcessError::InvalidResponse("invalid endpoint resolution response")
-        })?;
-        let result = operation_result!(response, resolve_portable_endpoints_response);
-        Ok(Ok(result
-            .results
-            .into_iter()
-            .map(map_endpoint_result)
-            .collect::<Result<_, _>>()?))
     }
 
     async fn read_asset(

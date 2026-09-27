@@ -8,13 +8,6 @@ use crate::{
         adapter_runtime::AdapterKey,
         assets::{AssetFuture, BinaryAssetRepository, BinaryAssetTarget, ResolveBinaryAsset},
         error::{ApplicationError, ApplicationErrorCode, IntoApplicationError},
-        mapping_resolution::{
-            MappingEndpointLookupRepository, MappingEndpointLookupTarget, MappingResolutionFuture,
-        },
-        reference_lookup::{
-            ReferenceLookupFuture, ReferenceLookupRepository, ReferenceLookupTarget,
-        },
-        workspaces::MappingRootPolicy,
     },
     domain::acquisition::{BinaryAssetKey, ProviderItemKey},
 };
@@ -97,118 +90,6 @@ WHERE
         })
     }
 
-    async fn resolve_lookup(
-        &self,
-        workspace_id: Uuid,
-        source_id: Uuid,
-    ) -> Result<ReferenceLookupTarget, ProviderAccessError> {
-        let row = sqlx::query_as::<_, LookupTargetRow>(
-            "SELECT
-    source.connection_id,
-    source.provider_key_namespace AS source_key_namespace,
-    source.provider_key_value AS source_key_value,
-    connection.capabilities
-FROM workspace_sources AS attachment
-INNER JOIN sources AS source ON source.id = attachment.source_id
-INNER JOIN connections AS connection ON connection.id = source.connection_id
-WHERE
-    attachment.workspace_id = $1
-    AND attachment.source_id = $2
-    AND source.availability <> 'removed'
-    AND connection.deleted_at IS NULL
-    AND connection.status = 'ready'
-",
-        )
-        .bind(workspace_id)
-        .bind(source_id)
-        .fetch_optional(&self.pool)
-        .await?
-        .ok_or(ProviderAccessError::SourceNotAttached)?;
-        let (reference_namespaces, maximum_batch_size) =
-            parse_lookup_capability(&row.capabilities)?;
-        Ok(ReferenceLookupTarget {
-            connection_id: row.connection_id,
-            source_key: AdapterKey {
-                namespace: row.source_key_namespace,
-                value: row.source_key_value,
-            },
-            reference_namespaces,
-            maximum_batch_size,
-        })
-    }
-
-    async fn resolve_mapping_endpoint_lookups(
-        &self,
-        workspace_id: Uuid,
-    ) -> Result<Vec<MappingEndpointLookupTarget>, ProviderAccessError> {
-        let rows = sqlx::query_as::<_, EndpointLookupTargetRow>(
-            "SELECT
-    source.id AS source_id,
-    connection.id AS connection_id,
-    source.provider_key_namespace AS source_key_namespace,
-    source.provider_key_value AS source_key_value,
-    attachment.mapping_root_namespace_allowlist,
-    connection.capabilities
-FROM workspace_sources AS attachment
-INNER JOIN sources AS source ON source.id = attachment.source_id
-INNER JOIN connections AS connection ON connection.id = source.connection_id
-WHERE
-    attachment.workspace_id = $1
-    AND source.availability <> 'removed'
-    AND connection.deleted_at IS NULL
-    AND connection.status = 'ready'
-    AND (
-        jsonb_typeof(connection.capabilities -> 'referenceLookup') = 'object'
-        OR jsonb_typeof(connection.capabilities -> 'endpointLookup') = 'object'
-    )
-ORDER BY connection.id, source.id
-",
-        )
-        .bind(workspace_id)
-        .fetch_all(&self.pool)
-        .await?;
-        rows.into_iter()
-            .map(|row| {
-                let bare = row
-                    .capabilities
-                    .get("referenceLookup")
-                    .filter(|capability| !capability.is_null())
-                    .map(|_| parse_lookup_capability(&row.capabilities))
-                    .transpose()?;
-                let selected = row
-                    .capabilities
-                    .get("endpointLookup")
-                    .filter(|capability| !capability.is_null())
-                    .map(|_| parse_endpoint_lookup_capability(&row.capabilities))
-                    .transpose()?;
-                let (bare_reference_namespaces, maximum_bare_batch_size) = bare.unwrap_or_default();
-                let (
-                    reference_namespaces,
-                    coordinate_ids,
-                    maximum_batch_size,
-                    maximum_response_bytes,
-                ) = selected.unwrap_or_else(|| (Vec::new(), Vec::new(), 0, 1));
-                Ok(MappingEndpointLookupTarget {
-                    source_id: row.source_id,
-                    connection_id: row.connection_id,
-                    source_key: AdapterKey {
-                        namespace: row.source_key_namespace,
-                        value: row.source_key_value,
-                    },
-                    mapping_root_policy: MappingRootPolicy::from(
-                        row.mapping_root_namespace_allowlist,
-                    ),
-                    bare_reference_namespaces,
-                    maximum_bare_batch_size,
-                    reference_namespaces,
-                    coordinate_ids,
-                    maximum_batch_size,
-                    maximum_response_bytes,
-                })
-            })
-            .collect()
-    }
-
     async fn confirm_asset_publication(
         &self,
         workspace_id: Uuid,
@@ -259,29 +140,6 @@ impl BinaryAssetRepository for PostgresProviderAccessRepository {
     }
 }
 
-impl ReferenceLookupRepository for PostgresProviderAccessRepository {
-    type Error = ProviderAccessError;
-
-    fn resolve_reference_lookup(
-        &self,
-        workspace_id: Uuid,
-        source_id: Uuid,
-    ) -> ReferenceLookupFuture<'_, ReferenceLookupTarget, Self::Error> {
-        Box::pin(self.resolve_lookup(workspace_id, source_id))
-    }
-}
-
-impl MappingEndpointLookupRepository for PostgresProviderAccessRepository {
-    type Error = ProviderAccessError;
-
-    fn resolve_mapping_endpoint_lookups(
-        &self,
-        workspace_id: Uuid,
-    ) -> MappingResolutionFuture<'_, Vec<MappingEndpointLookupTarget>, Self::Error> {
-        Box::pin(self.resolve_mapping_endpoint_lookups(workspace_id))
-    }
-}
-
 fn parse_asset_capability(capabilities: &Value) -> Result<(u64, Vec<String>), ProviderAccessError> {
     let capability = capabilities
         .get("assets")
@@ -294,51 +152,6 @@ fn parse_asset_capability(capabilities: &Value) -> Result<(u64, Vec<String>), Pr
         .ok_or(ProviderAccessError::InvalidCapabilities)?;
     let content_types = string_array(capability.get("contentTypes"))?;
     Ok((maximum_bytes, content_types))
-}
-
-fn parse_lookup_capability(
-    capabilities: &Value,
-) -> Result<(Vec<String>, u32), ProviderAccessError> {
-    let capability = capabilities
-        .get("referenceLookup")
-        .filter(|capability| !capability.is_null())
-        .ok_or(ProviderAccessError::LookupCapabilityUnavailable)?;
-    let reference_namespaces = string_array(capability.get("referenceNamespaces"))?;
-    let maximum_batch_size = capability
-        .get("maximumBatchSize")
-        .and_then(Value::as_u64)
-        .and_then(|maximum| u32::try_from(maximum).ok())
-        .filter(|maximum| *maximum > 0)
-        .ok_or(ProviderAccessError::InvalidCapabilities)?;
-    Ok((reference_namespaces, maximum_batch_size))
-}
-
-fn parse_endpoint_lookup_capability(
-    capabilities: &Value,
-) -> Result<(Vec<String>, Vec<String>, u32, u64), ProviderAccessError> {
-    let capability = capabilities
-        .get("endpointLookup")
-        .filter(|capability| !capability.is_null())
-        .ok_or(ProviderAccessError::LookupCapabilityUnavailable)?;
-    let reference_namespaces = string_array(capability.get("referenceNamespaces"))?;
-    let coordinate_ids = string_array(capability.get("coordinateIds"))?;
-    let maximum_batch_size = capability
-        .get("maximumBatchSize")
-        .and_then(Value::as_u64)
-        .and_then(|maximum| u32::try_from(maximum).ok())
-        .filter(|maximum| *maximum > 0)
-        .ok_or(ProviderAccessError::InvalidCapabilities)?;
-    let maximum_response_bytes = capability
-        .get("maximumResponseBytes")
-        .and_then(Value::as_u64)
-        .filter(|maximum| *maximum > 0)
-        .ok_or(ProviderAccessError::InvalidCapabilities)?;
-    Ok((
-        reference_namespaces,
-        coordinate_ids,
-        maximum_batch_size,
-        maximum_response_bytes,
-    ))
 }
 
 fn string_array(value: Option<&Value>) -> Result<Vec<String>, ProviderAccessError> {
@@ -386,24 +199,6 @@ struct AssetTargetRow {
     asset_exists: bool,
 }
 
-#[derive(FromRow)]
-struct LookupTargetRow {
-    connection_id: Uuid,
-    source_key_namespace: String,
-    source_key_value: Vec<u8>,
-    capabilities: Value,
-}
-
-#[derive(FromRow)]
-struct EndpointLookupTargetRow {
-    source_id: Uuid,
-    connection_id: Uuid,
-    source_key_namespace: String,
-    source_key_value: Vec<u8>,
-    mapping_root_namespace_allowlist: Option<Vec<String>>,
-    capabilities: Value,
-}
-
 #[derive(Debug, Error)]
 pub enum ProviderAccessError {
     #[error("source is not attached to the workspace")]
@@ -416,8 +211,6 @@ pub enum ProviderAccessError {
     AssetNotFound,
     #[error("source does not advertise binary asset reads")]
     AssetCapabilityUnavailable,
-    #[error("connection does not advertise portable-reference lookup")]
-    LookupCapabilityUnavailable,
     #[error("stored provider capabilities are invalid")]
     InvalidCapabilities,
     #[error("provider access database operation failed: {0}")]
@@ -443,12 +236,10 @@ impl IntoApplicationError for ProviderAccessError {
                 ApplicationErrorCode::BinaryAssetNotFound,
                 "binary asset was not found",
             ),
-            Self::AssetCapabilityUnavailable | Self::LookupCapabilityUnavailable => {
-                ApplicationError::new(
-                    ApplicationErrorCode::ProviderCapabilityUnavailable,
-                    "provider capability is unavailable",
-                )
-            }
+            Self::AssetCapabilityUnavailable => ApplicationError::new(
+                ApplicationErrorCode::ProviderCapabilityUnavailable,
+                "provider capability is unavailable",
+            ),
             Self::InvalidCapabilities => ApplicationError::new(
                 ApplicationErrorCode::InvalidProviderData,
                 "stored provider capabilities are invalid",

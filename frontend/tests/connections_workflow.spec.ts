@@ -37,54 +37,6 @@ test("shows connected status before expanding a connection", async ({ page }) =>
   expect(inspectionRequests).toBe(0);
 });
 
-test("edits source mapping roots", async ({ page }) => {
-  let namespaces: string[] | null = null;
-  const submitted: Array<string[] | null> = [];
-  const policyPath = `/api/v1/workspaces/${workspaceId}/sources/${sourceId}/mapping-root-policy`;
-
-  await mockApi(page, async (route) => {
-    const url = new URL(route.request().url());
-    const method = route.request().method();
-    if (url.pathname === "/api/v1/workspaces" && method === "GET") return json(route, [workspace]);
-    if (url.pathname === "/api/v1/connections" && method === "GET") return json(route, [connection]);
-    if (url.pathname === `/api/v1/connections/${connectionId}/inspection`) {
-      return json(route, authenticationInspection());
-    }
-    if (url.pathname === `/api/v1/connections/${connectionId}/sources`) return json(route, [source]);
-    if (url.pathname === policyPath && method === "GET") {
-      return json(route, mappingRootPolicy(namespaces));
-    }
-    if (url.pathname === policyPath && method === "PUT") {
-      const body = route.request().postDataJSON() as { namespaces: string[] | null };
-      submitted.push(body.namespaces);
-      namespaces = body.namespaces;
-      return json(route, mappingRootPolicy(namespaces));
-    }
-    return fallback(route);
-  });
-
-  await page.goto(`/connections?workspace=${workspaceId}`);
-  await page.getByRole("button", { name: "Expand Fixture account" }).first().click();
-  await page.getByLabel("Configure mapping roots for Fixture Catalog").click();
-  const drawer = page.getByRole("dialog", { name: "Mapping roots" });
-  await expect(drawer).toBeVisible();
-  await expect(drawer.getByRole("button", { name: "Provider defaults" })).toHaveAttribute("aria-pressed", "true");
-
-  await drawer.getByRole("button", { name: "Custom namespaces" }).click();
-  const exampleNamespace = drawer.getByLabel("Use example.media as an automatic mapping root");
-  await expect(exampleNamespace).toBeChecked();
-  await exampleNamespace.uncheck();
-  await drawer.getByRole("button", { name: "Save" }).click();
-  await expect.poll(() => submitted[0]).toEqual(["org.themoviedb"]);
-  await expect(drawer).not.toBeVisible();
-
-  await page.getByLabel("Configure mapping roots for Fixture Catalog").click();
-  await drawer.getByRole("button", { name: "Provider defaults" }).click();
-  await drawer.getByRole("button", { name: "Save" }).click();
-  await expect.poll(() => submitted[1]).toBeNull();
-  await expectNoHorizontalOverflow(page);
-});
-
 test("creates and edits active provider connections without stale command state", async ({ page }) => {
   const archiveConnectionId = "22222222-2222-2222-2222-333333333333";
   const archiveConnection = { ...connection, id: archiveConnectionId, displayName: "Archive fixture" };
@@ -351,7 +303,7 @@ test("reconfigures provider settings without exposing stored secrets", async ({ 
     if (url.pathname === `/api/v1/connections/${connectionId}/configuration` && method === "PUT") {
       reconfiguration = route.request().postDataJSON() as typeof reconfiguration;
       revision = reconfiguration?.settings[0]?.value.value ?? revision;
-      return json(route, { ...connection, capabilityRevision: connection.capabilityRevision + 1 });
+      return json(route, connection);
     }
     if (url.pathname === `/api/v1/connections/${connectionId}/sources` && method === "GET") return json(route, []);
     return fallback(route);
@@ -612,22 +564,6 @@ function deletionImpact() {
     taskCount: 0,
     activeTaskCount: 0,
     authenticationSessionCount: 0,
-  };
-}
-
-function mappingRootPolicy(namespaces: string[] | null) {
-  return {
-    namespaces,
-    availableNamespaces: [
-      {
-        namespace: "example.media",
-        candidateCount: 3,
-      },
-      {
-        namespace: "org.themoviedb",
-        candidateCount: 2,
-      },
-    ],
   };
 }
 

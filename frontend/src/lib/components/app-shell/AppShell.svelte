@@ -45,7 +45,7 @@ onMount(() => {
     const sequence = ++workspaceRequestSequence;
     workspaceError = "";
     try {
-      const loadedWorkspaces = (await listWorkspaces()).filter((workspace) => workspace.status === "active");
+      const loadedWorkspaces = await listWorkspaces();
       if (sequence === workspaceRequestSequence) {
         workspaces = loadedWorkspaces;
         if (rememberedWorkspaceId && !loadedWorkspaces.some((workspace) => workspace.id === rememberedWorkspaceId)) {

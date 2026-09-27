@@ -56,7 +56,6 @@ import {
 import { pollCatalog, waitForTask } from "$lib/api/operations";
 import { listProviders, type Provider } from "$lib/api/providers";
 import { attachSource, detachSource, listWorkspaces, type Workspace, type WorkspaceSource } from "$lib/api/workspaces";
-import MappingRootPolicyDrawer from "./MappingRootPolicyDrawer.svelte";
 
 const fixtureScenarios = [
   "hierarchical-catalog-assets-v1",
@@ -159,7 +158,7 @@ async function loadDirectory(signal?: AbortSignal) {
       ...sources,
       ...Object.fromEntries(sourceResults.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []))),
     };
-    workspaces = nextWorkspaces.filter((workspace) => workspace.status === "active");
+    workspaces = nextWorkspaces;
     providerItems = installedProviderItems(providers);
     if (!providerItems.some((provider) => provider.value === selectedProviderId)) {
       selectedProviderId = providerItems[0]?.value ?? "";
@@ -1215,9 +1214,7 @@ function messageFor(error: unknown, fallback: string): string {
                       </p>
                     {:else if authentication && ["failed", "cancelled", "expired"].includes(authentication.status)}
                       <div class="mt-3 flex flex-wrap items-center justify-between gap-3">
-                        <p class="text-label text-text-muted">
-                          Authentication {authentication.status}. {authentication.error?.safeMessage ?? ""}
-                        </p>
+                        <p class="text-label text-text-muted">Authentication {authentication.status}.</p>
                         <Button
                           onclick={() => (authentications = { ...authentications, [connection.id]: undefined })}
                           size="sm"
@@ -1350,13 +1347,6 @@ function messageFor(error: unknown, fallback: string): string {
                               </p>
                             </div>
                             <div class="flex flex-wrap items-center justify-end gap-3">
-                              {#if selectedWorkspace && attachment}
-                                <MappingRootPolicyDrawer
-                                  sourceId={source.id}
-                                  sourceName={source.displayName}
-                                  workspaceId={selectedWorkspace.id}
-                                />
-                              {/if}
                               <Button
                                 disabled={pending[`scan:${source.id}`] || !selectedWorkspace || !attachment || source.availability !== "available"}
                                 onclick={() => scanCatalog(source)}

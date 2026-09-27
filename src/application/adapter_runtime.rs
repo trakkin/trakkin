@@ -1,5 +1,4 @@
 use time::OffsetDateTime;
-use trakkin_mapping::PortableEndpoint;
 use trakkin_provider_sdk::v1::{
     AuthenticationMethod, AuthenticationProgress, DescribeConnectionResult, DiscoverSourcesResult,
     HealthResponse, OpenConnectionResult, OperationFailure, OperationFailureCategory,
@@ -11,10 +10,7 @@ use super::error::{
     ApplicationError, ApplicationErrorCode, ApplicationFieldProblem, ApplicationRetryAdvice,
     ApplicationRetryAfter, IntoApplicationError,
 };
-use crate::domain::acquisition::{
-    CatalogBatch, CoordinateBinding, PortableReference, ProviderItem, StateBatch, StateField,
-    StateSubject, StateValue,
-};
+use crate::domain::acquisition::{CatalogBatch, StateBatch, StateField, StateSubject, StateValue};
 
 pub type AdapterOperationResult<T> = Result<T, AdapterCallError>;
 pub type AdapterAuthenticationMethod = AuthenticationMethod;
@@ -241,16 +237,6 @@ pub struct AdapterSecretPatch {
     pub value: Option<Vec<u8>>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AdapterValueKind {
-    Text,
-    Integer,
-    Decimal,
-    Boolean,
-    Timestamp,
-    Bytes,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AdapterTargetedStateReadCapability {
     pub maximum_fields: u32,
@@ -309,49 +295,6 @@ pub struct AdapterReadCompletion {
     pub next_cursor: Vec<u8>,
     pub evidence_revision: Vec<u8>,
     pub observed_at: OffsetDateTime,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LookupAdapterPortableReferences {
-    pub operation_id: Vec<u8>,
-    pub source_key: AdapterKey,
-    pub references: Vec<PortableReference>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct AdapterLookupEvidence {
-    pub adapter_revision: Vec<u8>,
-    pub observed_at: OffsetDateTime,
-    pub expires_at: Option<OffsetDateTime>,
-    pub matched_references: Vec<PortableReference>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct AdapterLookupCandidate {
-    pub provider_item: ProviderItem,
-    pub evidence: AdapterLookupEvidence,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum AdapterLookupOutcome {
-    Matched(Box<AdapterLookupCandidate>),
-    NotFound,
-    Ambiguous(Vec<AdapterLookupCandidate>),
-    Unsupported,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct AdapterPortableReferenceLookup {
-    pub requested: PortableReference,
-    pub outcome: AdapterLookupOutcome,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ResolveAdapterPortableEndpoints {
-    pub operation_id: Vec<u8>,
-    pub source_key: AdapterKey,
-    pub endpoints: Vec<PortableEndpoint>,
-    pub maximum_response_bytes: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -500,27 +443,6 @@ pub struct AdapterTargetedStateWriteOutcome {
     pub error: Option<AdapterCallError>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct AdapterEndpointLookupCandidate {
-    pub provider_item: ProviderItem,
-    pub binding: Option<CoordinateBinding>,
-    pub evidence: AdapterLookupEvidence,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum AdapterEndpointLookupOutcome {
-    Matched(Box<AdapterEndpointLookupCandidate>),
-    NotFound,
-    Ambiguous(Vec<AdapterEndpointLookupCandidate>),
-    Unsupported,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct AdapterPortableEndpointResolution {
-    pub requested: PortableEndpoint,
-    pub outcome: AdapterEndpointLookupOutcome,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReadAdapterAsset {
     pub operation_id: Vec<u8>,
@@ -636,16 +558,6 @@ pub trait AdapterSession {
         &mut self,
         command: WriteAdapterTargetedState,
     ) -> Result<AdapterTargetedStateWriteOutcome, Self::Error>;
-
-    async fn lookup_portable_references(
-        &mut self,
-        command: LookupAdapterPortableReferences,
-    ) -> Result<Result<Vec<AdapterPortableReferenceLookup>, AdapterCallError>, Self::Error>;
-
-    async fn resolve_portable_endpoints(
-        &mut self,
-        command: ResolveAdapterPortableEndpoints,
-    ) -> Result<Result<Vec<AdapterPortableEndpointResolution>, AdapterCallError>, Self::Error>;
 
     async fn read_asset(
         &mut self,

@@ -1566,9 +1566,6 @@ fn inspection_snapshot(
     if let Some(requirement) = metadata.requires.provider_sdk {
         requirements.insert("trakkin-provider-sdk".to_owned(), requirement.to_string());
     }
-    if let Some(requirement) = metadata.requires.mapping {
-        requirements.insert("trakkin-mapping".to_owned(), requirement.to_string());
-    }
     let published_at = index_annotations
         .get("org.opencontainers.image.created")
         .map(|value| OffsetDateTime::parse(value, &Rfc3339).map_err(invalid_provider_annotation))

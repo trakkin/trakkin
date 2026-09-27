@@ -228,9 +228,7 @@ where
                     }
                     Ok(TaskHandlerOutcome::Terminalized)
                 }
-                TaskDefinition::SourceDiscovery { .. }
-                | TaskDefinition::SyncAction { .. }
-                | TaskDefinition::SyncActionReconciliation { .. } => {
+                TaskDefinition::SourceDiscovery { .. } => {
                     Ok(failed_completion("invalid_acquisition_task", false))
                 }
             }

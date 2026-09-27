@@ -3,8 +3,6 @@ import {
   ArrowLeft,
   ArrowRight,
   ChevronRight,
-  CircleCheck,
-  Copy,
   Database,
   FolderOpen,
   Layers,
@@ -35,7 +33,6 @@ import {
   type CatalogAsset,
   type CatalogEntry,
   type CatalogPage,
-  formatPortableReference,
   formatProviderKey,
   formatTerm,
   getCatalog,
@@ -76,14 +73,12 @@ let operationBusy = $state(false);
 let errorMessage = $state("");
 let focusedRelationId = $state("");
 let resetOpen = $state(false);
-let copiedReferenceId = $state("");
 let viewMode = $state<CatalogViewMode>("grid");
 let reloadSequence = $state(0);
 let requestSequence = 0;
 let operationSequence = 0;
 let operationWorkspaceId = "";
 let operationController: AbortController | null = null;
-let copyTimer: ReturnType<typeof setTimeout> | undefined;
 
 let selectedSource = $derived(data.sources.find((candidate) => candidate.source.id === sourceFilter) ?? null);
 let currentParent = $derived(browsePath.at(-1)?.key);
@@ -126,7 +121,6 @@ onMount(() => {
 
 onDestroy(() => {
   invalidateOperation();
-  if (copyTimer) clearTimeout(copyTimer);
 });
 
 $effect(() => {
@@ -488,20 +482,6 @@ function formatGenericAttributeValue(value: unknown): string {
   }
   return String(value);
 }
-
-async function copyPortableReference(referenceId: string, value: string): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(value);
-    copiedReferenceId = referenceId;
-    if (copyTimer) clearTimeout(copyTimer);
-    copyTimer = setTimeout(() => {
-      if (copiedReferenceId === referenceId) copiedReferenceId = "";
-      copyTimer = undefined;
-    }, 1_500);
-  } catch (error) {
-    errorMessage = error instanceof Error ? error.message : "Reference could not be copied";
-  }
-}
 </script>
 
 {#snippet catalogDetails(entry: CatalogEntry)}
@@ -568,62 +548,6 @@ async function copyPortableReference(referenceId: string, value: string): Promis
         </dl>
       </section>
 
-      {#if entry.item?.portableReferenceCandidates.length}
-        <section>
-          <h3 class="text-meta font-semibold uppercase text-text-disabled">Portable references</h3>
-          <div class="mt-2 grid gap-1.5">
-            {#each entry.item.portableReferenceCandidates as reference, index}
-              {@const referenceValue = formatPortableReference(reference)}
-              {@const referenceId = `${relationId(entry)}:${index}`}
-              {@const recommended = reference.providerRecommended}
-              {@const effective = reference.effectiveMappingRoot}
-
-              <div
-                class="flex min-h-10 items-center gap-2 rounded-md border border-border-subtle bg-black/10 px-3 py-2"
-              >
-                <div class="min-w-0 flex-1">
-                  <div
-                    class="truncate font-mono text-label leading-5 text-text-secondary"
-                    title={referenceValue}
-                  >
-                    {referenceValue}
-                  </div>
-                  {#if recommended || effective}
-                    <div class="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-meta font-[560]">
-                      {#if recommended}
-                        <span class="text-info">Provider recommended</span>
-                      {/if}
-                      {#if effective}
-                        <span class="text-success">Effective root</span>
-                      {/if}
-                    </div>
-                  {/if}
-                </div>
-
-                <IconButton
-                  class="shrink-0 border-border-subtle bg-surface-raised/90"
-                  label={`Copy portable reference ${referenceValue}`}
-                  onclick={() => void copyPortableReference(referenceId, referenceValue)}
-                  size="sm"
-                  title="Copy portable reference"
-                >
-                  {#if copiedReferenceId === referenceId}
-                    <CircleCheck
-                      aria-hidden="true"
-                      size={13}
-                    />
-                  {:else}
-                    <Copy
-                      aria-hidden="true"
-                      size={13}
-                    />
-                  {/if}
-                </IconButton>
-              </div>
-            {/each}
-          </div>
-        </section>
-      {/if}
       {#if itemAttributes.length || relationAttributes.length}
         <section>
           <h3 class="text-meta font-semibold uppercase text-text-disabled">Attributes</h3>

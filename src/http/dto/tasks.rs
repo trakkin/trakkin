@@ -40,8 +40,6 @@ pub enum TaskKindResponse {
     StateRead,
     CatalogReset,
     StateReset,
-    SyncAction,
-    SyncActionReconciliation,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, ToSchema)]
@@ -111,22 +109,6 @@ impl TaskResponse {
                 },
                 Some(source_id.to_string()),
                 Some(SourceStreamResponse::from(stream)),
-                None,
-            ),
-            TaskDefinition::SyncAction {
-                receiver_source_id, ..
-            } => (
-                TaskKindResponse::SyncAction,
-                Some(receiver_source_id.to_string()),
-                None,
-                None,
-            ),
-            TaskDefinition::SyncActionReconciliation {
-                receiver_source_id, ..
-            } => (
-                TaskKindResponse::SyncActionReconciliation,
-                Some(receiver_source_id.to_string()),
-                None,
                 None,
             ),
         };

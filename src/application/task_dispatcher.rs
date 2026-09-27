@@ -161,39 +161,19 @@ where
                         )
                     },
                 );
-                if matches!(
-                    claimed.task.definition,
-                    TaskDefinition::SyncAction { .. }
-                        | TaskDefinition::SyncActionReconciliation { .. }
-                ) {
-                    tracing::debug!(
-                        task.id = %completed.id,
-                        task.attempt.id = %claimed.attempt_id,
-                        task.attempt.ordinal = claimed.attempt_ordinal,
-                        task.kind = task_kind,
-                        task.status = ?completed.status,
-                        workspace.id = ?claimed.task.workspace_id,
-                        connection.id = %claimed.task.connection_id,
-                        failure.code = failure_code,
-                        failure.message = failure_message,
-                        failure.retryable = retryable,
-                        "synchronization task completed unsuccessfully"
-                    );
-                } else {
-                    tracing::warn!(
-                        task.id = %completed.id,
-                        task.attempt.id = %claimed.attempt_id,
-                        task.attempt.ordinal = claimed.attempt_ordinal,
-                        task.kind = task_kind,
-                        task.status = ?completed.status,
-                        workspace.id = ?claimed.task.workspace_id,
-                        connection.id = %claimed.task.connection_id,
-                        failure.code = failure_code,
-                        failure.message = failure_message,
-                        failure.retryable = retryable,
-                        "task completed unsuccessfully"
-                    );
-                }
+                tracing::warn!(
+                    task.id = %completed.id,
+                    task.attempt.id = %claimed.attempt_id,
+                    task.attempt.ordinal = claimed.attempt_ordinal,
+                    task.kind = task_kind,
+                    task.status = ?completed.status,
+                    workspace.id = ?claimed.task.workspace_id,
+                    connection.id = %claimed.task.connection_id,
+                    failure.code = failure_code,
+                    failure.message = failure_message,
+                    failure.retryable = retryable,
+                    "task completed unsuccessfully"
+                );
             } else {
                 tracing::debug!(
                     task.id = %completed.id,
@@ -242,8 +222,6 @@ fn task_kind(definition: &TaskDefinition) -> &'static str {
             stream: super::task_manager::SourceStream::State,
             ..
         } => "state_reset",
-        TaskDefinition::SyncAction { .. } => "sync_action",
-        TaskDefinition::SyncActionReconciliation { .. } => "sync_action_reconciliation",
     }
 }
 

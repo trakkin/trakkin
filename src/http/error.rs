@@ -172,8 +172,6 @@ fn status(code: ApplicationErrorCode) -> StatusCode {
         ApplicationErrorCode::InvalidRequest
         | ApplicationErrorCode::InvalidField
         | ApplicationErrorCode::CatalogCursorInvalid
-        | ApplicationErrorCode::MappingCursorInvalid
-        | ApplicationErrorCode::ActivityCursorInvalid
         | ApplicationErrorCode::ProviderInvalidInput => StatusCode::BAD_REQUEST,
         ApplicationErrorCode::WorkspaceNotFound
         | ApplicationErrorCode::WorkspaceOrSourceNotFound
@@ -182,12 +180,6 @@ fn status(code: ApplicationErrorCode) -> StatusCode {
         | ApplicationErrorCode::AuthenticationNotFound
         | ApplicationErrorCode::BinaryAssetNotFound
         | ApplicationErrorCode::SourceNotAttached
-        | ApplicationErrorCode::MappingNotFound
-        | ApplicationErrorCode::MappingRevisionNotFound
-        | ApplicationErrorCode::ActivityActionNotFound
-        | ApplicationErrorCode::SyncPolicyNotFound
-        | ApplicationErrorCode::SyncScheduleNotFound
-        | ApplicationErrorCode::SyncPreviewNotFound
         | ApplicationErrorCode::StreamNotFound
         | ApplicationErrorCode::TaskNotFound => StatusCode::NOT_FOUND,
         ApplicationErrorCode::WorkspaceAlreadyExists
@@ -201,19 +193,13 @@ fn status(code: ApplicationErrorCode) -> StatusCode {
         | ApplicationErrorCode::CatalogCursorExpired
         | ApplicationErrorCode::StreamUnavailable
         | ApplicationErrorCode::TaskResourceUnavailable
-        | ApplicationErrorCode::TaskCancellationUnsupported
-        | ApplicationErrorCode::SyncPolicyAlreadyExists
-        | ApplicationErrorCode::SyncPolicyHeadMoved
-        | ApplicationErrorCode::SyncPreviewExpired
-        | ApplicationErrorCode::SyncPreviewStale
-        | ApplicationErrorCode::SyncPreviewAlreadyAdmitted => StatusCode::CONFLICT,
+        | ApplicationErrorCode::TaskCancellationUnsupported => StatusCode::CONFLICT,
         ApplicationErrorCode::ProviderConflict => StatusCode::CONFLICT,
         ApplicationErrorCode::ProviderAuthenticationFailed
         | ApplicationErrorCode::ProviderAuthorizationFailed
         | ApplicationErrorCode::ProviderUnsupported => StatusCode::UNPROCESSABLE_ENTITY,
         ApplicationErrorCode::ProviderRateLimited => StatusCode::TOO_MANY_REQUESTS,
         ApplicationErrorCode::ProviderUnavailable => StatusCode::SERVICE_UNAVAILABLE,
-        ApplicationErrorCode::MappingResponseTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
         ApplicationErrorCode::InvalidProviderData | ApplicationErrorCode::ProviderInternal => {
             StatusCode::BAD_GATEWAY
         }

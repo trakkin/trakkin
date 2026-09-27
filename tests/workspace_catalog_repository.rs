@@ -7,8 +7,8 @@ use trakkin::{
     application::{
         catalog_queries::{CatalogQueryRepository, InspectSourceState, QueryCatalogPage},
         workspaces::{
-            AttachWorkspaceSource, CreateWorkspace, DetachWorkspaceSource,
-            UpdateWorkspaceSourceMappingRootPolicy, WorkspaceRepository, WorkspaceService,
+            AttachWorkspaceSource, CreateWorkspace, DetachWorkspaceSource, WorkspaceRepository,
+            WorkspaceService,
         },
     },
     database::DatabaseRuntime,
@@ -153,99 +153,6 @@ async fn workspace_crud_and_source_attachments_are_idempotent() {
 }
 
 #[tokio::test]
-async fn mapping_root_policy_is_normalized_and_versioned() {
-    let directory = tempdir().expect("temporary directory is created");
-    let database = DatabaseRuntime::start(directory.path())
-        .await
-        .expect("fresh database starts");
-    seed_published_source(&database.pool()).await;
-    let service = WorkspaceService::new(PostgresWorkspaceRepository::new(database.pool()));
-
-    let default_policy = service
-        .mapping_root_policy(WORKSPACE_ID, SOURCE_ID)
-        .await
-        .expect("default policy is loaded");
-    assert_eq!(default_policy.attachment.mapping_root_policy_generation, 1);
-    assert!(
-        default_policy
-            .attachment
-            .mapping_root_namespace_allowlist
-            .is_none()
-    );
-    assert_eq!(default_policy.namespaces.len(), 1);
-    assert_eq!(default_policy.namespaces[0].namespace, "example.media");
-    assert_eq!(default_policy.namespaces[0].candidate_count, 1);
-
-    let custom = service
-        .update_mapping_root_policy(UpdateWorkspaceSourceMappingRootPolicy {
-            workspace_id: WORKSPACE_ID,
-            source_id: SOURCE_ID,
-            namespaces: Some(vec![
-                " example.other ".to_owned(),
-                "example.media".to_owned(),
-                "example.media".to_owned(),
-            ]),
-        })
-        .await
-        .expect("custom policy is stored");
-    assert_eq!(custom.attachment.mapping_root_policy_generation, 2);
-    assert_eq!(
-        custom.attachment.mapping_root_namespace_allowlist,
-        Some(vec!["example.media".to_owned(), "example.other".to_owned()])
-    );
-    assert_eq!(custom.namespaces.len(), 2);
-    assert_eq!(custom.namespaces[1].candidate_count, 0);
-
-    let repeated = service
-        .update_mapping_root_policy(UpdateWorkspaceSourceMappingRootPolicy {
-            workspace_id: WORKSPACE_ID,
-            source_id: SOURCE_ID,
-            namespaces: Some(vec!["example.other".to_owned(), "example.media".to_owned()]),
-        })
-        .await
-        .expect("equivalent policy is idempotent");
-    assert_eq!(repeated.attachment.mapping_root_policy_generation, 2);
-
-    let disabled = service
-        .update_mapping_root_policy(UpdateWorkspaceSourceMappingRootPolicy {
-            workspace_id: WORKSPACE_ID,
-            source_id: SOURCE_ID,
-            namespaces: Some(Vec::new()),
-        })
-        .await
-        .expect("empty policy disables roots");
-    assert_eq!(disabled.attachment.mapping_root_policy_generation, 3);
-    assert_eq!(
-        disabled.attachment.mapping_root_namespace_allowlist,
-        Some(Vec::new())
-    );
-
-    let reset = service
-        .update_mapping_root_policy(UpdateWorkspaceSourceMappingRootPolicy {
-            workspace_id: WORKSPACE_ID,
-            source_id: SOURCE_ID,
-            namespaces: None,
-        })
-        .await
-        .expect("provider recommendations are restored");
-    assert_eq!(reset.attachment.mapping_root_policy_generation, 4);
-    assert!(reset.attachment.mapping_root_namespace_allowlist.is_none());
-
-    assert!(matches!(
-        service
-            .update_mapping_root_policy(UpdateWorkspaceSourceMappingRootPolicy {
-                workspace_id: WORKSPACE_ID,
-                source_id: SOURCE_ID,
-                namespaces: Some(vec!["not a namespace".to_owned()]),
-            })
-            .await,
-        Err(WorkspaceError::InvalidMappingRootNamespace)
-    ));
-
-    database.shutdown().await.expect("database shuts down");
-}
-
-#[tokio::test]
 async fn attached_workspace_pages_catalog_and_inspects_state() {
     let directory = tempdir().expect("temporary directory is created");
     let database = DatabaseRuntime::start(directory.path())
@@ -312,8 +219,6 @@ async fn attached_workspace_pages_catalog_and_inspects_state() {
         .as_ref()
         .expect("search match has an item");
     assert_eq!(matched.display_name(), "Quiet Signal");
-    assert_eq!(matched.portable_reference_candidates().len(), 1);
-    assert_eq!(matched.recommended_mapping_roots().len(), 1);
     assert_eq!(matched.binary_assets().len(), 1);
 
     let state = repository
@@ -471,20 +376,6 @@ VALUES
     .await;
     insert_relation(pool, b"relation.movie", None, b"item.movie", vec![1], now).await;
     sqlx::query(
-        "INSERT INTO catalog_item_references (
-    source_id, item_key_namespace, item_key_value,
-    reference_namespace, reference_value, recommended_mapping_root
-)
-VALUES ($1, 'fixture.item', $2, 'example.media', $3, TRUE)
-",
-    )
-    .bind(SOURCE_ID)
-    .bind(b"item.signal".as_slice())
-    .bind(b"quiet-signal".as_slice())
-    .execute(pool)
-    .await
-    .expect("portable reference is seeded");
-    sqlx::query(
         "INSERT INTO catalog_assets (
     source_id, item_key_namespace, item_key_value,
     asset_key_namespace, asset_key_value,
@@ -531,14 +422,12 @@ async fn seed_source(pool: &sqlx::PgPool) {
     let now = timestamp(-10);
     sqlx::query(
         "INSERT INTO connections (
-    id, provider_id, display_name, status, capabilities,
-    capability_revision, created_at, updated_at
+    id, provider_id, display_name, status, created_at, updated_at
 )
-VALUES ($1, 'fixture', 'Fixture', 'ready', $2, 1, $3, $3)
+VALUES ($1, 'fixture', 'Fixture', 'ready', $2, $2)
 ",
     )
     .bind(CONNECTION_ID)
-    .bind(json!({}))
     .bind(now)
     .execute(pool)
     .await

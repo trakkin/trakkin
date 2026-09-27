@@ -20,12 +20,10 @@ pub async fn seed_catalog_read(pool: PgPool) {
     let now = timestamp(-10);
     sqlx::query(
         "INSERT INTO connections (
-             id, provider_id, display_name, status, capabilities,
-             capability_revision, created_at, updated_at
-         ) VALUES ($1, 'fixture', 'Fixture', 'ready', $2, 1, $3, $3)",
+             id, provider_id, display_name, status, created_at, updated_at
+         ) VALUES ($1, 'fixture', 'Fixture', 'ready', $2, $2)",
     )
     .bind(CONNECTION_ID)
-    .bind(json!({}))
     .bind(now)
     .execute(&pool)
     .await
@@ -115,18 +113,6 @@ pub async fn seed_catalog_read(pool: PgPool) {
     .execute(&pool)
     .await
     .expect("old catalog item is seeded");
-    sqlx::query(
-        "INSERT INTO catalog_item_references (
-             source_id, item_key_namespace, item_key_value,
-             reference_namespace, reference_value, recommended_mapping_root
-         ) VALUES ($1, 'fixture.item', $2, 'example.media', $3, TRUE)",
-    )
-    .bind(SOURCE_ID)
-    .bind(b"item.old".as_slice())
-    .bind(b"old".as_slice())
-    .execute(&pool)
-    .await
-    .expect("old portable reference is seeded");
     sqlx::query(
         "INSERT INTO catalog_assets (
              source_id, item_key_namespace, item_key_value,

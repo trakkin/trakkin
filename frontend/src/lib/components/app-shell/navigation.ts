@@ -1,4 +1,4 @@
-import { Activity, Blocks, Cable, Library, PackageOpen, ScrollText, Timer, Waypoints } from "@lucide/svelte";
+import { Blocks, Cable, Library, PackageOpen, ScrollText } from "@lucide/svelte";
 import type { Component } from "svelte";
 import { dev } from "$app/environment";
 
@@ -15,12 +15,7 @@ export type AppNavigationGroup = {
 
 export function navigationFor(workspaceId?: string): AppNavigationGroup[] {
   const workspaceItems: AppNavigationItem[] = workspaceId
-    ? [
-        { href: `/w/${workspaceId}/catalog`, icon: Library, label: "Catalog" },
-        { href: `/w/${workspaceId}/mappings`, icon: Waypoints, label: "Mappings" },
-        { href: `/w/${workspaceId}/automation`, icon: Timer, label: "Automation" },
-        { href: `/w/${workspaceId}/activity`, icon: Activity, label: "Activity" },
-      ]
+    ? [{ href: `/w/${workspaceId}/catalog`, icon: Library, label: "Catalog" }]
     : [];
   return [
     ...(workspaceItems.length > 0 ? [{ label: "Workspace", items: workspaceItems }] : []),

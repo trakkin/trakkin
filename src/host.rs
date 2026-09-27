@@ -3,7 +3,7 @@ use std::path::Path;
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use thiserror::Error;
-use time::{Duration as TimeDuration, OffsetDateTime};
+use time::OffsetDateTime;
 use tokio::{
     sync::watch,
     task::JoinHandle,
@@ -21,24 +21,10 @@ use crate::{
             SourceDiscoveryTaskHandler,
         },
         error::ApplicationError,
-        facade::{
-            ApplicationApi, ApplicationFacade, ApplicationInteractions,
-            ApplicationMappingRepositories,
-        },
-        mapping_resolution::{AdapterMappingEndpointLookupService, MappingResolutionService},
-        reference_lookup::ReferenceLookupInteractionService,
-        sync_activity::SyncActivityService,
-        sync_policy::SyncPolicyService,
-        sync_retention::{RetainSyncEvidence, SyncRetentionPolicy, SyncRetentionService},
-        sync_schedule::SyncScheduleService,
-        sync_schedule::{SyncScheduleRunner, SyncScheduleTickResult, TickSyncSchedules},
-        sync_workflow::{
-            ProductionSyncPreviewInputCollector, SyncRunWorkflowService, SyncWorkflowService,
-        },
+        facade::{ApplicationApi, ApplicationFacade, ApplicationInteractions},
         task_dispatcher::{DispatchNextTask, TaskDispatcher},
     },
     database::{DatabaseError, DatabaseRuntime},
-    domain::synchronization::StateRegistry,
     infrastructure::task_lifecycle::{PostgresTaskLifecycleRepository, TaskLifecycleError},
     infrastructure::task_manager::PostgresTaskRepository,
     infrastructure::{
@@ -50,23 +36,8 @@ use crate::{
             ConnectionMasterKey, ConnectionPersistenceError, ConnectionSessionRetirementError,
             PostgresConnectionRepository, ProcessSessionRegistry,
         },
-        mapping_lifecycle::PostgresMappingLifecycleRepository,
-        mapping_queries::PostgresMappingQueryRepository,
-        mapping_resolution::PostgresMappingResolutionRepository,
         provider_access::PostgresProviderAccessRepository,
         provider_registry::{PostgresProviderRegistry, ProbedProviderRegistry},
-        sync_action_attempt::PostgresSyncActionAttemptRepository,
-        sync_action_dispatch::SyncActionTaskHandler,
-        sync_action_reconciliation::PostgresSyncActionReconciliationRepository,
-        sync_action_reconciliation_dispatch::SyncActionReconciliationTaskHandler,
-        sync_activity::PostgresSyncActivityRepository,
-        sync_policy::PostgresSyncPolicyRepository,
-        sync_preview::PostgresSyncPreviewRepository,
-        sync_preview_collection::PostgresSyncReceiverPreflightService,
-        sync_retention::PostgresSyncRetentionRepository,
-        sync_run::PostgresSyncRunRepository,
-        sync_schedule::PostgresSyncScheduleRepository,
-        sync_state_evidence::PostgresSyncStateEvidenceRepository,
         workspaces::PostgresWorkspaceRepository,
     },
 };
@@ -75,11 +46,7 @@ const HOST_MAXIMUM_ASSET_BYTES: u64 = 16 * 1024 * 1024;
 const TASK_WORKERS_PER_KIND: usize = 2;
 const TASK_IDLE_INTERVAL: Duration = Duration::from_millis(50);
 const WORKER_SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_secs(5);
-const SCHEDULE_IDLE_INTERVAL: Duration = Duration::from_secs(30);
-const SCHEDULE_PREVIEW_LIFETIME: TimeDuration = TimeDuration::minutes(5);
 const PROVIDER_UPDATE_INTERVAL: Duration = Duration::from_secs(15 * 60);
-const RETENTION_IDLE_INTERVAL: Duration = Duration::from_secs(60 * 60);
-const RETENTION_PASSES_PER_SWEEP: usize = 16;
 
 pub struct Host {
     database: DatabaseRuntime,
@@ -172,47 +139,9 @@ impl Host {
         let provider_management =
             ProbedProviderRegistry::new(provider_registry.clone(), env!("CARGO_PKG_VERSION"));
         let provider_access = PostgresProviderAccessRepository::new(pool.clone());
-        let sync_preview_collector = Arc::new(ProductionSyncPreviewInputCollector::new(
-            PostgresSyncStateEvidenceRepository::new(pool.clone()),
-            MappingResolutionService::with_endpoint_lookup(
-                PostgresMappingResolutionRepository::new(pool.clone()),
-                AdapterMappingEndpointLookupService::<_, _, AdapterProcess>::new(
-                    provider_access.clone(),
-                    sessions.clone(),
-                ),
-            ),
-            PostgresSyncReceiverPreflightService::<_, AdapterProcess>::new(
-                pool.clone(),
-                sessions.clone(),
-            ),
-            StateRegistry::v1(),
-        ));
-        let sync_workflow = Arc::new(SyncWorkflowService::new(
-            PostgresSyncPolicyRepository::new(pool.clone()),
-            sync_preview_collector.clone(),
-            PostgresSyncPreviewRepository::new(pool.clone()),
-            StateRegistry::v1(),
-        ));
-        let sync_run_workflow = Arc::new(SyncRunWorkflowService::new(
-            PostgresSyncPolicyRepository::new(pool.clone()),
-            sync_preview_collector.clone(),
-            PostgresSyncPreviewRepository::new(pool.clone()),
-            PostgresSyncRunRepository::new(pool.clone()),
-        ));
-        let sync_schedule_runner = SyncScheduleRunner::new(
-            PostgresSyncScheduleRepository::new(pool.clone()),
-            PostgresSyncPolicyRepository::new(pool.clone()),
-            sync_preview_collector.clone(),
-            PostgresSyncPreviewRepository::new(pool.clone()),
-            PostgresSyncRunRepository::new(pool.clone()),
-        );
         let application: Arc<dyn ApplicationApi> = Arc::new(ApplicationFacade::new(
             PostgresWorkspaceRepository::new(pool.clone()),
             PostgresCatalogQueryRepository::new(pool.clone()),
-            ApplicationMappingRepositories::new(
-                PostgresMappingQueryRepository::new(pool.clone()),
-                PostgresMappingLifecycleRepository::new(pool.clone()),
-            ),
             PostgresTaskRepository::new(pool.clone()),
             connection_repository.clone(),
             sessions.clone(),
@@ -227,35 +156,11 @@ impl Host {
                     sessions.clone(),
                     HOST_MAXIMUM_ASSET_BYTES,
                 )),
-                Arc::new(
-                    ReferenceLookupInteractionService::<_, _, AdapterProcess>::new(
-                        provider_access.clone(),
-                        sessions.clone(),
-                    ),
-                ),
-                Arc::new(MappingResolutionService::with_endpoint_lookup(
-                    PostgresMappingResolutionRepository::new(pool.clone()),
-                    AdapterMappingEndpointLookupService::<_, _, AdapterProcess>::new(
-                        provider_access,
-                        sessions.clone(),
-                    ),
-                )),
-                Arc::new(SyncPolicyService::new(PostgresSyncPolicyRepository::new(
-                    pool.clone(),
-                ))),
-                Arc::new(SyncActivityService::new(
-                    PostgresSyncActivityRepository::new(pool.clone()),
-                )),
                 Arc::new(provider_management.clone()),
-            )
-            .with_sync_preview_mutation(sync_workflow)
-            .with_sync_run_mutation(sync_run_workflow)
-            .with_sync_schedule(Arc::new(SyncScheduleService::new(
-                PostgresSyncScheduleRepository::new(pool.clone()),
-            ))),
+            ),
         ));
         let (shutdown_sender, shutdown_receiver) = watch::channel(false);
-        let mut workers = Vec::with_capacity(TASK_WORKERS_PER_KIND * 4 + 3);
+        let mut workers = Vec::with_capacity(TASK_WORKERS_PER_KIND * 2 + 1);
         for _ in 0..TASK_WORKERS_PER_KIND {
             let discovery = TaskDispatcher::new(
                 self.task_manager.clone(),
@@ -277,38 +182,9 @@ impl Host {
                 .with_shutdown(shutdown_receiver.clone()),
             );
             workers.push(spawn_dispatcher(acquisition, shutdown_receiver.clone())?);
-
-            let synchronization = TaskDispatcher::new(
-                self.task_manager.clone(),
-                SyncActionTaskHandler::new(
-                    PostgresSyncActionAttemptRepository::new(pool.clone()),
-                    sessions.clone(),
-                ),
-            );
-            workers.push(spawn_dispatcher(
-                synchronization,
-                shutdown_receiver.clone(),
-            )?);
-
-            let reconciliation = TaskDispatcher::new(
-                self.task_manager.clone(),
-                SyncActionReconciliationTaskHandler::new(
-                    PostgresSyncActionReconciliationRepository::new(pool.clone()),
-                    sessions.clone(),
-                ),
-            );
-            workers.push(spawn_dispatcher(reconciliation, shutdown_receiver.clone())?);
         }
-        workers.push(tokio::spawn(run_schedules(
-            sync_schedule_runner,
-            shutdown_receiver.clone(),
-        )));
         workers.push(tokio::spawn(run_provider_updates(
             provider_management,
-            shutdown_receiver.clone(),
-        )));
-        workers.push(tokio::spawn(run_retention(
-            PostgresSyncRetentionRepository::new(pool),
             shutdown_receiver.clone(),
         )));
         Ok(RunningHost {
@@ -498,146 +374,6 @@ async fn run_dispatcher<R, H>(
                 }
             }
             () = sleep(TASK_IDLE_INTERVAL) => {}
-        }
-    }
-}
-
-async fn run_schedules<C>(
-    runner: SyncScheduleRunner<
-        PostgresSyncScheduleRepository,
-        PostgresSyncPolicyRepository,
-        C,
-        PostgresSyncPreviewRepository,
-        PostgresSyncRunRepository,
-    >,
-    mut shutdown: watch::Receiver<bool>,
-) where
-    C: crate::application::sync_workflow::SyncPreviewInputCollector + Clone,
-    C::Error: std::fmt::Debug,
-{
-    let mut healthy = true;
-    while !*shutdown.borrow() {
-        let Ok(occurrence_id) = random_uuid() else {
-            tracing::error!(worker.name = "sync_schedule", "background worker stopped");
-            return;
-        };
-        let Ok(preview_id) = random_uuid() else {
-            tracing::error!(worker.name = "sync_schedule", "background worker stopped");
-            return;
-        };
-        let Ok(run_id) = random_uuid() else {
-            tracing::error!(worker.name = "sync_schedule", "background worker stopped");
-            return;
-        };
-        let observed_at = OffsetDateTime::now_utc();
-        let result = runner
-            .tick(TickSyncSchedules {
-                occurrence_id,
-                preview_id,
-                run_id,
-                observed_at,
-                preview_expires_at: observed_at + SCHEDULE_PREVIEW_LIFETIME,
-            })
-            .await;
-        match result {
-            Ok(result) => {
-                if !healthy {
-                    tracing::info!(worker.name = "sync_schedule", "background worker recovered");
-                    healthy = true;
-                }
-                match result {
-                    SyncScheduleTickResult::RunStarted { occurrence_id, run } => {
-                        tracing::info!(
-                            %occurrence_id,
-                            sync.run.id = %run.run_id,
-                            workspace.id = %run.workspace_id,
-                            action_count = run.actions.len(),
-                            "scheduled synchronization started"
-                        );
-                        continue;
-                    }
-                    SyncScheduleTickResult::NoChanges { .. }
-                    | SyncScheduleTickResult::RunAlreadyStarted { .. } => continue,
-                    SyncScheduleTickResult::Idle => {}
-                }
-            }
-            Err(_) => {
-                if healthy {
-                    tracing::warn!(worker.name = "sync_schedule", "background worker failed");
-                    healthy = false;
-                }
-            }
-        }
-        tokio::select! {
-            result = shutdown.changed() => {
-                if result.is_err() {
-                    return;
-                }
-            }
-            () = sleep(SCHEDULE_IDLE_INTERVAL) => {}
-        }
-    }
-}
-
-async fn run_retention(
-    repository: PostgresSyncRetentionRepository,
-    mut shutdown: watch::Receiver<bool>,
-) {
-    while !*shutdown.borrow() {
-        match repository.workspace_ids().await {
-            Ok(workspace_ids) => {
-                let service = SyncRetentionService::new(repository.clone());
-                for workspace_id in workspace_ids {
-                    let mut policy = SyncRetentionPolicy::default();
-                    let mut deleted_rows = 0_u32;
-                    let mut deferred = false;
-                    for _ in 0..RETENTION_PASSES_PER_SWEEP {
-                        let report = match service
-                            .retain(RetainSyncEvidence {
-                                workspace_id,
-                                retained_at: OffsetDateTime::now_utc(),
-                                policy,
-                            })
-                            .await
-                        {
-                            Ok(report) => report,
-                            Err(_) => {
-                                tracing::warn!(
-                                    workspace.id = %workspace_id,
-                                    "synchronization retention failed"
-                                );
-                                break;
-                            }
-                        };
-                        deleted_rows = deleted_rows.saturating_add(report.deleted_rows());
-                        deferred |= report.deferred;
-                        if !report.deferred {
-                            break;
-                        }
-                        if let Some(minimum) = report.next_batch_minimum_rows {
-                            policy.maximum_deleted_rows = policy.maximum_deleted_rows.max(minimum);
-                        }
-                        tokio::task::yield_now().await;
-                    }
-                    if deleted_rows > 0 || deferred {
-                        tracing::info!(
-                            workspace.id = %workspace_id,
-                            deleted_rows,
-                            deferred,
-                            "synchronization retention completed"
-                        );
-                    }
-                }
-            }
-            Err(_) => tracing::warn!("could not enumerate workspaces for retention"),
-        }
-        tokio::select! {
-            result = shutdown.changed() => {
-                if result.is_err() {
-                    return;
-                }
-            }
-            () = sleep(RETENTION_IDLE_INTERVAL) => {}
         }
     }
 }

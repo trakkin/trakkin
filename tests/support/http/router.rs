@@ -8,33 +8,23 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use time::OffsetDateTime;
 use tower::ServiceExt;
-use trakkin::{
-    application::{
-        adapter_runtime::{
-            AdapterAuthenticationMethod, AdapterAuthenticationStep, AdapterBinaryAsset,
-            AdapterConnectionDescription, AdapterConnectionValidation, AdapterLookupCandidate,
-            AdapterLookupEvidence, AdapterLookupOutcome, AdapterPortableReferenceLookup,
-        },
-        assets::{AssetFuture, BinaryAssetInteraction, ReadPublishedBinaryAsset},
-        connection::{
-            CancelConnectionAuthentication, ConnectionFuture, ConnectionInspection,
-            ConnectionInteraction, ContinueConnectionAuthentication, InspectConnection,
-            StartConnectionAuthentication, StartedConnectionAuthentication,
-        },
-        error::{ApplicationError, ApplicationErrorCode},
-        providers::{
-            ChangeProviderUpdatePolicy, InspectProviderRelease, InstallProvider, ProviderApiFuture,
-            ProviderRegistryApi, ProviderReleaseInspectionSnapshot, ProviderSnapshot,
-            ProviderSourceSnapshot, RefreshProviderSource, RemoveProvider, RemoveProviderSource,
-            SharedProviderRegistry, TrustProviderSource, UpdateProvider,
-        },
-        reference_lookup::{
-            LookupPortableReferences, ReferenceLookupFuture, ReferenceLookupInteraction,
-        },
+use trakkin::application::{
+    adapter_runtime::{
+        AdapterAuthenticationMethod, AdapterAuthenticationStep, AdapterBinaryAsset,
+        AdapterConnectionDescription, AdapterConnectionValidation,
     },
-    domain::acquisition::{
-        BinaryAssetKey, BinaryAssetReference, PortableReference, ProviderItem, ProviderItemKey,
-        Term,
+    assets::{AssetFuture, BinaryAssetInteraction, ReadPublishedBinaryAsset},
+    connection::{
+        CancelConnectionAuthentication, ConnectionFuture, ConnectionInspection,
+        ConnectionInteraction, ContinueConnectionAuthentication, InspectConnection,
+        StartConnectionAuthentication, StartedConnectionAuthentication,
+    },
+    error::{ApplicationError, ApplicationErrorCode},
+    providers::{
+        ChangeProviderUpdatePolicy, InspectProviderRelease, InstallProvider, ProviderApiFuture,
+        ProviderRegistryApi, ProviderReleaseInspectionSnapshot, ProviderSnapshot,
+        ProviderSourceSnapshot, RefreshProviderSource, RemoveProvider, RemoveProviderSource,
+        SharedProviderRegistry, TrustProviderSource, UpdateProvider,
     },
 };
 use trakkin_provider_sdk::v1::{
@@ -252,67 +242,6 @@ impl BinaryAssetInteraction for StaticBinaryAssetInteraction {
     }
 }
 
-pub struct StaticReferenceLookupInteraction;
-
-impl ReferenceLookupInteraction for StaticReferenceLookupInteraction {
-    fn lookup_portable_references(
-        &self,
-        command: LookupPortableReferences,
-    ) -> ReferenceLookupFuture<'_, Vec<AdapterPortableReferenceLookup>, ApplicationError> {
-        Box::pin(async move {
-            assert!(!command.operation_id.is_empty());
-            assert_eq!(command.source_id, SOURCE_ID);
-            Ok(command
-                .references
-                .into_iter()
-                .enumerate()
-                .map(|(index, requested)| AdapterPortableReferenceLookup {
-                    outcome: match index {
-                        0 => AdapterLookupOutcome::Matched(Box::new(lookup_candidate(
-                            index,
-                            requested.clone(),
-                        ))),
-                        1 => AdapterLookupOutcome::NotFound,
-                        2 => AdapterLookupOutcome::Ambiguous(vec![
-                            lookup_candidate(index, requested.clone()),
-                            lookup_candidate(index + 1, requested.clone()),
-                        ]),
-                        _ => AdapterLookupOutcome::Unsupported,
-                    },
-                    requested,
-                })
-                .collect())
-        })
-    }
-}
-
-fn lookup_candidate(index: usize, matched_reference: PortableReference) -> AdapterLookupCandidate {
-    let provider_item = ProviderItem::new(
-        ProviderItemKey::new("fixture.lookup", format!("item.{index}").into_bytes())
-            .expect("lookup provider-item key is valid"),
-        Term::new("fixture", "item").expect("lookup item kind is valid"),
-        format!("Lookup item {index}"),
-        json!({"lookup": true}),
-        vec![matched_reference.clone()],
-        vec![matched_reference.clone()],
-        vec![BinaryAssetReference::new(
-            BinaryAssetKey::new("fixture.asset", b"poster".to_vec())
-                .expect("lookup asset key is valid"),
-            Term::new("fixture", "poster").expect("lookup asset kind is valid"),
-        )],
-    )
-    .expect("lookup provider item is valid");
-    AdapterLookupCandidate {
-        provider_item,
-        evidence: AdapterLookupEvidence {
-            adapter_revision: format!("lookup/{index}").into_bytes(),
-            observed_at: timestamp(10),
-            expires_at: Some(timestamp(20)),
-            matched_references: vec![matched_reference],
-        },
-    }
-}
-
 fn secret_configuration_field() -> ConfigurationField {
     ConfigurationField {
         key: "token".to_owned(),
@@ -352,26 +281,6 @@ pub async fn request(router: &axum::Router, request: Request<Body>) -> (StatusCo
     (status, value)
 }
 
-pub async fn mapping_activation_request(
-    router: &axum::Router,
-    workspace_id: &str,
-    mapping_id: &str,
-    content_hash: &str,
-) -> (StatusCode, Value) {
-    request(
-        router,
-        Request::post(format!(
-            "/api/v1/workspaces/{workspace_id}/mappings/{mapping_id}/activation"
-        ))
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({ "contentHash": content_hash }).to_string(),
-        ))
-        .expect("mapping activation request is built"),
-    )
-    .await
-}
-
 pub fn assert_closed_error(error: &Value, code: &str) {
     assert_eq!(error["code"], code);
     assert!(error["message"].is_string());
@@ -383,14 +292,12 @@ pub async fn seed_source(pool: &sqlx::PgPool) {
     let now = timestamp(0);
     sqlx::query(
         "INSERT INTO connections (
-    id, provider_id, display_name, status, capabilities,
-    capability_revision, created_at, updated_at
+    id, provider_id, display_name, status, created_at, updated_at
 )
-VALUES ($1, 'fixture', 'Fixture', 'ready', $2, 1, $3, $3)
+VALUES ($1, 'fixture', 'Fixture', 'ready', $2, $2)
 ",
     )
     .bind(CONNECTION_ID)
-    .bind(json!({}))
     .bind(now)
     .execute(pool)
     .await

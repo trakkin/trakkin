@@ -14,7 +14,7 @@ let submitSequence = 0;
 
 onMount(async () => {
   try {
-    returnWorkspace = (await listWorkspaces()).find((workspace) => workspace.status === "active") ?? null;
+    returnWorkspace = (await listWorkspaces())[0] ?? null;
   } catch {}
 });
 

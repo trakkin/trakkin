@@ -180,8 +180,6 @@ pub(crate) struct ProviderRequirements {
     pub trakkin: Option<VersionReq>,
     #[serde(rename = "trakkin-provider-sdk")]
     pub provider_sdk: Option<VersionReq>,
-    #[serde(rename = "trakkin-mapping")]
-    pub mapping: Option<VersionReq>,
     #[serde(flatten)]
     _additional: BTreeMap<String, Value>,
 }
@@ -1090,7 +1088,6 @@ mod tests {
             requires: ProviderRequirements {
                 trakkin: Some(VersionReq::parse(">=0.1.0, <1.0.0").expect("requirement")),
                 provider_sdk: None,
-                mapping: None,
                 _additional: BTreeMap::new(),
             },
             repo: Some("https://github.com/trakkin/trakkin-community-providers".to_owned()),

@@ -13,9 +13,8 @@ use thiserror::Error;
 use time::OffsetDateTime;
 use tokio::sync::Notify;
 use trakkin_provider_sdk::v1::{
-    AuthenticationStatus, ConfigurationField, ConfigurationValueKind,
-    ConnectionCapabilities as ProtocolConnectionCapabilities, Key as ProtocolKey, SecretPatch,
-    SourceAvailability as ProtocolSourceAvailability,
+    AuthenticationStatus, ConfigurationField, ConfigurationValueKind, Key as ProtocolKey,
+    SecretPatch, SourceAvailability as ProtocolSourceAvailability,
     SourceCapabilities as ProtocolSourceCapabilities, StateFieldQuantizer,
     TargetedStateWriteIdempotencyMode, TargetedStateWritePreconditionMode, Value as ProtocolValue,
     secret_patch, value as protocol_value,
@@ -71,7 +70,6 @@ ON CONFLICT (id) DO UPDATE SET
 provider_id = excluded.provider_id,
 display_name = excluded.display_name,
 status = 'pending',
-capabilities = '{}'::JSONB,
 updated_at = excluded.updated_at
 ",
         )
@@ -220,19 +218,10 @@ FOR UPDATE
             "UPDATE connections
 SET
     status = 'ready',
-    capabilities = $1,
-    capability_revision = capability_revision + 1,
-    updated_at = $2
-WHERE id = $3
+    updated_at = $1
+WHERE id = $2
 ",
         )
-        .bind(encode_connection_capabilities(
-            command
-                .opened
-                .capabilities
-                .as_ref()
-                .expect("validated connection capabilities"),
-        ))
         .bind(command.published_at)
         .bind(command.connection_id)
         .execute(&mut *transaction)
@@ -565,8 +554,7 @@ WHERE id = $2 AND status IN ('waiting', 'input_required')
     async fn list_summaries(&self) -> Result<Vec<ConnectionSummary>, ConnectionPersistenceError> {
         sqlx::query_as::<_, ConnectionSummaryRow>(
             "SELECT
-    id, provider_id, display_name, status, capability_revision,
-    created_at, updated_at
+    id, provider_id, display_name, status, created_at, updated_at
 FROM connections
 WHERE deleted_at IS NULL
 ORDER BY created_at, id
@@ -585,8 +573,7 @@ ORDER BY created_at, id
     ) -> Result<Option<ConnectionSummary>, ConnectionPersistenceError> {
         sqlx::query_as::<_, ConnectionSummaryRow>(
             "SELECT
-    id, provider_id, display_name, status, capability_revision,
-    created_at, updated_at
+    id, provider_id, display_name, status, created_at, updated_at
 FROM connections
 WHERE id = $1 AND deleted_at IS NULL
 ",
@@ -611,8 +598,7 @@ WHERE id = $1 AND deleted_at IS NULL
 SET display_name = $1, updated_at = $2
 WHERE id = $3 AND deleted_at IS NULL
 RETURNING
-    id, provider_id, display_name, status, capability_revision,
-    created_at, updated_at
+    id, provider_id, display_name, status, created_at, updated_at
 ",
         )
         .bind(display_name)
@@ -686,13 +672,10 @@ FOR UPDATE
             "UPDATE connections
 SET
     status = 'pending',
-    capabilities = '{}'::JSONB,
-    capability_revision = capability_revision + 1,
     updated_at = $1
 WHERE id = $2
 RETURNING
-    id, provider_id, display_name, status, capability_revision,
-    created_at, updated_at
+    id, provider_id, display_name, status, created_at, updated_at
 ",
         )
         .bind(command.reconfigured_at)
@@ -1141,9 +1124,6 @@ fn validate_connection_input(command: &CreateConnection) -> Result<(), Connectio
 fn validate_snapshot(
     command: &PublishConnectionSnapshot,
 ) -> Result<(), ConnectionPersistenceError> {
-    if command.opened.capabilities.is_none() {
-        return Err(ConnectionPersistenceError::InvalidConnection);
-    }
     let account_keys = command
         .opened
         .accounts
@@ -1461,21 +1441,6 @@ fn decode_value(value: Value) -> Result<AdapterValue, ConnectionPersistenceError
     }
 }
 
-fn encode_connection_capabilities(capabilities: &ProtocolConnectionCapabilities) -> Value {
-    json!({
-        "referenceLookup": capabilities.reference_lookup.as_ref().map(|lookup| json!({
-            "referenceNamespaces": lookup.reference_namespaces,
-            "maximumBatchSize": lookup.maximum_batch_size,
-        })),
-        "endpointLookup": capabilities.endpoint_lookup.as_ref().map(|lookup| json!({
-            "referenceNamespaces": lookup.reference_namespaces,
-            "coordinateIds": lookup.coordinate_ids,
-            "maximumBatchSize": lookup.maximum_batch_size,
-            "maximumResponseBytes": lookup.maximum_response_bytes,
-        })),
-    })
-}
-
 fn encode_source_capabilities(capabilities: &ProtocolSourceCapabilities) -> Value {
     json!({
         "catalog": capabilities.catalog.as_ref().map(|read| json!({
@@ -1518,7 +1483,6 @@ fn encode_source_capabilities(capabilities: &ProtocolSourceCapabilities) -> Valu
             "maximumBytes": assets.maximum_bytes,
             "contentTypes": assets.content_types,
         })),
-        "coordinateIds": capabilities.coordinates.as_ref().map_or(&[][..], |coordinates| coordinates.coordinate_ids.as_slice()),
         "targetedStateRead": capabilities.targeted_state_read.as_ref().map(|read| json!({
             "maximumFields": read.maximum_fields,
             "maximumResponseBytes": read.maximum_response_bytes,
@@ -1694,7 +1658,6 @@ struct ConnectionSummaryRow {
     provider_id: String,
     display_name: String,
     status: String,
-    capability_revision: i64,
     created_at: OffsetDateTime,
     updated_at: OffsetDateTime,
 }
@@ -1706,7 +1669,6 @@ impl ConnectionSummaryRow {
             provider_id: self.provider_id,
             display_name: self.display_name,
             status: parse_connection_status(&self.status)?,
-            capability_revision: self.capability_revision,
             created_at: self.created_at,
             updated_at: self.updated_at,
         })

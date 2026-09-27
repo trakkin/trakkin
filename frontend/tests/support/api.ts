@@ -26,7 +26,6 @@ export const activeFixtureProvider = {
 export const workspace = {
   id: workspaceId,
   name: "Fixture workspace",
-  status: "active",
   createdAt: timestamp,
   updatedAt: timestamp,
   sources: [{ sourceId, attachedAt: timestamp }],
@@ -37,7 +36,6 @@ export const connection = {
   providerId: "dev.trakkin.fixture",
   displayName: "Fixture account",
   status: "ready",
-  capabilityRevision: 1,
   createdAt: timestamp,
   updatedAt: timestamp,
 };

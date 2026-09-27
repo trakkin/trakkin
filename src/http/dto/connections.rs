@@ -7,10 +7,7 @@ use utoipa::ToSchema;
 
 use crate::{
     application::{
-        adapter_runtime::{
-            AdapterAuthenticationStep, AdapterCallError, AdapterFieldProblem, AdapterRetryAfter,
-            AdapterSourceAvailability, AdapterValue,
-        },
+        adapter_runtime::{AdapterAuthenticationStep, AdapterSourceAvailability, AdapterValue},
         connection::{
             ConnectionDeletionImpact, ConnectionInspection, ConnectionSourceSummary,
             ConnectionStatus, ConnectionSummary, StartedConnectionAuthentication,
@@ -204,7 +201,6 @@ pub struct AuthenticationStepResponse {
     pub prompt: Option<AuthenticationPromptResponse>,
     pub accounts: Vec<AuthenticationAccountResponse>,
     pub retry_after: Option<RetryAfterResponse>,
-    pub error: Option<AdapterCallErrorResponse>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, ToSchema)]
@@ -238,16 +234,6 @@ pub struct AuthenticationAccountResponse {
 pub struct RetryAfterResponse {
     pub seconds: i64,
     pub nanoseconds: i32,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct AdapterCallErrorResponse {
-    pub code: String,
-    pub safe_message: String,
-    pub retryable: bool,
-    pub retry_after: Option<RetryAfterResponse>,
-    pub field_problems: Vec<FieldProblemResponse>,
 }
 
 impl ConnectionInspectionResponse {
@@ -314,7 +300,6 @@ impl AuthenticationStepResponse {
                 seconds: retry_after.seconds,
                 nanoseconds: retry_after.nanos,
             }),
-            error: None,
         }
     }
 
@@ -325,7 +310,6 @@ impl AuthenticationStepResponse {
             prompt: None,
             accounts: Vec::new(),
             retry_after: None,
-            error: None,
         }
     }
 }
@@ -419,41 +403,6 @@ impl From<AuthenticationPrompt> for AuthenticationPromptResponse {
     }
 }
 
-impl From<AdapterRetryAfter> for RetryAfterResponse {
-    fn from(retry_after: AdapterRetryAfter) -> Self {
-        Self {
-            seconds: retry_after.seconds,
-            nanoseconds: retry_after.nanoseconds,
-        }
-    }
-}
-
-impl From<AdapterCallError> for AdapterCallErrorResponse {
-    fn from(error: AdapterCallError) -> Self {
-        Self {
-            code: error.code,
-            safe_message: error.safe_message,
-            retryable: error.retryable,
-            retry_after: error.retry_after.map(RetryAfterResponse::from),
-            field_problems: error
-                .field_problems
-                .into_iter()
-                .map(FieldProblemResponse::from)
-                .collect(),
-        }
-    }
-}
-
-impl From<AdapterFieldProblem> for FieldProblemResponse {
-    fn from(problem: AdapterFieldProblem) -> Self {
-        Self {
-            path: problem.path,
-            code: problem.code,
-            message: problem.message,
-        }
-    }
-}
-
 impl From<FieldProblem> for FieldProblemResponse {
     fn from(problem: FieldProblem) -> Self {
         Self {
@@ -516,7 +465,6 @@ pub struct ConnectionResponse {
     pub provider_id: String,
     pub display_name: String,
     pub status: ConnectionStatusResponse,
-    pub capability_revision: i64,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -537,7 +485,6 @@ impl ConnectionResponse {
             provider_id: summary.provider_id,
             display_name: summary.display_name,
             status: ConnectionStatusResponse::from(summary.status),
-            capability_revision: summary.capability_revision,
             created_at: timestamp(summary.created_at)?,
             updated_at: timestamp(summary.updated_at)?,
         })

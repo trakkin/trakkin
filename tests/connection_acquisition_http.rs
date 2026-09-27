@@ -17,10 +17,7 @@ use trakkin::{
     application::{
         adapter_runtime::AdapterValue,
         connection::ConnectionRepository,
-        facade::{ApplicationFacade, ApplicationInteractions, ApplicationMappingRepositories},
-        mapping_resolution::MappingResolutionService,
-        sync_activity::SyncActivityService,
-        sync_policy::SyncPolicyService,
+        facade::{ApplicationFacade, ApplicationInteractions},
     },
     database::DatabaseRuntime,
     http,
@@ -28,11 +25,6 @@ use trakkin::{
         adapter_process::AdapterProcess,
         catalog_queries::PostgresCatalogQueryRepository,
         connection::{ConnectionMasterKey, PostgresConnectionRepository, ProcessSessionRegistry},
-        mapping_lifecycle::PostgresMappingLifecycleRepository,
-        mapping_queries::PostgresMappingQueryRepository,
-        mapping_resolution::PostgresMappingResolutionRepository,
-        sync_activity::PostgresSyncActivityRepository,
-        sync_policy::PostgresSyncPolicyRepository,
         task_manager::PostgresTaskRepository,
         workspaces::PostgresWorkspaceRepository,
     },
@@ -44,8 +36,7 @@ pub mod support;
 
 use support::{
     CONNECTION_ID, SOURCE_ID, StaticBinaryAssetInteraction, StaticConnectionInteraction,
-    StaticReferenceLookupInteraction, assert_closed_error, request, seed_source,
-    static_provider_registry, timestamp,
+    assert_closed_error, request, seed_source, static_provider_registry, timestamp,
 };
 
 #[tokio::test]
@@ -58,26 +49,12 @@ async fn connection_and_acquisition_routes_are_closed_bounded_and_secret_safe() 
     let application = ApplicationFacade::new(
         PostgresWorkspaceRepository::new(database.pool()),
         PostgresCatalogQueryRepository::new(database.pool()),
-        ApplicationMappingRepositories::new(
-            PostgresMappingQueryRepository::new(database.pool()),
-            PostgresMappingLifecycleRepository::new(database.pool()),
-        ),
         PostgresTaskRepository::new(database.pool()),
         PostgresConnectionRepository::new(database.pool(), ConnectionMasterKey::new([7_u8; 32])),
         ProcessSessionRegistry::<AdapterProcess>::default(),
         ApplicationInteractions::new(
             Arc::new(StaticConnectionInteraction),
             Arc::new(StaticBinaryAssetInteraction),
-            Arc::new(StaticReferenceLookupInteraction),
-            Arc::new(MappingResolutionService::new(
-                PostgresMappingResolutionRepository::new(database.pool()),
-            )),
-            Arc::new(SyncPolicyService::new(PostgresSyncPolicyRepository::new(
-                database.pool(),
-            ))),
-            Arc::new(SyncActivityService::new(
-                PostgresSyncActivityRepository::new(database.pool()),
-            )),
             static_provider_registry(),
         ),
     );
@@ -409,52 +386,6 @@ async fn connection_and_acquisition_routes_are_closed_bounded_and_secret_safe() 
     .await;
     assert_eq!(attached.0, StatusCode::OK);
 
-    let policy_path =
-        format!("/api/v1/workspaces/{workspace_id}/sources/{SOURCE_ID}/mapping-root-policy");
-    let default_policy = request(
-        &router,
-        Request::get(&policy_path)
-            .body(Body::empty())
-            .expect("mapping root policy request is built"),
-    )
-    .await;
-    assert_eq!(default_policy.0, StatusCode::OK);
-    assert!(default_policy.1["namespaces"].is_null());
-    assert!(default_policy.1["availableNamespaces"].is_array());
-
-    let missing_namespaces = request(
-        &router,
-        Request::put(&policy_path)
-            .header("content-type", "application/json")
-            .body(Body::from("{}"))
-            .expect("mapping root policy request is built"),
-    )
-    .await;
-    assert_eq!(missing_namespaces.0, StatusCode::BAD_REQUEST);
-    assert_closed_error(&missing_namespaces.1, "invalid_request");
-
-    let disabled_policy = request(
-        &router,
-        Request::put(&policy_path)
-            .header("content-type", "application/json")
-            .body(Body::from(r#"{"namespaces":[]}"#))
-            .expect("mapping root policy request is built"),
-    )
-    .await;
-    assert_eq!(disabled_policy.0, StatusCode::OK);
-    assert_eq!(disabled_policy.1["namespaces"], json!([]));
-
-    let reset_policy = request(
-        &router,
-        Request::put(&policy_path)
-            .header("content-type", "application/json")
-            .body(Body::from(r#"{"namespaces":null}"#))
-            .expect("mapping root policy request is built"),
-    )
-    .await;
-    assert_eq!(reset_policy.0, StatusCode::OK);
-    assert!(reset_policy.1["namespaces"].is_null());
-
     let first_page = request(
         &router,
         Request::get(format!(
@@ -503,36 +434,6 @@ async fn connection_and_acquisition_routes_are_closed_bounded_and_secret_safe() 
         .expect("asset body is collected")
         .to_bytes();
     assert_eq!(asset_body.as_ref(), b"poster-bytes");
-
-    let lookup = request(
-        &router,
-        Request::post(format!(
-            "/api/v1/workspaces/{workspace_id}/sources/{SOURCE_ID}/reference-lookups"
-        ))
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({
-                "references": [
-                    {"namespace": "example.media", "value": [1]},
-                    {"namespace": "example.media", "value": [2]},
-                    {"namespace": "example.media", "value": [3]},
-                    {"namespace": "example.media", "value": [4]}
-                ]
-            })
-            .to_string(),
-        ))
-        .expect("reference lookup request is built"),
-    )
-    .await;
-    assert_eq!(lookup.0, StatusCode::OK);
-    assert_eq!(lookup.1[0]["outcome"]["kind"], "matched");
-    let lookup_candidate =
-        &lookup.1[0]["outcome"]["candidate"]["providerItem"]["portableReferenceCandidates"][0];
-    assert_eq!(lookup_candidate["providerRecommended"], true);
-    assert_eq!(lookup_candidate["effectiveMappingRoot"], true);
-    assert_eq!(lookup.1[1]["outcome"]["kind"], "notFound");
-    assert_eq!(lookup.1[2]["outcome"]["kind"], "ambiguous");
-    assert_eq!(lookup.1[3]["outcome"]["kind"], "unsupported");
 
     let state = request(
         &router,

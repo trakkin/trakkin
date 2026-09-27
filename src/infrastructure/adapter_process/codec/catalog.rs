@@ -1,15 +1,11 @@
 use trakkin_provider_sdk::v1::{
-    CoordinateBacking as ProtoCoordinateBacking, PortableEndpoint as ProtoPortableEndpoint,
     ReadCatalogRequest, ReadCatalogResponse as ProtoCatalogReadEvent, read_catalog_response,
-    subject_reference,
 };
 
 use crate::{
     application::adapter_runtime::{AdapterReadEvent, ReadAdapterSource},
     domain::acquisition::{
-        BinaryAssetReference, CatalogBatch, CatalogItem, CatalogRelation, CoordinateBacking,
-        CoordinateBinding, CoordinateBindingKey, CoordinateSubject, PortableReference,
-        ProviderItem,
+        BinaryAssetReference, CatalogBatch, CatalogItem, CatalogRelation, ProviderItem,
     },
 };
 
@@ -67,16 +63,6 @@ pub(in super::super) fn map_catalog_event(
 fn map_catalog_batch(
     batch: trakkin_provider_sdk::v1::CatalogBatch,
 ) -> Result<CatalogBatch, AdapterProcessError> {
-    let coordinate_binding_upserts = batch
-        .coordinate_binding_upserts
-        .into_iter()
-        .map(map_coordinate_binding)
-        .collect::<Result<_, _>>()?;
-    let coordinate_binding_deletes = batch
-        .coordinate_binding_deletes
-        .into_iter()
-        .map(map_coordinate_binding_key)
-        .collect::<Result<_, _>>()?;
     Ok(CatalogBatch::new(
         batch.sequence,
         batch
@@ -99,74 +85,7 @@ fn map_catalog_batch(
             .into_iter()
             .map(|key| map_catalog_relation_key(Some(key)))
             .collect::<Result<_, _>>()?,
-    )
-    .with_coordinate_bindings(coordinate_binding_upserts, coordinate_binding_deletes))
-}
-
-pub(super) fn map_coordinate_binding(
-    binding: trakkin_provider_sdk::v1::CoordinateBinding,
-) -> Result<CoordinateBinding, AdapterProcessError> {
-    let backing = match ProtoCoordinateBacking::try_from(binding.backing)
-        .map_err(|_| AdapterProcessError::InvalidResponse("invalid coordinate backing"))?
-    {
-        ProtoCoordinateBacking::Materialized => CoordinateBacking::Materialized,
-        ProtoCoordinateBacking::Virtual => CoordinateBacking::Virtual,
-        ProtoCoordinateBacking::Aggregate => CoordinateBacking::Aggregate,
-        ProtoCoordinateBacking::Unspecified => {
-            return Err(AdapterProcessError::InvalidResponse(
-                "coordinate backing is unspecified",
-            ));
-        }
-    };
-    CoordinateBinding::new(
-        map_coordinate_binding_parts(binding.endpoint, binding.subject)?,
-        backing,
-        binding.evidence_revision,
-    )
-    .map_err(|_| AdapterProcessError::InvalidResponse("invalid coordinate binding"))
-}
-
-fn map_coordinate_binding_key(
-    binding: trakkin_provider_sdk::v1::CoordinateBindingKey,
-) -> Result<CoordinateBindingKey, AdapterProcessError> {
-    map_coordinate_binding_parts(binding.endpoint, binding.subject)
-}
-
-fn map_coordinate_binding_parts(
-    endpoint: Option<ProtoPortableEndpoint>,
-    subject: Option<trakkin_provider_sdk::v1::SubjectReference>,
-) -> Result<CoordinateBindingKey, AdapterProcessError> {
-    let endpoint = map_coordinate_endpoint(endpoint)?;
-    let subject = match subject.and_then(|subject| subject.subject).ok_or(
-        AdapterProcessError::InvalidResponse("coordinate subject is missing"),
-    )? {
-        subject_reference::Subject::ProviderItemKey(key) => {
-            CoordinateSubject::ProviderItem(map_provider_item_key(Some(key))?)
-        }
-        subject_reference::Subject::CatalogRelationKey(key) => {
-            CoordinateSubject::CatalogRelation(map_catalog_relation_key(Some(key))?)
-        }
-    };
-    Ok(CoordinateBindingKey::new(endpoint, subject))
-}
-
-fn map_coordinate_endpoint(
-    endpoint: Option<ProtoPortableEndpoint>,
-) -> Result<trakkin_mapping::PortableEndpoint, AdapterProcessError> {
-    let endpoint = endpoint.ok_or(AdapterProcessError::InvalidResponse(
-        "portable endpoint is missing",
-    ))?;
-    let reference = endpoint
-        .reference
-        .ok_or(AdapterProcessError::InvalidResponse(
-            "portable endpoint reference is missing",
-        ))?;
-    trakkin_mapping::PortableEndpoint::from_parts(
-        &reference.namespace,
-        &reference.value,
-        Some(&endpoint.selector),
-    )
-    .map_err(|_| AdapterProcessError::InvalidResponse("invalid portable endpoint"))
+    ))
 }
 
 fn map_catalog_item(
@@ -183,22 +102,6 @@ pub(super) fn map_provider_item(
         map_domain_term(item.kind)?,
         item.display_name,
         map_attributes(item.attributes)?,
-        item.portable_reference_candidates
-            .into_iter()
-            .map(|reference| {
-                PortableReference::new(reference.namespace, reference.value).map_err(|_| {
-                    AdapterProcessError::InvalidResponse("invalid portable reference candidate")
-                })
-            })
-            .collect::<Result<_, _>>()?,
-        item.recommended_mapping_roots
-            .into_iter()
-            .map(|reference| {
-                PortableReference::new(reference.namespace, reference.value).map_err(|_| {
-                    AdapterProcessError::InvalidResponse("invalid recommended mapping root")
-                })
-            })
-            .collect::<Result<_, _>>()?,
         item.assets
             .into_iter()
             .map(|asset| {

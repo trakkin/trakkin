@@ -76,10 +76,6 @@ test("preserves healthy sources and keeps mobile inspection in a persistent lowe
   await page.getByRole("button", { name: "Inspect First entry" }).click();
   const details = page.getByRole("region", { name: "Catalog details for First entry" });
   await expect(details).toBeVisible();
-  await expect(details.getByText("example.media:media/first", { exact: true })).toBeVisible();
-  await expect(details.getByText("Provider recommended", { exact: true })).toBeVisible();
-  await expect(details.getByText("Effective root", { exact: true })).toBeVisible();
-  await expect(details.getByText("Reference 1", { exact: true })).toHaveCount(0);
   await expect(details.getByText("Release note", { exact: true })).toBeVisible();
   await expect(details.getByText("A quiet first entry.", { exact: true })).toBeVisible();
   await expect(details.getByText("Sample count", { exact: true })).toBeVisible();

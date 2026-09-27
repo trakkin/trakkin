@@ -20,8 +20,6 @@ pub enum TaskKind {
     StateRead,
     CatalogReset,
     StateReset,
-    SyncAction,
-    SyncActionReconciliation,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -37,15 +35,6 @@ pub enum TaskDefinition {
     Reset {
         source_id: Uuid,
         stream: SourceStream,
-    },
-    SyncAction {
-        action_id: Uuid,
-        receiver_source_id: Uuid,
-    },
-    SyncActionReconciliation {
-        action_id: Uuid,
-        receiver_source_id: Uuid,
-        write_task_attempt_id: Uuid,
     },
 }
 

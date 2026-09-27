@@ -1,9 +1,6 @@
-use std::collections::HashSet;
-
 use serde_json::Value;
 use thiserror::Error;
 use time::OffsetDateTime;
-use trakkin_mapping::PortableEndpoint;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct ProviderItemKey {
@@ -114,32 +111,6 @@ impl Term {
     }
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub struct PortableReference {
-    namespace: String,
-    value: Vec<u8>,
-}
-
-impl PortableReference {
-    pub fn new(
-        namespace: impl Into<String>,
-        value: impl Into<Vec<u8>>,
-    ) -> Result<Self, AcquisitionValueError> {
-        let namespace = namespace.into();
-        let value = value.into();
-        validate_namespaced_value(&namespace, &value)?;
-        Ok(Self { namespace, value })
-    }
-
-    pub fn namespace(&self) -> &str {
-        &self.namespace
-    }
-
-    pub fn value(&self) -> &[u8] {
-        &self.value
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BinaryAssetReference {
     key: BinaryAssetKey,
@@ -166,8 +137,6 @@ pub struct ProviderItem {
     kind: Term,
     display_name: String,
     attributes: Value,
-    portable_reference_candidates: Vec<PortableReference>,
-    recommended_mapping_roots: Vec<PortableReference>,
     binary_assets: Vec<BinaryAssetReference>,
 }
 
@@ -177,8 +146,6 @@ impl ProviderItem {
         kind: Term,
         display_name: impl Into<String>,
         attributes: Value,
-        portable_reference_candidates: Vec<PortableReference>,
-        recommended_mapping_roots: Vec<PortableReference>,
         binary_assets: Vec<BinaryAssetReference>,
     ) -> Result<Self, AcquisitionValueError> {
         let display_name = display_name.into();
@@ -188,24 +155,11 @@ impl ProviderItem {
         if !attributes.is_object() {
             return Err(AcquisitionValueError::AttributesMustBeObject);
         }
-        let candidates = portable_reference_candidates.iter().collect::<HashSet<_>>();
-        if candidates.len() != portable_reference_candidates.len() {
-            return Err(AcquisitionValueError::DuplicatePortableReferenceCandidate);
-        }
-        let roots = recommended_mapping_roots.iter().collect::<HashSet<_>>();
-        if roots.len() != recommended_mapping_roots.len() {
-            return Err(AcquisitionValueError::DuplicateRecommendedMappingRoot);
-        }
-        if !roots.is_subset(&candidates) {
-            return Err(AcquisitionValueError::RecommendedMappingRootNotCandidate);
-        }
         Ok(Self {
             key,
             kind,
             display_name,
             attributes,
-            portable_reference_candidates,
-            recommended_mapping_roots,
             binary_assets,
         })
     }
@@ -226,14 +180,6 @@ impl ProviderItem {
         &self.attributes
     }
 
-    pub fn portable_reference_candidates(&self) -> &[PortableReference] {
-        &self.portable_reference_candidates
-    }
-
-    pub fn recommended_mapping_roots(&self) -> &[PortableReference] {
-        &self.recommended_mapping_roots
-    }
-
     pub fn binary_assets(&self) -> &[BinaryAssetReference] {
         &self.binary_assets
     }
@@ -250,20 +196,9 @@ impl CatalogItem {
         kind: Term,
         display_name: impl Into<String>,
         attributes: Value,
-        portable_reference_candidates: Vec<PortableReference>,
-        recommended_mapping_roots: Vec<PortableReference>,
         binary_assets: Vec<BinaryAssetReference>,
     ) -> Result<Self, AcquisitionValueError> {
-        ProviderItem::new(
-            key,
-            kind,
-            display_name,
-            attributes,
-            portable_reference_candidates,
-            recommended_mapping_roots,
-            binary_assets,
-        )
-        .map(Self::from)
+        ProviderItem::new(key, kind, display_name, attributes, binary_assets).map(Self::from)
     }
 
     pub fn key(&self) -> &ProviderItemKey {
@@ -280,14 +215,6 @@ impl CatalogItem {
 
     pub fn attributes(&self) -> &Value {
         self.provider_item.attributes()
-    }
-
-    pub fn portable_reference_candidates(&self) -> &[PortableReference] {
-        self.provider_item.portable_reference_candidates()
-    }
-
-    pub fn recommended_mapping_roots(&self) -> &[PortableReference] {
-        self.provider_item.recommended_mapping_roots()
     }
 
     pub fn binary_assets(&self) -> &[BinaryAssetReference] {
@@ -358,75 +285,6 @@ impl CatalogRelation {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CoordinateBacking {
-    Materialized,
-    Virtual,
-    Aggregate,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum CoordinateSubject {
-    ProviderItem(ProviderItemKey),
-    CatalogRelation(CatalogRelationKey),
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CoordinateBindingKey {
-    endpoint: PortableEndpoint,
-    subject: CoordinateSubject,
-}
-
-impl CoordinateBindingKey {
-    pub fn new(endpoint: PortableEndpoint, subject: CoordinateSubject) -> Self {
-        Self { endpoint, subject }
-    }
-
-    pub fn endpoint(&self) -> &PortableEndpoint {
-        &self.endpoint
-    }
-
-    pub fn subject(&self) -> &CoordinateSubject {
-        &self.subject
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CoordinateBinding {
-    key: CoordinateBindingKey,
-    backing: CoordinateBacking,
-    evidence_revision: Vec<u8>,
-}
-
-impl CoordinateBinding {
-    pub fn new(
-        key: CoordinateBindingKey,
-        backing: CoordinateBacking,
-        evidence_revision: Vec<u8>,
-    ) -> Result<Self, AcquisitionValueError> {
-        if evidence_revision.is_empty() {
-            return Err(AcquisitionValueError::EmptyCoordinateEvidenceRevision);
-        }
-        Ok(Self {
-            key,
-            backing,
-            evidence_revision,
-        })
-    }
-
-    pub fn key(&self) -> &CoordinateBindingKey {
-        &self.key
-    }
-
-    pub fn backing(&self) -> CoordinateBacking {
-        self.backing
-    }
-
-    pub fn evidence_revision(&self) -> &[u8] {
-        &self.evidence_revision
-    }
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct CatalogBatch {
     sequence: u64,
@@ -434,8 +292,6 @@ pub struct CatalogBatch {
     item_deletes: Vec<ProviderItemKey>,
     relation_upserts: Vec<CatalogRelation>,
     relation_deletes: Vec<CatalogRelationKey>,
-    coordinate_binding_upserts: Vec<CoordinateBinding>,
-    coordinate_binding_deletes: Vec<CoordinateBindingKey>,
 }
 
 impl CatalogBatch {
@@ -452,19 +308,7 @@ impl CatalogBatch {
             item_deletes,
             relation_upserts,
             relation_deletes,
-            coordinate_binding_upserts: Vec::new(),
-            coordinate_binding_deletes: Vec::new(),
         }
-    }
-
-    pub fn with_coordinate_bindings(
-        mut self,
-        upserts: Vec<CoordinateBinding>,
-        deletes: Vec<CoordinateBindingKey>,
-    ) -> Self {
-        self.coordinate_binding_upserts = upserts;
-        self.coordinate_binding_deletes = deletes;
-        self
     }
 
     pub fn sequence(&self) -> u64 {
@@ -485,14 +329,6 @@ impl CatalogBatch {
 
     pub fn relation_deletes(&self) -> &[CatalogRelationKey] {
         &self.relation_deletes
-    }
-
-    pub fn coordinate_binding_upserts(&self) -> &[CoordinateBinding] {
-        &self.coordinate_binding_upserts
-    }
-
-    pub fn coordinate_binding_deletes(&self) -> &[CoordinateBindingKey] {
-        &self.coordinate_binding_deletes
     }
 }
 
@@ -647,14 +483,6 @@ pub enum AcquisitionValueError {
     EmptyDisplayName,
     #[error("attributes must be a JSON object")]
     AttributesMustBeObject,
-    #[error("portable reference candidates must be unique")]
-    DuplicatePortableReferenceCandidate,
-    #[error("recommended mapping roots must be unique")]
-    DuplicateRecommendedMappingRoot,
-    #[error("recommended mapping roots must also be portable reference candidates")]
-    RecommendedMappingRootNotCandidate,
     #[error("provider revision must not be empty")]
     EmptyProviderRevision,
-    #[error("coordinate evidence revision must not be empty")]
-    EmptyCoordinateEvidenceRevision,
 }

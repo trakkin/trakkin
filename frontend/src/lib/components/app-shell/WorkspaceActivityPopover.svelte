@@ -138,10 +138,6 @@ function taskTitle(task: TaskRun): string {
       return "catalog reset";
     case "stateReset":
       return "state reset";
-    case "syncAction":
-      return "synchronization action";
-    case "syncActionReconciliation":
-      return "synchronization reconciliation";
   }
 }
 

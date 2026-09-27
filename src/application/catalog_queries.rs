@@ -12,7 +12,6 @@ pub type CatalogQueryFuture<'a, T, E> = Pin<Box<dyn Future<Output = Result<T, E>
 pub struct CatalogEntry {
     pub relation: CatalogRelation,
     pub item: Option<CatalogItem>,
-    pub effective_mapping_roots: Vec<crate::domain::acquisition::PortableReference>,
     pub has_children: bool,
 }
 

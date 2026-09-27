@@ -44,10 +44,6 @@ pub enum AdapterProcessError {
     InvalidOperationId,
     #[error("adapter read request is invalid")]
     InvalidReadRequest,
-    #[error("adapter portable-reference lookup request is invalid")]
-    InvalidLookupRequest,
-    #[error("adapter portable-endpoint lookup request is invalid")]
-    InvalidEndpointLookupRequest,
     #[error("adapter targeted state-read request is invalid")]
     InvalidTargetedStateReadRequest,
     #[error("adapter targeted state-write request is invalid")]

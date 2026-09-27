@@ -937,12 +937,6 @@ fn validate_batch_uniqueness(batch: &CatalogBatch) -> Result<(), PublicationErro
         if !item_keys.insert(item.key().clone()) {
             return duplicate_staging_key("provider item");
         }
-        let mut references = HashSet::new();
-        for reference in item.portable_reference_candidates() {
-            if !references.insert(reference.clone()) {
-                return duplicate_staging_key("portable reference");
-            }
-        }
         let mut assets = HashSet::new();
         for asset in item.binary_assets() {
             if !assets.insert(asset.key().clone()) {
@@ -1108,24 +1102,6 @@ row_ordinal = excluded.row_ordinal
     .execute(&mut **transaction)
     .await?;
 
-    for reference in item.portable_reference_candidates() {
-        sqlx::query(
-            "INSERT INTO staged_catalog_item_references (
-    attempt_id, item_key_namespace, item_key_value,
-    reference_namespace, reference_value, recommended_mapping_root
-)
-VALUES ($1, $2, $3, $4, $5, $6)
-",
-        )
-        .bind(attempt_id)
-        .bind(item.key().namespace())
-        .bind(item.key().value())
-        .bind(reference.namespace())
-        .bind(reference.value())
-        .bind(item.recommended_mapping_roots().contains(reference))
-        .execute(&mut **transaction)
-        .await?;
-    }
     for asset in item.binary_assets() {
         sqlx::query(
             "INSERT INTO staged_catalog_assets (
@@ -1187,16 +1163,6 @@ async fn clear_staged_item_children(
     attempt_id: Uuid,
     key: &ProviderItemKey,
 ) -> Result<(), PublicationError> {
-    sqlx::query(
-        "DELETE FROM staged_catalog_item_references
-WHERE attempt_id = $1 AND item_key_namespace = $2 AND item_key_value = $3
-",
-    )
-    .bind(attempt_id)
-    .bind(key.namespace())
-    .bind(key.value())
-    .execute(&mut **transaction)
-    .await?;
     sqlx::query(
         "DELETE FROM staged_catalog_assets
 WHERE attempt_id = $1 AND item_key_namespace = $2 AND item_key_value = $3
@@ -1513,22 +1479,6 @@ WHERE attempt_id = $4 AND operation = 'upsert'
     .execute(&mut **transaction)
     .await?;
     sqlx::query(
-        "INSERT INTO catalog_item_references (
-    source_id, item_key_namespace, item_key_value,
-    reference_namespace, reference_value, recommended_mapping_root
-)
-SELECT
-    $1 AS source_id, item_key_namespace, item_key_value,
-    reference_namespace, reference_value, recommended_mapping_root
-FROM staged_catalog_item_references
-WHERE attempt_id = $2
-",
-    )
-    .bind(source_id)
-    .bind(command.attempt_id)
-    .execute(&mut **transaction)
-    .await?;
-    sqlx::query(
         "INSERT INTO catalog_assets (
     source_id, item_key_namespace, item_key_value,
     asset_key_namespace, asset_key_value, kind_namespace, kind_name,
@@ -1611,21 +1561,6 @@ WHERE
     .await?;
 
     sqlx::query(
-        "DELETE FROM catalog_item_references AS published
-USING staged_catalog_items AS staged
-WHERE
-    staged.attempt_id = $1
-    AND staged.operation = 'upsert'
-    AND published.source_id = $2
-    AND published.item_key_namespace = staged.key_namespace
-    AND published.item_key_value = staged.key_value
-",
-    )
-    .bind(command.attempt_id)
-    .bind(source_id)
-    .execute(&mut **transaction)
-    .await?;
-    sqlx::query(
         "DELETE FROM catalog_assets AS published
 USING staged_catalog_items AS staged
 WHERE
@@ -1663,22 +1598,6 @@ updated_at = excluded.updated_at
     .bind(source_id)
     .bind(command.publication_id)
     .bind(command.published_at)
-    .bind(command.attempt_id)
-    .execute(&mut **transaction)
-    .await?;
-    sqlx::query(
-        "INSERT INTO catalog_item_references (
-    source_id, item_key_namespace, item_key_value,
-    reference_namespace, reference_value, recommended_mapping_root
-)
-SELECT
-    $1 AS source_id, item_key_namespace, item_key_value,
-    reference_namespace, reference_value, recommended_mapping_root
-FROM staged_catalog_item_references
-WHERE attempt_id = $2
-",
-    )
-    .bind(source_id)
     .bind(command.attempt_id)
     .execute(&mut **transaction)
     .await?;

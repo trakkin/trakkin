@@ -9,17 +9,6 @@ export type CatalogRelation = components["schemas"]["CatalogRelationResponse"];
 export type ProviderKey = components["schemas"]["KeyResponse"];
 export type Term = components["schemas"]["TermResponse"];
 
-export type ExternalReference = components["schemas"]["PortableReferenceResponse"] & { portable: boolean };
-export type MappingInterface = {
-  formatRevision: number;
-  term: Term | null;
-  semanticRole: Term | null;
-  subjectScope: Term | null;
-  componentInterface: Term | null;
-  selectionModes: Term[];
-  contractHash: number[];
-};
-
 export type CatalogPageOptions = {
   cursor?: string;
   limit?: number;
@@ -61,30 +50,6 @@ export function formatProviderKey(key: ProviderKey | null): string {
     if (decoded && [...decoded].every((character) => !/\p{C}/u.test(character))) return decoded;
   } catch {}
   return `${key.namespace}:${bytes.slice(0, 16)}${bytes.length > 16 ? "..." : ""}`;
-}
-
-export function formatPortableReference(reference: components["schemas"]["PortableReferenceResponse"]): string {
-  const value = reference.value
-    .map((byte) =>
-      isPortableReferenceRawByte(byte)
-        ? String.fromCharCode(byte)
-        : `%${byte.toString(16).toUpperCase().padStart(2, "0")}`,
-    )
-    .join("");
-  return `${reference.namespace}:${value}`;
-}
-
-function isPortableReferenceRawByte(byte: number): boolean {
-  return (
-    (byte >= 0x30 && byte <= 0x39) ||
-    (byte >= 0x41 && byte <= 0x5a) ||
-    (byte >= 0x61 && byte <= 0x7a) ||
-    byte === 0x2d ||
-    byte === 0x2e ||
-    byte === 0x2f ||
-    byte === 0x5f ||
-    byte === 0x7e
-  );
 }
 
 function hexBytes(bytes: number[]): string {

@@ -2509,19 +2509,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde_yaml"
-version = "0.9.34+deprecated"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a8b1a1a2ebf674015cc02edccce75287f1a0130d394307b36743c2f5d504b47"
-dependencies = [
- "indexmap",
- "itoa",
- "ryu",
- "serde",
- "unsafe-libyaml",
-]
-
-[[package]]
 name = "sha1"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2644,15 +2631,6 @@ checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "spdx"
-version = "0.13.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "081670c233dfbed55690cc0cd38424e0e24ac1b2673d0b408b3f7b684738dfa9"
-dependencies = [
- "smallvec",
 ]
 
 [[package]]
@@ -3365,7 +3343,6 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "trait-variant",
- "trakkin-mapping",
  "trakkin-provider-sdk",
  "url",
  "utoipa",
@@ -3373,23 +3350,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "trakkin-mapping"
-version = "0.0.0"
-source = "git+https://github.com/trakkin/trakkin-contracts.git?rev=0c645313e5889782ecda60e04ad7e39af5c5dc7b#0c645313e5889782ecda60e04ad7e39af5c5dc7b"
-dependencies = [
- "semver",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha2 0.10.9",
- "spdx",
- "thiserror",
-]
-
-[[package]]
 name = "trakkin-provider-sdk"
 version = "0.0.0"
-source = "git+https://github.com/trakkin/trakkin-contracts.git?rev=0c645313e5889782ecda60e04ad7e39af5c5dc7b#0c645313e5889782ecda60e04ad7e39af5c5dc7b"
+source = "git+https://github.com/trakkin/trakkin-contracts.git?rev=c0e0450bfac6a68b1be5dce4de5292b29d1d4263#c0e0450bfac6a68b1be5dce4de5292b29d1d4263"
 dependencies = [
  "prost",
  "prost-types",
@@ -3404,7 +3367,6 @@ dependencies = [
  "tonic-prost",
  "tonic-prost-build",
  "tracing",
- "trakkin-mapping",
 ]
 
 [[package]]
@@ -3473,12 +3435,6 @@ dependencies = [
  "crypto-common 0.1.7",
  "subtle",
 ]
-
-[[package]]
-name = "unsafe-libyaml"
-version = "0.2.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
 
 [[package]]
 name = "untrusted"

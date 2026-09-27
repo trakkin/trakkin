@@ -1,7 +1,4 @@
-pub(super) mod activity;
-pub(super) mod mappings;
 pub(super) mod sources;
-pub(super) mod synchronization;
 pub(super) mod tasks;
 
 use axum::{
@@ -34,11 +31,8 @@ pub(super) fn router() -> Router<HttpState> {
             get(list_workspaces).post(create_workspace),
         )
         .route("/api/v1/workspaces/{workspace_id}", get(get_workspace))
-        .merge(synchronization::router())
-        .merge(mappings::router())
         .merge(sources::router())
         .merge(tasks::router())
-        .merge(activity::router())
 }
 
 #[utoipa::path(get, path = "/api/v1/workspaces", responses((status = 200, body = [WorkspaceResponse]), (status = 500, body = ErrorResponse)), tag = "workspaces")]

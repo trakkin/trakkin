@@ -13,7 +13,6 @@ use crate::application::{
         TaskFailure, TaskKind, TaskManagerFuture, TaskRepository, TaskSnapshot, TaskStatus,
     },
 };
-use crate::infrastructure::sync_execution::reduce_sync_run;
 
 #[derive(Clone)]
 pub struct PostgresTaskRepository {
@@ -194,7 +193,6 @@ WHERE
         let mut transaction = self.pool.begin().await?;
         let task = lock_task(&mut transaction, command.task_id).await?;
         let status = parse_status(&task.status)?;
-        let mut sync_run_reduction = None;
         let disposition = match status {
             TaskStatus::Queued => {
                 ensure_cancellation_supported(&task)?;
@@ -210,30 +208,6 @@ WHERE id = $2
                 .bind(command.task_id)
                 .execute(&mut *transaction)
                 .await?;
-                if task.kind == "sync_action" {
-                    let run_id = sqlx::query_scalar::<_, Uuid>(
-                        "UPDATE sync_actions
-SET status = 'cancelled', finished_at = $1, updated_at = $1
-FROM sync_action_tasks
-WHERE
-    sync_action_tasks.task_id = $2
-    AND sync_actions.id = sync_action_tasks.action_id
-    AND sync_actions.status IN ('queued', 'retryable_failure')
-RETURNING sync_actions.run_id
-",
-                    )
-                    .bind(command.requested_at)
-                    .bind(command.task_id)
-                    .fetch_optional(&mut *transaction)
-                    .await?
-                    .ok_or(TaskManagerError::InvalidCompletion)?;
-                    let reduction =
-                        reduce_sync_run(&mut transaction, run_id, command.requested_at).await?;
-                    if !reduction.updated {
-                        return Err(TaskManagerError::InvalidCompletion);
-                    }
-                    sync_run_reduction = Some(reduction);
-                }
                 CancellationDisposition::CancelledBeforeStart
             }
             TaskStatus::Running => {
@@ -255,9 +229,6 @@ WHERE id = $2
             _ => return Err(TaskManagerError::InvalidTaskStatus(task.status)),
         };
         transaction.commit().await?;
-        if let Some(reduction) = sync_run_reduction {
-            reduction.record_outcome();
-        }
         Ok(disposition)
     }
 
@@ -463,17 +434,9 @@ FOR SHARE
         .fetch_optional(&mut **transaction)
         .await?
         .ok_or(TaskManagerError::ResourceUnavailable("connection"))?,
-        TaskDefinition::Read { source_id, .. }
-        | TaskDefinition::Reset { source_id, .. }
-        | TaskDefinition::SyncAction {
-            receiver_source_id: source_id,
-            ..
-        }
-        | TaskDefinition::SyncActionReconciliation {
-            receiver_source_id: source_id,
-            ..
-        } => sqlx::query_scalar::<_, Uuid>(
-            "SELECT sources.connection_id
+        TaskDefinition::Read { source_id, .. } | TaskDefinition::Reset { source_id, .. } => {
+            sqlx::query_scalar::<_, Uuid>(
+                "SELECT sources.connection_id
 FROM sources
 INNER JOIN connections ON connections.id = sources.connection_id
 WHERE
@@ -483,11 +446,12 @@ WHERE
     AND connections.deleted_at IS NULL
 FOR SHARE OF connections
 ",
-        )
-        .bind(source_id)
-        .fetch_optional(&mut **transaction)
-        .await?
-        .ok_or(TaskManagerError::ResourceUnavailable("source"))?,
+            )
+            .bind(source_id)
+            .fetch_optional(&mut **transaction)
+            .await?
+            .ok_or(TaskManagerError::ResourceUnavailable("source"))?
+        }
     };
     if let (Some(workspace_id), Some(source_id)) = (workspace_id, task_source_id(definition)) {
         let attached = sqlx::query_scalar::<_, bool>(
@@ -554,43 +518,6 @@ VALUES ($1, $2, $3)
             .execute(&mut **transaction)
             .await?;
         }
-        TaskDefinition::SyncAction {
-            action_id,
-            receiver_source_id,
-        } => {
-            sqlx::query(
-                "INSERT INTO sync_action_tasks (task_id, action_id, receiver_source_id)
-VALUES ($1, $2, $3)
-",
-            )
-            .bind(task_id)
-            .bind(action_id)
-            .bind(receiver_source_id)
-            .execute(&mut **transaction)
-            .await?;
-        }
-        TaskDefinition::SyncActionReconciliation {
-            action_id,
-            receiver_source_id,
-            write_task_attempt_id,
-        } => {
-            sqlx::query(
-                "INSERT INTO sync_action_reconciliation_tasks (
-    task_id,
-    action_id,
-    receiver_source_id,
-    write_task_attempt_id
-)
-VALUES ($1, $2, $3, $4)
-",
-            )
-            .bind(task_id)
-            .bind(action_id)
-            .bind(receiver_source_id)
-            .bind(write_task_attempt_id)
-            .execute(&mut **transaction)
-            .await?;
-        }
     }
     Ok(())
 }
@@ -645,39 +572,6 @@ WHERE task_id = $1
                 stream: parse_stream(&detail.stream_kind)?,
             })
         }
-        "sync_action" => {
-            let detail = sqlx::query_as::<_, SyncActionTaskRow>(
-                "SELECT action_id, receiver_source_id
-FROM sync_action_tasks
-WHERE task_id = $1
-",
-            )
-            .bind(task_id)
-            .fetch_optional(&mut **transaction)
-            .await?
-            .ok_or(TaskManagerError::MissingTaskDetail)?;
-            Ok(TaskDefinition::SyncAction {
-                action_id: detail.action_id,
-                receiver_source_id: detail.receiver_source_id,
-            })
-        }
-        "sync_action_reconciliation" => {
-            let detail = sqlx::query_as::<_, SyncActionReconciliationTaskRow>(
-                "SELECT action_id, receiver_source_id, write_task_attempt_id
-FROM sync_action_reconciliation_tasks
-WHERE task_id = $1
-",
-            )
-            .bind(task_id)
-            .fetch_optional(&mut **transaction)
-            .await?
-            .ok_or(TaskManagerError::MissingTaskDetail)?;
-            Ok(TaskDefinition::SyncActionReconciliation {
-                action_id: detail.action_id,
-                receiver_source_id: detail.receiver_source_id,
-                write_task_attempt_id: detail.write_task_attempt_id,
-            })
-        }
         _ => Err(TaskManagerError::UnknownTaskKind(kind.to_owned())),
     }
 }
@@ -725,8 +619,6 @@ fn task_kind(definition: &TaskDefinition) -> &'static str {
             stream: SourceStream::State,
             ..
         } => "state_reset",
-        TaskDefinition::SyncAction { .. } => "sync_action",
-        TaskDefinition::SyncActionReconciliation { .. } => "sync_action_reconciliation",
     }
 }
 
@@ -737,8 +629,6 @@ fn task_kind_name(kind: TaskKind) -> &'static str {
         TaskKind::StateRead => "state_read",
         TaskKind::CatalogReset => "catalog_reset",
         TaskKind::StateReset => "state_reset",
-        TaskKind::SyncAction => "sync_action",
-        TaskKind::SyncActionReconciliation => "sync_action_reconciliation",
     }
 }
 
@@ -748,12 +638,6 @@ fn task_source_id(definition: &TaskDefinition) -> Option<Uuid> {
         TaskDefinition::Read { source_id, .. } | TaskDefinition::Reset { source_id, .. } => {
             Some(*source_id)
         }
-        TaskDefinition::SyncAction {
-            receiver_source_id, ..
-        }
-        | TaskDefinition::SyncActionReconciliation {
-            receiver_source_id, ..
-        } => Some(*receiver_source_id),
     }
 }
 
@@ -914,19 +798,6 @@ struct ReadTaskRow {
 struct ResetTaskRow {
     source_id: Uuid,
     stream_kind: String,
-}
-
-#[derive(FromRow)]
-struct SyncActionTaskRow {
-    action_id: Uuid,
-    receiver_source_id: Uuid,
-}
-
-#[derive(FromRow)]
-struct SyncActionReconciliationTaskRow {
-    action_id: Uuid,
-    receiver_source_id: Uuid,
-    write_task_attempt_id: Uuid,
 }
 
 #[derive(Debug, Error)]

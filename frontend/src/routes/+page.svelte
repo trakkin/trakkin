@@ -12,7 +12,7 @@ onMount(() => {
 
   async function loadWorkspace(): Promise<void> {
     try {
-      const workspace = (await listWorkspaces(controller.signal)).find((candidate) => candidate.status === "active");
+      const workspace = (await listWorkspaces(controller.signal))[0];
       if (!active) return;
       await goto(workspace ? `/w/${workspace.id}/catalog` : "/workspaces/new", { replaceState: true });
     } catch (error) {

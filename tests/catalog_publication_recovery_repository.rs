@@ -19,8 +19,8 @@ use trakkin::{
     database::DatabaseRuntime,
     domain::acquisition::{
         BinaryAssetKey, BinaryAssetReference, CatalogBatch, CatalogItem, CatalogRelation,
-        CatalogRelationKey, PortableReference, ProviderItemKey, StateBatch, StateField,
-        StateObservation, StateSubject, StateValue, Term,
+        CatalogRelationKey, ProviderItemKey, StateBatch, StateField, StateObservation,
+        StateSubject, StateValue, Term,
     },
     infrastructure::{
         catalog_publication::{PostgresPublicationRepository, PublicationError},
@@ -196,11 +196,6 @@ async fn catalog_reset_is_selective_and_full_refetch_publishes_only_successor() 
         .expect("catalog stream resets atomically");
 
     assert_eq!(published_item_rows(&database.pool()).await, []);
-    assert!(
-        published_reference_values(&database.pool())
-            .await
-            .is_empty()
-    );
     assert!(published_asset_keys(&database.pool()).await.is_empty());
     assert!(published_relation_keys(&database.pool()).await.is_empty());
     assert_eq!(
@@ -258,10 +253,6 @@ async fn catalog_reset_is_selective_and_full_refetch_publishes_only_successor() 
     assert_eq!(
         published_item_rows(&database.pool()).await,
         successor_item_rows()
-    );
-    assert_eq!(
-        published_reference_values(&database.pool()).await,
-        [b"new".to_vec()]
     );
     assert_eq!(
         published_asset_keys(&database.pool()).await,
@@ -386,11 +377,6 @@ async fn reset_rejects_active_read_then_succeeds_after_abandonment() {
         .expect("reset succeeds after active read abandonment");
 
     assert_eq!(published_item_rows(&database.pool()).await, []);
-    assert!(
-        published_reference_values(&database.pool())
-            .await
-            .is_empty()
-    );
     assert!(published_asset_keys(&database.pool()).await.is_empty());
     assert!(published_relation_keys(&database.pool()).await.is_empty());
     assert_eq!(
@@ -528,10 +514,6 @@ async fn staged_full_catalog_is_invisible_until_fenced_publication() {
 
     assert_eq!(published_item_rows(&database.pool()).await, old_item_rows());
     assert_eq!(
-        published_reference_values(&database.pool()).await,
-        [b"old".to_vec()]
-    );
-    assert_eq!(
         published_asset_keys(&database.pool()).await,
         [b"asset.old".to_vec()]
     );
@@ -603,10 +585,6 @@ async fn staged_full_catalog_is_invisible_until_fenced_publication() {
     assert_eq!(
         published_item_rows(&database.pool()).await,
         successor_item_rows()
-    );
-    assert_eq!(
-        published_reference_values(&database.pool()).await,
-        [b"new".to_vec()]
     );
     assert_eq!(
         published_asset_keys(&database.pool()).await,
@@ -708,10 +686,6 @@ async fn stale_cursor_fence_preserves_prior_catalog_and_staging() {
     ));
 
     assert_eq!(published_item_rows(&database.pool()).await, old_item_rows());
-    assert_eq!(
-        published_reference_values(&database.pool()).await,
-        [b"old".to_vec()]
-    );
     assert_eq!(
         published_asset_keys(&database.pool()).await,
         [b"asset.old".to_vec()]
@@ -820,18 +794,6 @@ async fn seed_incremental_catalog_read(pool: PgPool) {
     .execute(&pool)
     .await
     .expect("stale catalog item is seeded");
-    sqlx::query(
-        "INSERT INTO catalog_item_references (
-             source_id, item_key_namespace, item_key_value,
-             reference_namespace, reference_value, recommended_mapping_root
-         ) VALUES ($1, 'fixture.item', $2, 'example.media', $3, TRUE)",
-    )
-    .bind(SOURCE_ID)
-    .bind(b"item.stale".as_slice())
-    .bind(b"stale".as_slice())
-    .execute(&pool)
-    .await
-    .expect("stale portable reference is seeded");
     sqlx::query(
         "INSERT INTO catalog_assets (
              source_id, item_key_namespace, item_key_value,
@@ -1052,15 +1014,11 @@ async fn seed_concurrent_state_read_and_queued_task(pool: PgPool) {
 fn replacement_batch() -> CatalogBatch {
     let item_key = ProviderItemKey::new("fixture.item", b"item.new".to_vec())
         .expect("provider item key is valid");
-    let reference = PortableReference::new("example.media", b"new".to_vec())
-        .expect("portable reference is valid");
     let item = CatalogItem::new(
         item_key.clone(),
         Term::new("fixture", "episode").expect("item kind is valid"),
         "New item",
         json!({"season": 1}),
-        vec![reference.clone()],
-        vec![reference],
         vec![BinaryAssetReference::new(
             BinaryAssetKey::new("fixture.asset", b"asset.new".to_vec())
                 .expect("binary asset key is valid"),
@@ -1097,15 +1055,11 @@ fn incremental_batch() -> CatalogBatch {
         .expect("updated provider item key is valid");
     let added_key = ProviderItemKey::new("fixture.item", b"item.new".to_vec())
         .expect("added provider item key is valid");
-    let updated_reference = PortableReference::new("example.media", b"old.updated".to_vec())
-        .expect("updated portable reference is valid");
     let updated = CatalogItem::new(
         updated_key.clone(),
         Term::new("fixture", "episode").expect("updated item kind is valid"),
         "Updated item",
         json!({"revision": 2}),
-        vec![updated_reference.clone()],
-        vec![updated_reference],
         vec![BinaryAssetReference::new(
             BinaryAssetKey::new("fixture.asset", b"asset.updated".to_vec())
                 .expect("updated binary asset key is valid"),
@@ -1113,15 +1067,11 @@ fn incremental_batch() -> CatalogBatch {
         )],
     )
     .expect("updated catalog item is valid");
-    let added_reference = PortableReference::new("example.media", b"new".to_vec())
-        .expect("added portable reference is valid");
     let added = CatalogItem::new(
         added_key.clone(),
         Term::new("fixture", "episode").expect("added item kind is valid"),
         "Added item",
         json!({}),
-        vec![added_reference.clone()],
-        vec![added_reference],
         vec![BinaryAssetReference::new(
             BinaryAssetKey::new("fixture.asset", b"asset.new".to_vec())
                 .expect("added binary asset key is valid"),
@@ -1234,19 +1184,6 @@ async fn published_item_rows(pool: &PgPool) -> Vec<(Vec<u8>, String, Uuid)> {
     .fetch_all(pool)
     .await
     .expect("published catalog items are queryable")
-}
-
-async fn published_reference_values(pool: &PgPool) -> Vec<Vec<u8>> {
-    sqlx::query_scalar::<_, Vec<u8>>(
-        "SELECT reference_value
-         FROM catalog_item_references
-         WHERE source_id = $1
-         ORDER BY reference_value",
-    )
-    .bind(SOURCE_ID)
-    .fetch_all(pool)
-    .await
-    .expect("published portable references are queryable")
 }
 
 async fn published_asset_keys(pool: &PgPool) -> Vec<Vec<u8>> {

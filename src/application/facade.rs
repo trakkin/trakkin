@@ -3,7 +3,7 @@ use std::{future::Future, pin::Pin, sync::Arc};
 use uuid::Uuid;
 
 use super::{
-    adapter_runtime::{AdapterBinaryAsset, AdapterPortableReferenceLookup},
+    adapter_runtime::AdapterBinaryAsset,
     assets::{BinaryAssetInteraction, ReadPublishedBinaryAsset},
     catalog_queries::{
         CatalogPage, CatalogQueryRepository, InspectSourceState, QueryCatalogPage,
@@ -17,45 +17,16 @@ use super::{
         RenameConnection, StartConnectionAuthentication, StartedConnectionAuthentication,
     },
     error::{ApplicationError, ApplicationErrorCode, IntoApplicationError},
-    mapping_lifecycle::{
-        ActivateWorkspaceMappingRevision, CanonicalRowSetDiff, ChangeMappingActivation,
-        CreateMapping, CreateWorkspaceMappingDocument, MappingActivationKind,
-        MappingLifecycleError, MappingLifecycleRepository, MappingLifecycleService,
-        RetireWorkspaceMapping, UpdateMapping, UpdateWorkspaceMappingDocument,
-        WorkspaceMappingActivation,
-    },
-    mapping_queries::{
-        MappingDetail, MappingHistoryPage, MappingQueryRepository, MappingRegistryPage,
-        QueryMappingHistory, QueryMappingRegistry,
-    },
-    mapping_resolution::{
-        ExactMappingRevision, MappingResolution, MappingResolutionInteraction, ResolutionRequest,
-    },
     providers::{
         ChangeProviderUpdatePolicy, InspectProviderRelease, InstallProvider,
         ProviderReleaseInspectionSnapshot, ProviderSnapshot, ProviderSourceSnapshot,
         RefreshProviderSource, RemoveProvider, RemoveProviderSource, SharedProviderRegistry,
         TrustProviderSource, UpdateProvider,
     },
-    reference_lookup::{LookupPortableReferences, ReferenceLookupInteraction},
-    sync_activity::{
-        QuerySyncActivity, SyncActivityActionDetail, SyncActivityApi, SyncActivityPage,
-    },
-    sync_policy::{
-        CreateSyncPolicy, QuerySyncPolicies, SyncPolicyApi, SyncPolicyPage,
-        SyncPolicyRevisionSnapshot, UpdateSyncPolicy,
-    },
-    sync_run::SyncRunSnapshot,
-    sync_schedule::{EnableSyncSchedule, PauseSyncSchedule, SyncScheduleApi, SyncScheduleSnapshot},
-    sync_workflow::{
-        CreateWorkspaceSyncPreview, StartWorkspaceSyncRun, SyncPreviewMutationApi,
-        SyncRunMutationApi, WorkspaceSyncPreview,
-    },
     task_manager::{AdmitTask, RequestTaskCancellation, TaskManager, TaskRepository, TaskSnapshot},
     workspaces::{
-        AttachWorkspaceSource, CreateWorkspace, DetachWorkspaceSource,
-        UpdateWorkspaceSourceMappingRootPolicy, WorkspaceRepository, WorkspaceService,
-        WorkspaceSnapshot, WorkspaceSourceAttachment, WorkspaceSourceMappingRootPolicy,
+        AttachWorkspaceSource, CreateWorkspace, DetachWorkspaceSource, WorkspaceRepository,
+        WorkspaceService, WorkspaceSnapshot, WorkspaceSourceAttachment,
     },
 };
 
@@ -68,25 +39,9 @@ pub struct WorkspaceView {
     pub sources: Vec<WorkspaceSourceAttachment>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum UpdateMappingDocumentResult {
-    Updated(Box<MappingDetail>),
-    HeadMoved {
-        current_head: String,
-        diff: CanonicalRowSetDiff,
-    },
-}
-
 pub struct ApplicationInteractions {
     pub connections: Arc<dyn ConnectionInteraction>,
     pub binary_assets: Arc<dyn BinaryAssetInteraction>,
-    pub reference_lookup: Arc<dyn ReferenceLookupInteraction>,
-    pub mapping_resolution: Arc<dyn MappingResolutionInteraction>,
-    pub sync_policy: Arc<dyn SyncPolicyApi>,
-    pub sync_preview_mutation: Option<Arc<dyn SyncPreviewMutationApi>>,
-    pub sync_run_mutation: Option<Arc<dyn SyncRunMutationApi>>,
-    pub sync_schedule: Option<Arc<dyn SyncScheduleApi>>,
-    pub sync_activity: Arc<dyn SyncActivityApi>,
     pub providers: SharedProviderRegistry,
 }
 
@@ -94,56 +49,13 @@ impl ApplicationInteractions {
     pub fn new(
         connections: Arc<dyn ConnectionInteraction>,
         binary_assets: Arc<dyn BinaryAssetInteraction>,
-        reference_lookup: Arc<dyn ReferenceLookupInteraction>,
-        mapping_resolution: Arc<dyn MappingResolutionInteraction>,
-        sync_policy: Arc<dyn SyncPolicyApi>,
-        sync_activity: Arc<dyn SyncActivityApi>,
         providers: SharedProviderRegistry,
     ) -> Self {
         Self {
             connections,
             binary_assets,
-            reference_lookup,
-            mapping_resolution,
-            sync_policy,
-            sync_preview_mutation: None,
-            sync_run_mutation: None,
-            sync_schedule: None,
-            sync_activity,
             providers,
         }
-    }
-
-    pub fn with_sync_preview_mutation(
-        mut self,
-        sync_preview_mutation: Arc<dyn SyncPreviewMutationApi>,
-    ) -> Self {
-        self.sync_preview_mutation = Some(sync_preview_mutation);
-        self
-    }
-
-    pub fn with_sync_run_mutation(
-        mut self,
-        sync_run_mutation: Arc<dyn SyncRunMutationApi>,
-    ) -> Self {
-        self.sync_run_mutation = Some(sync_run_mutation);
-        self
-    }
-
-    pub fn with_sync_schedule(mut self, sync_schedule: Arc<dyn SyncScheduleApi>) -> Self {
-        self.sync_schedule = Some(sync_schedule);
-        self
-    }
-}
-
-pub struct ApplicationMappingRepositories<M, L> {
-    pub queries: M,
-    pub lifecycle: L,
-}
-
-impl<M, L> ApplicationMappingRepositories<M, L> {
-    pub fn new(queries: M, lifecycle: L) -> Self {
-        Self { queries, lifecycle }
     }
 }
 
@@ -155,56 +67,7 @@ pub trait ApplicationApi: Send + Sync {
     -> ApplicationFuture<'_, WorkspaceView>;
     fn detach_source(&self, command: DetachWorkspaceSource)
     -> ApplicationFuture<'_, WorkspaceView>;
-    fn get_mapping_root_policy(
-        &self,
-        workspace_id: Uuid,
-        source_id: Uuid,
-    ) -> ApplicationFuture<'_, WorkspaceSourceMappingRootPolicy>;
-    fn update_mapping_root_policy(
-        &self,
-        command: UpdateWorkspaceSourceMappingRootPolicy,
-    ) -> ApplicationFuture<'_, WorkspaceSourceMappingRootPolicy>;
     fn query_catalog(&self, query: QueryCatalogPage) -> ApplicationFuture<'_, CatalogPage>;
-    fn query_mapping_registry(
-        &self,
-        query: QueryMappingRegistry,
-    ) -> ApplicationFuture<'_, MappingRegistryPage>;
-    fn get_mapping_head(
-        &self,
-        workspace_id: Uuid,
-        mapping_id: Uuid,
-    ) -> ApplicationFuture<'_, MappingDetail>;
-    fn query_mapping_history(
-        &self,
-        query: QueryMappingHistory,
-    ) -> ApplicationFuture<'_, MappingHistoryPage>;
-    fn get_mapping_revision(
-        &self,
-        workspace_id: Uuid,
-        mapping_id: Uuid,
-        content_hash: &str,
-    ) -> ApplicationFuture<'_, MappingDetail>;
-    fn create_mapping_document(
-        &self,
-        command: CreateWorkspaceMappingDocument,
-    ) -> ApplicationFuture<'_, MappingDetail>;
-    fn update_mapping_document(
-        &self,
-        command: UpdateWorkspaceMappingDocument,
-    ) -> ApplicationFuture<'_, UpdateMappingDocumentResult>;
-    fn activate_mapping_revision(
-        &self,
-        command: ActivateWorkspaceMappingRevision,
-    ) -> ApplicationFuture<'_, WorkspaceMappingActivation>;
-    fn retire_mapping(
-        &self,
-        command: RetireWorkspaceMapping,
-    ) -> ApplicationFuture<'_, WorkspaceMappingActivation>;
-    fn resolve_mapping_revision(
-        &self,
-        revision: ExactMappingRevision,
-        request: ResolutionRequest,
-    ) -> ApplicationFuture<'_, MappingResolution>;
     fn inspect_state(
         &self,
         query: InspectSourceState,
@@ -272,55 +135,6 @@ pub trait ApplicationApi: Send + Sync {
         &self,
         command: ReadPublishedBinaryAsset,
     ) -> ApplicationFuture<'_, AdapterBinaryAsset>;
-    fn lookup_portable_references(
-        &self,
-        command: LookupPortableReferences,
-    ) -> ApplicationFuture<'_, Vec<AdapterPortableReferenceLookup>>;
-    fn list_sync_policies(&self, query: QuerySyncPolicies)
-    -> ApplicationFuture<'_, SyncPolicyPage>;
-    fn get_sync_policy(
-        &self,
-        workspace_id: Uuid,
-        policy_id: Uuid,
-    ) -> ApplicationFuture<'_, SyncPolicyRevisionSnapshot>;
-    fn create_sync_policy(
-        &self,
-        command: CreateSyncPolicy,
-    ) -> ApplicationFuture<'_, SyncPolicyRevisionSnapshot>;
-    fn update_sync_policy(
-        &self,
-        command: UpdateSyncPolicy,
-    ) -> ApplicationFuture<'_, SyncPolicyRevisionSnapshot>;
-    fn enable_sync_schedule(
-        &self,
-        command: EnableSyncSchedule,
-    ) -> ApplicationFuture<'_, SyncScheduleSnapshot>;
-    fn get_sync_schedule(
-        &self,
-        workspace_id: Uuid,
-        policy_id: Uuid,
-    ) -> ApplicationFuture<'_, SyncScheduleSnapshot>;
-    fn pause_sync_schedule(
-        &self,
-        command: PauseSyncSchedule,
-    ) -> ApplicationFuture<'_, SyncScheduleSnapshot>;
-    fn create_workspace_sync_preview(
-        &self,
-        command: CreateWorkspaceSyncPreview,
-    ) -> ApplicationFuture<'_, WorkspaceSyncPreview>;
-    fn start_workspace_sync_run(
-        &self,
-        command: StartWorkspaceSyncRun,
-    ) -> ApplicationFuture<'_, SyncRunSnapshot>;
-    fn list_sync_activity(
-        &self,
-        query: QuerySyncActivity,
-    ) -> ApplicationFuture<'_, SyncActivityPage>;
-    fn get_sync_activity_action(
-        &self,
-        workspace_id: Uuid,
-        action_id: Uuid,
-    ) -> ApplicationFuture<'_, SyncActivityActionDetail>;
     fn list_provider_sources(&self) -> ApplicationFuture<'_, Vec<ProviderSourceSnapshot>>;
     fn trust_provider_source(
         &self,
@@ -347,35 +161,23 @@ pub trait ApplicationApi: Send + Sync {
 }
 
 #[derive(Clone)]
-pub struct ApplicationFacade<W, C, M, L, T, R, D> {
+pub struct ApplicationFacade<W, C, T, R, D> {
     workspaces: WorkspaceService<W>,
     catalog: C,
-    mapping_queries: M,
-    mapping_lifecycle: MappingLifecycleService<L>,
     tasks: TaskManager<T>,
     connections: R,
     connection_retirement: D,
     connection_interaction: Arc<dyn ConnectionInteraction>,
     binary_assets: Arc<dyn BinaryAssetInteraction>,
-    reference_lookup: Arc<dyn ReferenceLookupInteraction>,
-    mapping_resolution: Arc<dyn MappingResolutionInteraction>,
-    sync_policy: Arc<dyn SyncPolicyApi>,
-    sync_preview_mutation: Option<Arc<dyn SyncPreviewMutationApi>>,
-    sync_run_mutation: Option<Arc<dyn SyncRunMutationApi>>,
-    sync_schedule: Option<Arc<dyn SyncScheduleApi>>,
-    sync_activity: Arc<dyn SyncActivityApi>,
     providers: SharedProviderRegistry,
 }
 
-impl<W, C, M, L, T, R, D> ApplicationFacade<W, C, M, L, T, R, D>
+impl<W, C, T, R, D> ApplicationFacade<W, C, T, R, D>
 where
     W: WorkspaceRepository,
     W::Error: IntoApplicationError,
     C: CatalogQueryRepository,
     C::Error: IntoApplicationError,
-    M: MappingQueryRepository,
-    M::Error: IntoApplicationError,
-    L: MappingLifecycleRepository,
     T: TaskRepository,
     T::Error: IntoApplicationError,
     R: ConnectionRepository,
@@ -386,7 +188,6 @@ where
     pub fn new(
         workspaces: W,
         catalog: C,
-        mappings: ApplicationMappingRepositories<M, L>,
         tasks: T,
         connections: R,
         connection_retirement: D,
@@ -395,20 +196,11 @@ where
         Self {
             workspaces: WorkspaceService::new(workspaces),
             catalog,
-            mapping_queries: mappings.queries,
-            mapping_lifecycle: MappingLifecycleService::new(mappings.lifecycle),
             tasks: TaskManager::new(tasks),
             connections,
             connection_retirement,
             connection_interaction: interactions.connections,
             binary_assets: interactions.binary_assets,
-            reference_lookup: interactions.reference_lookup,
-            mapping_resolution: interactions.mapping_resolution,
-            sync_policy: interactions.sync_policy,
-            sync_preview_mutation: interactions.sync_preview_mutation,
-            sync_run_mutation: interactions.sync_run_mutation,
-            sync_schedule: interactions.sync_schedule,
-            sync_activity: interactions.sync_activity,
             providers: interactions.providers,
         }
     }
@@ -471,15 +263,12 @@ where
     }
 }
 
-impl<W, C, M, L, T, R, D> ApplicationApi for ApplicationFacade<W, C, M, L, T, R, D>
+impl<W, C, T, R, D> ApplicationApi for ApplicationFacade<W, C, T, R, D>
 where
     W: WorkspaceRepository + 'static,
     W::Error: IntoApplicationError,
     C: CatalogQueryRepository + 'static,
     C::Error: IntoApplicationError,
-    M: MappingQueryRepository + 'static,
-    M::Error: IntoApplicationError,
-    L: MappingLifecycleRepository + 'static,
     T: TaskRepository + 'static,
     T::Error: IntoApplicationError,
     R: ConnectionRepository + 'static,
@@ -562,275 +351,12 @@ where
         })
     }
 
-    fn get_mapping_root_policy(
-        &self,
-        workspace_id: Uuid,
-        source_id: Uuid,
-    ) -> ApplicationFuture<'_, WorkspaceSourceMappingRootPolicy> {
-        Box::pin(async move {
-            self.workspaces
-                .mapping_root_policy(workspace_id, source_id)
-                .await
-                .map_err(IntoApplicationError::into_application_error)
-        })
-    }
-
-    fn update_mapping_root_policy(
-        &self,
-        command: UpdateWorkspaceSourceMappingRootPolicy,
-    ) -> ApplicationFuture<'_, WorkspaceSourceMappingRootPolicy> {
-        Box::pin(async move {
-            let workspace_id = command.workspace_id;
-            let source_id = command.source_id;
-            let namespace_count = command
-                .namespaces
-                .as_ref()
-                .map(Vec::len)
-                .unwrap_or_default();
-            let policy = self
-                .workspaces
-                .update_mapping_root_policy(command)
-                .await
-                .map_err(IntoApplicationError::into_application_error)?;
-            tracing::info!(
-                %workspace_id,
-                %source_id,
-                namespace_count,
-                policy.generation = policy.attachment.mapping_root_policy_generation,
-                "workspace mapping-root policy updated"
-            );
-            Ok(policy)
-        })
-    }
-
     fn query_catalog(&self, query: QueryCatalogPage) -> ApplicationFuture<'_, CatalogPage> {
         Box::pin(async move {
             self.catalog
                 .query_catalog_page(query)
                 .await
                 .map_err(IntoApplicationError::into_application_error)
-        })
-    }
-
-    fn query_mapping_registry(
-        &self,
-        query: QueryMappingRegistry,
-    ) -> ApplicationFuture<'_, MappingRegistryPage> {
-        Box::pin(async move {
-            self.mapping_queries
-                .query_registry(query)
-                .await
-                .map_err(IntoApplicationError::into_application_error)
-        })
-    }
-
-    fn get_mapping_head(
-        &self,
-        workspace_id: Uuid,
-        mapping_id: Uuid,
-    ) -> ApplicationFuture<'_, MappingDetail> {
-        Box::pin(async move {
-            self.mapping_queries
-                .query_head(workspace_id, mapping_id)
-                .await
-                .map_err(IntoApplicationError::into_application_error)
-        })
-    }
-
-    fn query_mapping_history(
-        &self,
-        query: QueryMappingHistory,
-    ) -> ApplicationFuture<'_, MappingHistoryPage> {
-        Box::pin(async move {
-            self.mapping_queries
-                .query_history(query)
-                .await
-                .map_err(IntoApplicationError::into_application_error)
-        })
-    }
-
-    fn get_mapping_revision(
-        &self,
-        workspace_id: Uuid,
-        mapping_id: Uuid,
-        content_hash: &str,
-    ) -> ApplicationFuture<'_, MappingDetail> {
-        let content_hash = content_hash.to_owned();
-        Box::pin(async move {
-            self.mapping_queries
-                .query_revision(workspace_id, mapping_id, &content_hash)
-                .await
-                .map_err(IntoApplicationError::into_application_error)
-        })
-    }
-
-    fn create_mapping_document(
-        &self,
-        command: CreateWorkspaceMappingDocument,
-    ) -> ApplicationFuture<'_, MappingDetail> {
-        Box::pin(async move {
-            let workspace_id = command.workspace_id;
-            let mapping_id = command.mapping_id;
-            if command.schema != "trakkin.mapping/v1" {
-                return Err(ApplicationError::field(
-                    ApplicationErrorCode::InvalidField,
-                    "mapping document is invalid",
-                    "schema",
-                    "unsupported_schema",
-                    "mapping document schema is unsupported",
-                ));
-            }
-            self.workspace_view(command.workspace_id).await?;
-            let revision = self
-                .mapping_lifecycle
-                .create(CreateMapping {
-                    mapping_id: command.mapping_id,
-                    mappings: command.mappings,
-                    created_at: command.created_at,
-                })
-                .await
-                .map_err(|error| mapping_lifecycle_error(error, "contentHash"))?;
-            let detail = self
-                .mapping_queries
-                .query_revision(workspace_id, mapping_id, &revision.content_hash)
-                .await
-                .map_err(IntoApplicationError::into_application_error)?;
-            tracing::info!(
-                %workspace_id,
-                %mapping_id,
-                mapping.revision = detail.revision.document.revision(),
-                mapping.row_count = detail.revision.document.mappings().len(),
-                "mapping created"
-            );
-            Ok(detail)
-        })
-    }
-
-    fn update_mapping_document(
-        &self,
-        command: UpdateWorkspaceMappingDocument,
-    ) -> ApplicationFuture<'_, UpdateMappingDocumentResult> {
-        Box::pin(async move {
-            let workspace_id = command.workspace_id;
-            let mapping_id = command.mapping_id;
-            self.workspace_view(workspace_id).await?;
-            let revision = match self
-                .mapping_lifecycle
-                .update(UpdateMapping {
-                    mapping_id: command.mapping_id,
-                    base_content_hash: command.base_content_hash,
-                    mappings: command.mappings,
-                    updated_at: command.updated_at,
-                })
-                .await
-            {
-                Ok(revision) => revision,
-                Err(MappingLifecycleError::HeadMoved { current_head, diff }) => {
-                    tracing::debug!(%workspace_id, %mapping_id, "mapping update head moved");
-                    return Ok(UpdateMappingDocumentResult::HeadMoved { current_head, diff });
-                }
-                Err(error) => return Err(mapping_lifecycle_error(error, "baseContentHash")),
-            };
-            let detail = self
-                .mapping_queries
-                .query_revision(workspace_id, mapping_id, &revision.content_hash)
-                .await
-                .map_err(IntoApplicationError::into_application_error)?;
-            tracing::info!(
-                %workspace_id,
-                %mapping_id,
-                mapping.revision = detail.revision.document.revision(),
-                mapping.row_count = detail.revision.document.mappings().len(),
-                "mapping updated"
-            );
-            Ok(UpdateMappingDocumentResult::Updated(Box::new(detail)))
-        })
-    }
-
-    fn activate_mapping_revision(
-        &self,
-        command: ActivateWorkspaceMappingRevision,
-    ) -> ApplicationFuture<'_, WorkspaceMappingActivation> {
-        Box::pin(async move {
-            self.workspace_view(command.workspace_id).await?;
-            let head = self
-                .mapping_lifecycle
-                .head(command.mapping_id)
-                .await
-                .map_err(|error| mapping_lifecycle_error(error, "contentHash"))?;
-            let kind = if head.content_hash == command.content_hash {
-                MappingActivationKind::Activate
-            } else {
-                MappingActivationKind::Rollback
-            };
-            let activation = self
-                .mapping_lifecycle
-                .change_activation(ChangeMappingActivation {
-                    event_id: command.event_id,
-                    workspace_id: command.workspace_id,
-                    mapping_id: command.mapping_id,
-                    content_hash: Some(command.content_hash),
-                    kind,
-                    changed_at: command.changed_at,
-                })
-                .await
-                .map_err(|error| mapping_lifecycle_error(error, "contentHash"))?;
-            tracing::info!(
-                workspace.id = %activation.workspace_id,
-                mapping.id = %activation.mapping_id,
-                activation.kind = ?kind,
-                activation.generation = activation.generation,
-                "mapping activation changed"
-            );
-            Ok(activation)
-        })
-    }
-
-    fn retire_mapping(
-        &self,
-        command: RetireWorkspaceMapping,
-    ) -> ApplicationFuture<'_, WorkspaceMappingActivation> {
-        Box::pin(async move {
-            self.workspace_view(command.workspace_id).await?;
-            let activation = self
-                .mapping_lifecycle
-                .change_activation(ChangeMappingActivation {
-                    event_id: command.event_id,
-                    workspace_id: command.workspace_id,
-                    mapping_id: command.mapping_id,
-                    content_hash: None,
-                    kind: MappingActivationKind::Retire,
-                    changed_at: command.changed_at,
-                })
-                .await
-                .map_err(|error| mapping_lifecycle_error(error, "contentHash"))?;
-            tracing::info!(
-                workspace.id = %activation.workspace_id,
-                mapping.id = %activation.mapping_id,
-                activation.generation = activation.generation,
-                "mapping retired"
-            );
-            Ok(activation)
-        })
-    }
-
-    fn resolve_mapping_revision(
-        &self,
-        revision: ExactMappingRevision,
-        request: ResolutionRequest,
-    ) -> ApplicationFuture<'_, MappingResolution> {
-        Box::pin(async move {
-            self.mapping_queries
-                .query_revision(
-                    request.workspace_id,
-                    revision.mapping_id,
-                    &revision.content_hash,
-                )
-                .await
-                .map_err(IntoApplicationError::into_application_error)?;
-            self.mapping_resolution
-                .resolve_mapping_revision(revision, request)
-                .await
         })
     }
 
@@ -1093,134 +619,6 @@ where
         self.binary_assets.read_published_binary_asset(command)
     }
 
-    fn lookup_portable_references(
-        &self,
-        command: LookupPortableReferences,
-    ) -> ApplicationFuture<'_, Vec<AdapterPortableReferenceLookup>> {
-        self.reference_lookup.lookup_portable_references(command)
-    }
-
-    fn list_sync_activity(
-        &self,
-        query: QuerySyncActivity,
-    ) -> ApplicationFuture<'_, SyncActivityPage> {
-        self.sync_activity.list_activity(query)
-    }
-
-    fn list_sync_policies(
-        &self,
-        query: QuerySyncPolicies,
-    ) -> ApplicationFuture<'_, SyncPolicyPage> {
-        self.sync_policy.list_policies(query)
-    }
-
-    fn get_sync_policy(
-        &self,
-        workspace_id: Uuid,
-        policy_id: Uuid,
-    ) -> ApplicationFuture<'_, SyncPolicyRevisionSnapshot> {
-        self.sync_policy.get_policy(workspace_id, policy_id)
-    }
-
-    fn create_sync_policy(
-        &self,
-        command: CreateSyncPolicy,
-    ) -> ApplicationFuture<'_, SyncPolicyRevisionSnapshot> {
-        self.sync_policy.create_policy(command)
-    }
-
-    fn update_sync_policy(
-        &self,
-        command: UpdateSyncPolicy,
-    ) -> ApplicationFuture<'_, SyncPolicyRevisionSnapshot> {
-        self.sync_policy.update_policy(command)
-    }
-
-    fn enable_sync_schedule(
-        &self,
-        command: EnableSyncSchedule,
-    ) -> ApplicationFuture<'_, SyncScheduleSnapshot> {
-        match &self.sync_schedule {
-            Some(sync_schedule) => sync_schedule.enable_schedule(command),
-            None => Box::pin(async move {
-                Err(ApplicationError::new(
-                    ApplicationErrorCode::Internal,
-                    "synchronization schedules are not configured",
-                ))
-            }),
-        }
-    }
-
-    fn get_sync_schedule(
-        &self,
-        workspace_id: Uuid,
-        policy_id: Uuid,
-    ) -> ApplicationFuture<'_, SyncScheduleSnapshot> {
-        match &self.sync_schedule {
-            Some(sync_schedule) => sync_schedule.get_schedule(workspace_id, policy_id),
-            None => Box::pin(async move {
-                Err(ApplicationError::new(
-                    ApplicationErrorCode::Internal,
-                    "synchronization schedules are not configured",
-                ))
-            }),
-        }
-    }
-
-    fn pause_sync_schedule(
-        &self,
-        command: PauseSyncSchedule,
-    ) -> ApplicationFuture<'_, SyncScheduleSnapshot> {
-        match &self.sync_schedule {
-            Some(sync_schedule) => sync_schedule.pause_schedule(command),
-            None => Box::pin(async move {
-                Err(ApplicationError::new(
-                    ApplicationErrorCode::Internal,
-                    "synchronization schedules are not configured",
-                ))
-            }),
-        }
-    }
-
-    fn create_workspace_sync_preview(
-        &self,
-        command: CreateWorkspaceSyncPreview,
-    ) -> ApplicationFuture<'_, WorkspaceSyncPreview> {
-        match &self.sync_preview_mutation {
-            Some(sync_preview_mutation) => sync_preview_mutation.create_workspace_preview(command),
-            None => Box::pin(async move {
-                Err(ApplicationError::new(
-                    ApplicationErrorCode::Internal,
-                    "synchronization preview creation is not configured",
-                ))
-            }),
-        }
-    }
-
-    fn start_workspace_sync_run(
-        &self,
-        command: StartWorkspaceSyncRun,
-    ) -> ApplicationFuture<'_, SyncRunSnapshot> {
-        match &self.sync_run_mutation {
-            Some(sync_run_mutation) => sync_run_mutation.start_workspace_sync_run(command),
-            None => Box::pin(async move {
-                Err(ApplicationError::new(
-                    ApplicationErrorCode::Internal,
-                    "synchronization run admission is not configured",
-                ))
-            }),
-        }
-    }
-
-    fn get_sync_activity_action(
-        &self,
-        workspace_id: Uuid,
-        action_id: Uuid,
-    ) -> ApplicationFuture<'_, SyncActivityActionDetail> {
-        self.sync_activity
-            .get_activity_action(workspace_id, action_id)
-    }
-
     fn list_provider_sources(&self) -> ApplicationFuture<'_, Vec<ProviderSourceSnapshot>> {
         self.providers.list_provider_sources()
     }
@@ -1274,53 +672,5 @@ where
 
     fn remove_provider(&self, command: RemoveProvider) -> ApplicationFuture<'_, ()> {
         self.providers.remove_provider(command)
-    }
-}
-
-fn mapping_lifecycle_error<E>(
-    error: MappingLifecycleError<E>,
-    content_hash_path: &'static str,
-) -> ApplicationError {
-    match error {
-        MappingLifecycleError::InvalidDocument(error) => {
-            let path = if error.code() == "invalid_content_hash" {
-                content_hash_path
-            } else {
-                "mappings"
-            };
-            ApplicationError::field(
-                ApplicationErrorCode::InvalidField,
-                "mapping command is invalid",
-                path,
-                error.code(),
-                error.to_string(),
-            )
-        }
-        MappingLifecycleError::MappingNotFound => ApplicationError::new(
-            ApplicationErrorCode::MappingNotFound,
-            "mapping was not found",
-        ),
-        MappingLifecycleError::RevisionNotFound => ApplicationError::new(
-            ApplicationErrorCode::MappingRevisionNotFound,
-            "mapping revision was not found",
-        ),
-        MappingLifecycleError::WorkspaceNotFound => ApplicationError::new(
-            ApplicationErrorCode::WorkspaceNotFound,
-            "workspace was not found",
-        ),
-        MappingLifecycleError::LineageCycle => ApplicationError::field(
-            ApplicationErrorCode::InvalidField,
-            "mapping command is invalid",
-            "mappings",
-            "lineage_cycle",
-            "mapping revision lineage contains a cycle",
-        ),
-        MappingLifecycleError::PackageDocumentSet
-        | MappingLifecycleError::RevisionOverflow
-        | MappingLifecycleError::HeadMoved { .. }
-        | MappingLifecycleError::Repository(_) => ApplicationError::new(
-            ApplicationErrorCode::Internal,
-            "mapping lifecycle operation failed",
-        ),
     }
 }
