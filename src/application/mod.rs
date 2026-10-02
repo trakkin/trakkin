@@ -5,6 +5,7 @@ pub mod catalog_queries;
 pub mod connection;
 pub mod error;
 pub mod facade;
+pub mod mappings;
 pub mod providers;
 pub mod task_dispatcher;
 pub mod task_lifecycle;

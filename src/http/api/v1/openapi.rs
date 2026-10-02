@@ -15,6 +15,11 @@ use crate::http::{
             RetryAfterResponse, StartAuthenticationRequest,
         },
         logs::{LogEntryResponse, LogPageResponse},
+        mappings::{
+            CreateRemoteMappingSourceRequest, MappingPageResponse, MappingResultResponse,
+            MappingSourceKindValue, MappingSourceResponse, MappingStateResponse,
+            ReorderMappingSourcesRequest, UpdateMappingSourceRequest, WriteLocalMappingRequest,
+        },
         providers::{
             AvailableProviderResponse, ChangeProviderUpdatePolicyRequest, InstallProviderRequest,
             ProviderMaintainerResponse, ProviderReleaseCompatibilityValue,
@@ -34,7 +39,7 @@ use crate::http::{
     error::{ErrorResponse, FieldProblemResponse},
 };
 
-use super::{connections, logs, providers, workspaces};
+use super::{connections, logs, mappings, providers, workspaces};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -55,6 +60,18 @@ use super::{connections, logs, providers, workspaces};
         connections::cancel_connection_task,
         logs::list_logs,
         logs::stream_logs,
+        mappings::mapping_state,
+        mappings::create_uploaded_mapping_source,
+        mappings::create_remote_mapping_source,
+        mappings::update_mapping_source,
+        mappings::create_local_mapping,
+        mappings::update_local_mapping,
+        mappings::remove_local_mapping,
+        mappings::reorder_mapping_sources,
+        mappings::remove_mapping_source,
+        mappings::refresh_remote_mapping_source,
+        mappings::read_mapping_source_content,
+        mappings::query_mappings,
         providers::list_provider_sources,
         providers::trust_provider_source,
         providers::refresh_provider_source,
@@ -108,6 +125,15 @@ use super::{connections, logs, providers, workspaces};
         RetryAfterResponse,
         LogPageResponse,
         LogEntryResponse,
+        UpdateMappingSourceRequest,
+        CreateRemoteMappingSourceRequest,
+        ReorderMappingSourcesRequest,
+        WriteLocalMappingRequest,
+        MappingSourceKindValue,
+        MappingSourceResponse,
+        MappingStateResponse,
+        MappingResultResponse,
+        MappingPageResponse,
         TrustProviderSourceRequest,
         InstallProviderRequest,
         UpdateProviderRequest,
@@ -147,6 +173,7 @@ use super::{connections, logs, providers, workspaces};
         (name = "catalog"),
         (name = "tasks"),
         (name = "logs"),
+        (name = "mappings"),
         (name = "contract")
     )
 )]

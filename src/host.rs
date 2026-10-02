@@ -36,6 +36,7 @@ use crate::{
             ConnectionMasterKey, ConnectionPersistenceError, ConnectionSessionRetirementError,
             PostgresConnectionRepository, ProcessSessionRegistry,
         },
+        mappings::PostgresMappingManager,
         provider_access::PostgresProviderAccessRepository,
         provider_registry::{PostgresProviderRegistry, ProbedProviderRegistry},
         workspaces::PostgresWorkspaceRepository,
@@ -82,9 +83,19 @@ impl Host {
         connection_master_key: ConnectionMasterKey,
     ) -> Result<RunningHost, HostError> {
         let pool = self.database.pool();
+        let data_directory = data_directory.into();
+        let mappings = Arc::new(
+            PostgresMappingManager::start(
+                pool.clone(),
+                data_directory.clone(),
+                OffsetDateTime::now_utc(),
+            )
+            .await
+            .map_err(HostError::Mappings)?,
+        );
         let provider_registry = PostgresProviderRegistry::new(
             pool.clone(),
-            data_directory.into().join("providers"),
+            data_directory.join("providers"),
             provider_runtime_directory,
         );
         provider_registry
@@ -157,6 +168,7 @@ impl Host {
                     HOST_MAXIMUM_ASSET_BYTES,
                 )),
                 Arc::new(provider_management.clone()),
+                mappings,
             ),
         ));
         let (shutdown_sender, shutdown_receiver) = watch::channel(false);
@@ -417,6 +429,8 @@ pub enum HostError {
     ProviderRegistry(#[source] ApplicationError),
     #[error("connection session recovery failed: {0}")]
     ConnectionRecovery(#[source] ConnectionPersistenceError),
+    #[error("mapping startup recovery failed: {0}")]
+    Mappings(#[source] ApplicationError),
     #[error("one or more adapter processes could not be retired")]
     ConnectionRetirement(#[from] ConnectionSessionRetirementError),
 }

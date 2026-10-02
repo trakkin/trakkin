@@ -46,6 +46,7 @@ const tableRows: [string, string, string, ChipTone][] = [
 let selectedStatus = $state("ready");
 let edgeSelect = $state("option-1");
 let tab = $state("preview");
+let segmentedTab = $state("details");
 let inputValue = $state("Living Room Server");
 let textareaValue = $state("Sync progress after each completed playback session.");
 let switchOff = $state(false);
@@ -392,6 +393,20 @@ let indeterminate = $state(true);
                 Usage guidance content
               </div>
             </Tabs.Content>
+          </Tabs.Root>
+          <Tabs.Root
+            variant="segmented"
+            bind:value={segmentedTab}
+          >
+            <Tabs.List aria-label="Design sheet segmented tabs">
+              <Tabs.Trigger value="details">Details</Tabs.Trigger>
+              <Tabs.Trigger value="activity">Activity</Tabs.Trigger>
+              <Tabs.Trigger
+                disabled
+                value="disabled"
+                >Disabled</Tabs.Trigger
+              >
+            </Tabs.List>
           </Tabs.Root>
           <div class="flex items-center gap-3">
             <Tooltip.Root>

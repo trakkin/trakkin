@@ -70,6 +70,11 @@ rust-embed = { version = "8.12.0", optional = true, features = [
   "include-exclude",
 ] }
 rolling-file = "0.2.0"
+rusqlite = "0.37.0"
+reqwest = { version = "0.13.4", default-features = false, features = [
+  "rustls",
+  "stream",
+] }
 thiserror = "2.0.18"
 time = { version = "0.3.55", features = ["formatting"] }
 trait-variant = "0.1.3"
@@ -84,11 +89,13 @@ tokio = { version = "1.52.4", features = [
   "sync",
   "time",
 ] }
-tokio-util = { version = "0.7.18", features = ["codec"] }
+tokio-util = { version = "0.7.18", features = ["codec", "io"] }
 tonic = "0.14.6"
 tracing = "0.1.44"
 tracing-appender = "0.2.4"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "json"] }
+trakkin-mappings-corpus = { git = "https://github.com/trakkin/trakkin-mappings.git", rev = "250cdc4c1d4183a3c46f7a94bdb26d258233556a", default-features = false }
+trakkin-mappings-language = { git = "https://github.com/trakkin/trakkin-mappings.git", rev = "250cdc4c1d4183a3c46f7a94bdb26d258233556a" }
 trakkin-provider-sdk = { git = "https://github.com/trakkin/trakkin-contracts.git", rev = "c0e0450bfac6a68b1be5dce4de5292b29d1d4263" }
 utoipa = { version = "5.5.0", features = ["uuid"] }
 url = "2.5.8"

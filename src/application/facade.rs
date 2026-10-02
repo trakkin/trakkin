@@ -17,6 +17,12 @@ use super::{
         RenameConnection, StartConnectionAuthentication, StartedConnectionAuthentication,
     },
     error::{ApplicationError, ApplicationErrorCode, IntoApplicationError},
+    mappings::{
+        CreateLocalMapping, CreateRemoteMappingSource, CreateUploadedMappingSource,
+        MappingContentReader, MappingPageSnapshot, MappingSourceContent, MappingStateSnapshot,
+        QueryMappings, RefreshRemoteMappingSource, RemoveLocalMapping, RemoveMappingSource,
+        ReorderMappingSources, SharedMappingApi, UpdateLocalMapping, UpdateMappingSource,
+    },
     providers::{
         ChangeProviderUpdatePolicy, InspectProviderRelease, InstallProvider,
         ProviderReleaseInspectionSnapshot, ProviderSnapshot, ProviderSourceSnapshot,
@@ -43,6 +49,7 @@ pub struct ApplicationInteractions {
     pub connections: Arc<dyn ConnectionInteraction>,
     pub binary_assets: Arc<dyn BinaryAssetInteraction>,
     pub providers: SharedProviderRegistry,
+    pub mappings: SharedMappingApi,
 }
 
 impl ApplicationInteractions {
@@ -50,11 +57,13 @@ impl ApplicationInteractions {
         connections: Arc<dyn ConnectionInteraction>,
         binary_assets: Arc<dyn BinaryAssetInteraction>,
         providers: SharedProviderRegistry,
+        mappings: SharedMappingApi,
     ) -> Self {
         Self {
             connections,
             binary_assets,
             providers,
+            mappings,
         }
     }
 }
@@ -158,6 +167,49 @@ pub trait ApplicationApi: Send + Sync {
         command: ChangeProviderUpdatePolicy,
     ) -> ApplicationFuture<'_, ProviderSnapshot>;
     fn remove_provider(&self, command: RemoveProvider) -> ApplicationFuture<'_, ()>;
+    fn mapping_state(&self) -> ApplicationFuture<'_, MappingStateSnapshot>;
+    fn create_uploaded_mapping_source(
+        &self,
+        command: CreateUploadedMappingSource,
+        content: MappingContentReader,
+    ) -> ApplicationFuture<'_, MappingStateSnapshot>;
+    fn create_remote_mapping_source(
+        &self,
+        command: CreateRemoteMappingSource,
+    ) -> ApplicationFuture<'_, MappingStateSnapshot>;
+    fn update_mapping_source(
+        &self,
+        command: UpdateMappingSource,
+    ) -> ApplicationFuture<'_, MappingStateSnapshot>;
+    fn create_local_mapping(
+        &self,
+        command: CreateLocalMapping,
+    ) -> ApplicationFuture<'_, MappingStateSnapshot>;
+    fn update_local_mapping(
+        &self,
+        command: UpdateLocalMapping,
+    ) -> ApplicationFuture<'_, MappingStateSnapshot>;
+    fn remove_local_mapping(
+        &self,
+        command: RemoveLocalMapping,
+    ) -> ApplicationFuture<'_, MappingStateSnapshot>;
+    fn reorder_mapping_sources(
+        &self,
+        command: ReorderMappingSources,
+    ) -> ApplicationFuture<'_, MappingStateSnapshot>;
+    fn remove_mapping_source(
+        &self,
+        command: RemoveMappingSource,
+    ) -> ApplicationFuture<'_, MappingStateSnapshot>;
+    fn refresh_remote_mapping_source(
+        &self,
+        command: RefreshRemoteMappingSource,
+    ) -> ApplicationFuture<'_, MappingStateSnapshot>;
+    fn read_mapping_source_content(
+        &self,
+        source_id: Uuid,
+    ) -> ApplicationFuture<'_, MappingSourceContent>;
+    fn query_mappings(&self, query: QueryMappings) -> ApplicationFuture<'_, MappingPageSnapshot>;
 }
 
 #[derive(Clone)]
@@ -170,6 +222,7 @@ pub struct ApplicationFacade<W, C, T, R, D> {
     connection_interaction: Arc<dyn ConnectionInteraction>,
     binary_assets: Arc<dyn BinaryAssetInteraction>,
     providers: SharedProviderRegistry,
+    mappings: SharedMappingApi,
 }
 
 impl<W, C, T, R, D> ApplicationFacade<W, C, T, R, D>
@@ -202,6 +255,7 @@ where
             connection_interaction: interactions.connections,
             binary_assets: interactions.binary_assets,
             providers: interactions.providers,
+            mappings: interactions.mappings,
         }
     }
 
@@ -672,5 +726,84 @@ where
 
     fn remove_provider(&self, command: RemoveProvider) -> ApplicationFuture<'_, ()> {
         self.providers.remove_provider(command)
+    }
+
+    fn mapping_state(&self) -> ApplicationFuture<'_, MappingStateSnapshot> {
+        self.mappings.state()
+    }
+
+    fn create_uploaded_mapping_source(
+        &self,
+        command: CreateUploadedMappingSource,
+        content: MappingContentReader,
+    ) -> ApplicationFuture<'_, MappingStateSnapshot> {
+        self.mappings.create_uploaded_source(command, content)
+    }
+
+    fn create_remote_mapping_source(
+        &self,
+        command: CreateRemoteMappingSource,
+    ) -> ApplicationFuture<'_, MappingStateSnapshot> {
+        self.mappings.create_remote_source(command)
+    }
+
+    fn update_mapping_source(
+        &self,
+        command: UpdateMappingSource,
+    ) -> ApplicationFuture<'_, MappingStateSnapshot> {
+        self.mappings.update_source(command)
+    }
+
+    fn create_local_mapping(
+        &self,
+        command: CreateLocalMapping,
+    ) -> ApplicationFuture<'_, MappingStateSnapshot> {
+        self.mappings.create_local_mapping(command)
+    }
+
+    fn update_local_mapping(
+        &self,
+        command: UpdateLocalMapping,
+    ) -> ApplicationFuture<'_, MappingStateSnapshot> {
+        self.mappings.update_local_mapping(command)
+    }
+
+    fn remove_local_mapping(
+        &self,
+        command: RemoveLocalMapping,
+    ) -> ApplicationFuture<'_, MappingStateSnapshot> {
+        self.mappings.remove_local_mapping(command)
+    }
+
+    fn reorder_mapping_sources(
+        &self,
+        command: ReorderMappingSources,
+    ) -> ApplicationFuture<'_, MappingStateSnapshot> {
+        self.mappings.reorder_sources(command)
+    }
+
+    fn remove_mapping_source(
+        &self,
+        command: RemoveMappingSource,
+    ) -> ApplicationFuture<'_, MappingStateSnapshot> {
+        self.mappings.remove_source(command)
+    }
+
+    fn refresh_remote_mapping_source(
+        &self,
+        command: RefreshRemoteMappingSource,
+    ) -> ApplicationFuture<'_, MappingStateSnapshot> {
+        self.mappings.refresh_remote_source(command)
+    }
+
+    fn read_mapping_source_content(
+        &self,
+        source_id: Uuid,
+    ) -> ApplicationFuture<'_, MappingSourceContent> {
+        self.mappings.read_source_content(source_id)
+    }
+
+    fn query_mappings(&self, query: QueryMappings) -> ApplicationFuture<'_, MappingPageSnapshot> {
+        self.mappings.query(query)
     }
 }

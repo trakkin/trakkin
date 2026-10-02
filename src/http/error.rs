@@ -177,6 +177,8 @@ fn status(code: ApplicationErrorCode) -> StatusCode {
         | ApplicationErrorCode::WorkspaceOrSourceNotFound
         | ApplicationErrorCode::ConnectionNotFound
         | ApplicationErrorCode::ProviderNotFound
+        | ApplicationErrorCode::MappingNotFound
+        | ApplicationErrorCode::MappingSourceNotFound
         | ApplicationErrorCode::AuthenticationNotFound
         | ApplicationErrorCode::BinaryAssetNotFound
         | ApplicationErrorCode::SourceNotAttached
@@ -194,11 +196,14 @@ fn status(code: ApplicationErrorCode) -> StatusCode {
         | ApplicationErrorCode::StreamUnavailable
         | ApplicationErrorCode::TaskResourceUnavailable
         | ApplicationErrorCode::TaskCancellationUnsupported => StatusCode::CONFLICT,
+        ApplicationErrorCode::MappingChainChanged => StatusCode::CONFLICT,
         ApplicationErrorCode::ProviderConflict => StatusCode::CONFLICT,
-        ApplicationErrorCode::ProviderAuthenticationFailed
+        ApplicationErrorCode::InvalidMappingSource
+        | ApplicationErrorCode::ProviderAuthenticationFailed
         | ApplicationErrorCode::ProviderAuthorizationFailed
         | ApplicationErrorCode::ProviderUnsupported => StatusCode::UNPROCESSABLE_ENTITY,
         ApplicationErrorCode::ProviderRateLimited => StatusCode::TOO_MANY_REQUESTS,
+        ApplicationErrorCode::MappingSourceUnavailable => StatusCode::BAD_GATEWAY,
         ApplicationErrorCode::ProviderUnavailable => StatusCode::SERVICE_UNAVAILABLE,
         ApplicationErrorCode::InvalidProviderData | ApplicationErrorCode::ProviderInternal => {
             StatusCode::BAD_GATEWAY

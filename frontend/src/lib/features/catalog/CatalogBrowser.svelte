@@ -592,7 +592,7 @@ function formatGenericAttributeValue(value: unknown): string {
           >
             <Tabs.List
               aria-label="Catalog sources"
-              class="min-w-max rounded-md border border-border-subtle bg-surface-raised p-0.5"
+              class="min-w-max"
             >
               {#each data.sources as source (source.source.id)}
                 <Tabs.Trigger value={source.source.id}>{source.source.displayName}</Tabs.Trigger>
@@ -784,6 +784,7 @@ function formatGenericAttributeValue(value: unknown): string {
               class="w-auto! shrink-0"
               onValueChange={changeViewMode}
               value={viewMode}
+              variant="segmented"
             >
               <Tabs.List
                 aria-label="Catalog view"

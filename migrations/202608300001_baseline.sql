@@ -632,3 +632,120 @@ ON state_observation_tombstones (
     subject_key_namespace,
     subject_key_value
 );
+
+CREATE TABLE mapping_sources (
+    id UUID PRIMARY KEY,
+    source_key TEXT NOT NULL UNIQUE CHECK (source_key <> ''),
+    source_kind TEXT NOT NULL CHECK (
+        source_kind IN ('local', 'upload', 'remote')
+    ),
+    display_name TEXT NOT NULL CHECK (btrim(display_name) <> ''),
+    remote_url TEXT,
+    http_etag TEXT,
+    http_last_modified TEXT,
+    priority BIGINT NOT NULL UNIQUE DEFERRABLE INITIALLY IMMEDIATE
+    CHECK (priority >= 0),
+    enabled BOOLEAN NOT NULL,
+    current_version_id UUID NOT NULL,
+    last_checked_at TIMESTAMPTZ,
+    last_refresh_error TEXT,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    CHECK (
+        (
+            source_kind = 'local'
+            AND priority = 0
+            AND enabled
+            AND remote_url IS NULL
+        )
+        OR (
+            source_kind = 'upload'
+            AND priority > 0
+            AND remote_url IS NULL
+        )
+        OR (
+            source_kind = 'remote'
+            AND priority > 0
+            AND btrim(remote_url) <> ''
+        )
+    ),
+    CHECK (last_refresh_error IS NULL OR last_checked_at IS NOT NULL)
+);
+
+CREATE UNIQUE INDEX mapping_sources_local_singleton_idx
+ON mapping_sources (source_kind)
+WHERE source_kind = 'local';
+
+CREATE UNIQUE INDEX mapping_sources_remote_url_unique_idx
+ON mapping_sources (remote_url)
+WHERE source_kind = 'remote';
+
+CREATE TABLE mapping_source_versions (
+    id UUID PRIMARY KEY,
+    source_id UUID NOT NULL REFERENCES mapping_sources(id) ON DELETE CASCADE,
+    content_hash TEXT NOT NULL CHECK (content_hash ~ '^[0-9a-f]{64}$'),
+    byte_length BIGINT NOT NULL CHECK (byte_length >= 0),
+    artifact_path TEXT NOT NULL CHECK (artifact_path <> ''),
+    created_at TIMESTAMPTZ NOT NULL,
+    UNIQUE (id, source_id),
+    UNIQUE (source_id, content_hash)
+);
+
+ALTER TABLE mapping_sources
+ADD CONSTRAINT mapping_sources_current_version_fk
+    FOREIGN KEY (current_version_id, id)
+    REFERENCES mapping_source_versions(id, source_id)
+    ON DELETE RESTRICT
+    DEFERRABLE INITIALLY DEFERRED;
+
+CREATE TABLE mapping_generations (
+    id UUID PRIMARY KEY,
+    chain_fingerprint TEXT NOT NULL CHECK (
+        chain_fingerprint ~ '^[0-9a-f]{64}$'
+    ),
+    artifact_path TEXT NOT NULL CHECK (artifact_path <> ''),
+    created_at TIMESTAMPTZ NOT NULL,
+    UNIQUE (chain_fingerprint)
+);
+
+CREATE TABLE mapping_generation_sources (
+    generation_id UUID NOT NULL
+    REFERENCES mapping_generations(id) ON DELETE CASCADE,
+    position BIGINT NOT NULL CHECK (position >= 0),
+    source_id UUID NOT NULL REFERENCES mapping_sources(id) ON DELETE RESTRICT,
+    source_version_id UUID NOT NULL,
+    PRIMARY KEY (generation_id, position),
+    UNIQUE (generation_id, source_id),
+    FOREIGN KEY (source_version_id, source_id)
+    REFERENCES mapping_source_versions(id, source_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE mapping_chain_state (
+    singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+    active_generation_id UUID
+    REFERENCES mapping_generations(id) ON DELETE RESTRICT,
+    updated_at TIMESTAMPTZ NOT NULL
+);
+
+INSERT INTO mapping_chain_state (singleton, updated_at)
+VALUES (TRUE, current_timestamp);
+
+CREATE FUNCTION reject_mapping_manifest_update() RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    RAISE EXCEPTION 'mapping manifests are immutable' USING ERRCODE = '55000';
+END
+$$;
+
+CREATE TRIGGER mapping_source_versions_immutable
+BEFORE UPDATE ON mapping_source_versions
+FOR EACH ROW EXECUTE FUNCTION reject_mapping_manifest_update();
+
+CREATE TRIGGER mapping_generations_immutable
+BEFORE UPDATE ON mapping_generations
+FOR EACH ROW EXECUTE FUNCTION reject_mapping_manifest_update();
+
+CREATE TRIGGER mapping_generation_sources_immutable
+BEFORE UPDATE ON mapping_generation_sources
+FOR EACH ROW EXECUTE FUNCTION reject_mapping_manifest_update();

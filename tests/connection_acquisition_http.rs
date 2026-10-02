@@ -25,6 +25,7 @@ use trakkin::{
         adapter_process::AdapterProcess,
         catalog_queries::PostgresCatalogQueryRepository,
         connection::{ConnectionMasterKey, PostgresConnectionRepository, ProcessSessionRegistry},
+        mappings::PostgresMappingManager,
         task_manager::PostgresTaskRepository,
         workspaces::PostgresWorkspaceRepository,
     },
@@ -46,6 +47,11 @@ async fn connection_and_acquisition_routes_are_closed_bounded_and_secret_safe() 
         .await
         .expect("fresh database starts");
     seed_source(&database.pool()).await;
+    let mappings = Arc::new(
+        PostgresMappingManager::start(database.pool(), directory.path(), timestamp(0))
+            .await
+            .expect("mapping manager starts"),
+    );
     let application = ApplicationFacade::new(
         PostgresWorkspaceRepository::new(database.pool()),
         PostgresCatalogQueryRepository::new(database.pool()),
@@ -56,6 +62,7 @@ async fn connection_and_acquisition_routes_are_closed_bounded_and_secret_safe() 
             Arc::new(StaticConnectionInteraction),
             Arc::new(StaticBinaryAssetInteraction),
             static_provider_registry(),
+            mappings,
         ),
     );
     let router = http::router(Arc::new(application), ".".into());

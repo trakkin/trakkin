@@ -1,4 +1,4 @@
-import { Blocks, Cable, Library, PackageOpen, ScrollText } from "@lucide/svelte";
+import { Blocks, Cable, Library, PackageOpen, ScrollText, Waypoints } from "@lucide/svelte";
 import type { Component } from "svelte";
 import { dev } from "$app/environment";
 
@@ -27,6 +27,7 @@ export function navigationFor(workspaceId?: string): AppNavigationGroup[] {
           icon: Cable,
           label: "Connections",
         },
+        { href: "/mappings", icon: Waypoints, label: "Mappings" },
         { href: "/providers", icon: PackageOpen, label: "Providers" },
         { href: "/logs", icon: ScrollText, label: "Logs" },
       ],

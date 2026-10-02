@@ -33,6 +33,11 @@ pub enum ApplicationErrorCode {
     ProviderUnsupported,
     InvalidProviderData,
     ProviderInternal,
+    MappingNotFound,
+    MappingSourceNotFound,
+    MappingSourceUnavailable,
+    MappingChainChanged,
+    InvalidMappingSource,
     Internal,
 }
 
@@ -72,6 +77,11 @@ impl ApplicationErrorCode {
             Self::ProviderUnsupported => "provider_unsupported",
             Self::InvalidProviderData => "invalid_provider_data",
             Self::ProviderInternal => "provider_internal_error",
+            Self::MappingNotFound => "mapping_not_found",
+            Self::MappingSourceNotFound => "mapping_source_not_found",
+            Self::MappingSourceUnavailable => "mapping_source_unavailable",
+            Self::MappingChainChanged => "mapping_chain_changed",
+            Self::InvalidMappingSource => "invalid_mapping_source",
             Self::Internal => "internal_error",
         }
     }
