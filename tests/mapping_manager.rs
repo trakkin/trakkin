@@ -20,9 +20,9 @@ use trakkin::{
         error::ApplicationErrorCode,
         mappings::{
             CreateLocalMapping, CreateRemoteMappingSource, CreateUploadedMappingSource, MappingApi,
-            MappingContentReader, MappingSourceKind, QueryMappings, RefreshRemoteMappingSource,
-            RemoveLocalMapping, RemoveMappingSource, ReorderMappingSources, UpdateLocalMapping,
-            UpdateMappingSource,
+            MappingContentReader, MappingSourceKind, MappingUnitSide, QueryMappings,
+            RefreshRemoteMappingSource, RemoveLocalMapping, RemoveMappingSource,
+            ReorderMappingSources, ResolveMappingUnits, UpdateLocalMapping, UpdateMappingSource,
         },
     },
     database::DatabaseRuntime,
@@ -75,6 +75,36 @@ async fn mapping_manager_owns_the_complete_source_and_query_lifecycle() {
     let first_page = manager.query(query()).await.expect("mappings query");
     assert_eq!(first_page.items.len(), 1);
     assert_eq!(first_page.items[0].source_key, "community.first");
+    let resolved = manager
+        .resolve_units(ResolveMappingUnits {
+            expected_chain_fingerprint: first.active_chain_fingerprint.clone(),
+            unit_keys: vec![
+                "a://one".to_owned(),
+                "missing://item".to_owned(),
+                "a://one".to_owned(),
+            ],
+        })
+        .await
+        .expect("mapping units resolve against the active generation");
+    assert_eq!(
+        Some(resolved.chain_fingerprint.as_str()),
+        first.active_chain_fingerprint.as_deref()
+    );
+    assert_eq!(resolved.units.len(), 2);
+    assert_eq!(resolved.units[0].unit_key, "a://one");
+    assert_eq!(resolved.units[0].matches.len(), 1);
+    assert_eq!(
+        resolved.units[0].matches[0].matched_side,
+        MappingUnitSide::Left
+    );
+    assert_eq!(resolved.units[0].matches[0].source_key, "community.first");
+    assert_eq!(resolved.units[0].matches[0].left.members.len(), 1);
+    assert_eq!(
+        resolved.units[0].matches[0].right.members[0].unit_key,
+        "b://one"
+    );
+    assert_eq!(resolved.units[0].matches[0].alignments.len(), 1);
+    assert!(resolved.units[1].matches.is_empty());
     let stale_query = manager
         .query(QueryMappings {
             expected_chain_fingerprint: initial.active_chain_fingerprint.clone(),
@@ -112,6 +142,15 @@ async fn mapping_manager_owns_the_complete_source_and_query_lifecycle() {
         .expect("local source exists");
     let local_page = manager.query(query()).await.unwrap();
     assert_eq!(local_page.items[0].source_key, "local");
+    let local_resolution = manager
+        .resolve_units(ResolveMappingUnits {
+            expected_chain_fingerprint: created_local.active_chain_fingerprint.clone(),
+            unit_keys: vec!["a://one".to_owned()],
+        })
+        .await
+        .unwrap();
+    assert_eq!(local_resolution.units[0].matches.len(), 1);
+    assert_eq!(local_resolution.units[0].matches[0].source_key, "local");
     let local_statement_id = local_page.items[0].statement_id.clone();
     let mut stored_content = manager
         .read_source_content(local_source.id)
@@ -705,6 +744,7 @@ fn query() -> QueryMappings {
         canonical_statement: None,
         statement_id: None,
         relation_key: None,
+        operator: None,
         source_key: None,
         endpoint: None,
         annotation_name: None,

@@ -99,6 +99,16 @@ async fn mapping_routes_manage_local_rows_and_stream_read_only_source_content() 
     );
     assert_eq!(page.1["items"][0]["sourceKey"], "community");
 
+    let coverage_page = request(
+        &router,
+        Request::get("/api/v1/mappings?operator=coverage&limit=10")
+            .body(Body::empty())
+            .expect("filtered query request is built"),
+    )
+    .await;
+    assert_eq!(coverage_page.0, StatusCode::OK);
+    assert_eq!(coverage_page.1["items"], serde_json::json!([]));
+
     let response = router
         .clone()
         .oneshot(

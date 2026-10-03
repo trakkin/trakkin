@@ -14,13 +14,17 @@ use trakkin::{
     application::acquisition::{
         BeginRead, PublicationRepository, PublishRead, ReadMode, StageCatalogBatch, StageStateBatch,
     },
+    application::catalog_queries::{CatalogQueryRepository, ResolveSubjectUnits},
     database::DatabaseRuntime,
     domain::acquisition::{
         BinaryAssetKey, BinaryAssetReference, CatalogBatch, CatalogItem, CatalogRelation,
         CatalogRelationKey, ProviderItemKey, StateBatch, StateField, StateObservation,
-        StateSubject, StateValue, Term,
+        StateSubject, StateValue, SubjectUnitBinding, SubjectUnitBindingKey, Term,
     },
-    infrastructure::catalog_publication::PostgresPublicationRepository,
+    infrastructure::{
+        catalog_publication::PostgresPublicationRepository,
+        catalog_queries::PostgresCatalogQueryRepository,
+    },
 };
 use uuid::Uuid;
 
@@ -274,6 +278,27 @@ async fn incremental_catalog_applies_exact_delta_without_advancing_state() {
             (b"relation.stale".to_vec(), "delete".to_owned()),
         ]
     );
+    assert_eq!(
+        staged_unit_bindings(&database.pool()).await,
+        [
+            (
+                "fixture://item/new".to_owned(),
+                "upsert".to_owned(),
+                Some(0)
+            ),
+            (
+                "fixture://item/old".to_owned(),
+                "upsert".to_owned(),
+                Some(4)
+            ),
+            ("fixture://item/stale".to_owned(), "delete".to_owned(), None),
+            (
+                "fixture://relation/root".to_owned(),
+                "upsert".to_owned(),
+                Some(1)
+            ),
+        ]
+    );
 
     repository
         .publish_incremental_catalog(PublishRead {
@@ -314,6 +339,32 @@ async fn incremental_catalog_applies_exact_delta_without_advancing_state() {
             b"relation.old".to_vec(),
         ]
     );
+    assert_eq!(
+        published_unit_bindings(&database.pool()).await,
+        [
+            (
+                "fixture://item/new".to_owned(),
+                "provider_item".to_owned(),
+                b"item.new".to_vec(),
+                0,
+                NEW_PUBLICATION_ID,
+            ),
+            (
+                "fixture://item/old".to_owned(),
+                "provider_item".to_owned(),
+                b"item.old".to_vec(),
+                4,
+                NEW_PUBLICATION_ID,
+            ),
+            (
+                "fixture://relation/root".to_owned(),
+                "catalog_relation".to_owned(),
+                b"group.root".to_vec(),
+                1,
+                NEW_PUBLICATION_ID,
+            ),
+        ]
+    );
     assert_eq!(state_stream(&database.pool()).await, state_before);
     assert_eq!(
         published_state_rows(&database.pool()).await,
@@ -321,6 +372,21 @@ async fn incremental_catalog_applies_exact_delta_without_advancing_state() {
     );
     assert_eq!(staged_catalog_items(&database.pool()).await, []);
     assert_eq!(staged_catalog_relations(&database.pool()).await, []);
+    let candidates = PostgresCatalogQueryRepository::new(database.pool())
+        .resolve_subject_units(ResolveSubjectUnits {
+            workspace_id: catalog_publication_support::WORKSPACE_ID,
+            source_id: SOURCE_ID,
+            subject: StateSubject::ProviderItem(
+                ProviderItemKey::new("fixture.item", b"item.old".to_vec())
+                    .expect("published binding subject is valid"),
+            ),
+        })
+        .await
+        .expect("published subject unit bindings are queryable");
+    assert_eq!(candidates.publication_id, NEW_PUBLICATION_ID);
+    assert_eq!(candidates.candidates.len(), 1);
+    assert_eq!(candidates.candidates[0].unit_key, "fixture://item/old");
+    assert_eq!(candidates.candidates[0].relevance_rank, 4);
     assert_task_completed(&database.pool()).await;
 
     database
@@ -408,6 +474,23 @@ async fn seed_incremental_catalog_read(pool: PgPool) {
     .execute(&pool)
     .await
     .expect("stale catalog relation is seeded");
+    sqlx::query(
+        "INSERT INTO subject_unit_bindings (
+               source_id, unit_key, subject_kind,
+             subject_key_namespace, subject_key_value,
+             relevance_rank, publication_id, updated_at
+         ) VALUES
+             ($1, 'fixture://item/old', 'provider_item', 'fixture.item', $2, 9, $4, $5),
+             ($1, 'fixture://item/stale', 'provider_item', 'fixture.item', $3, 2, $4, $5)",
+    )
+    .bind(SOURCE_ID)
+    .bind(b"item.old".as_slice())
+    .bind(b"item.stale".as_slice())
+    .bind(OLD_PUBLICATION_ID)
+    .bind(now)
+    .execute(&pool)
+    .await
+    .expect("subject unit bindings are seeded");
 }
 
 async fn seed_incremental_state_read(pool: PgPool) {
@@ -565,7 +648,7 @@ fn incremental_batch() -> CatalogBatch {
         CatalogRelationKey::new("fixture.relation", b"relation.old".to_vec())
             .expect("updated relation key is valid"),
         Some(root_key.clone()),
-        Some(updated_key),
+        Some(updated_key.clone()),
         Term::new("fixture", "member").expect("updated relation kind is valid"),
         vec![10],
         json!({}),
@@ -574,13 +657,30 @@ fn incremental_batch() -> CatalogBatch {
     let added_relation = CatalogRelation::new(
         CatalogRelationKey::new("fixture.relation", b"relation.new".to_vec())
             .expect("added relation key is valid"),
-        Some(root_key),
-        Some(added_key),
+        Some(root_key.clone()),
+        Some(added_key.clone()),
         Term::new("fixture", "member").expect("added relation kind is valid"),
         vec![20],
         json!({}),
     )
     .expect("added catalog relation is valid");
+    let unit_binding_upserts = vec![
+        unit_binding(
+            "fixture://item/old",
+            StateSubject::ProviderItem(updated_key.clone()),
+            4,
+        ),
+        unit_binding(
+            "fixture://item/new",
+            StateSubject::ProviderItem(added_key.clone()),
+            0,
+        ),
+        unit_binding(
+            "fixture://relation/root",
+            StateSubject::CatalogRelation(root_key.clone()),
+            1,
+        ),
+    ];
     CatalogBatch::new(
         0,
         vec![updated, added],
@@ -593,7 +693,23 @@ fn incremental_batch() -> CatalogBatch {
             CatalogRelationKey::new("fixture.relation", b"relation.stale".to_vec())
                 .expect("deleted relation key is valid"),
         ],
+        unit_binding_upserts,
+        vec![unit_binding_key(
+            "fixture://item/stale",
+            StateSubject::ProviderItem(
+                ProviderItemKey::new("fixture.item", b"item.stale".to_vec())
+                    .expect("deleted mapping subject is valid"),
+            ),
+        )],
     )
+}
+
+fn unit_binding(unit_key: &str, subject: StateSubject, relevance_rank: u32) -> SubjectUnitBinding {
+    SubjectUnitBinding::new(unit_binding_key(unit_key, subject), relevance_rank)
+}
+
+fn unit_binding_key(unit_key: &str, subject: StateSubject) -> SubjectUnitBindingKey {
+    SubjectUnitBindingKey::new(unit_key, subject).expect("mapping unit binding key is valid")
 }
 
 fn incremental_state_batch() -> StateBatch {
@@ -707,6 +823,28 @@ async fn staged_catalog_relations(pool: &PgPool) -> Vec<(Vec<u8>, String)> {
     .fetch_all(pool)
     .await
     .expect("staged catalog relations are queryable")
+}
+
+async fn staged_unit_bindings(pool: &PgPool) -> Vec<(String, String, Option<i64>)> {
+    sqlx::query_as(
+        "SELECT unit_key, operation, relevance_rank
+         FROM staged_subject_unit_bindings
+         ORDER BY unit_key",
+    )
+    .fetch_all(pool)
+    .await
+    .expect("staged subject unit bindings are readable")
+}
+
+async fn published_unit_bindings(pool: &PgPool) -> Vec<(String, String, Vec<u8>, i64, Uuid)> {
+    sqlx::query_as(
+        "SELECT unit_key, subject_kind, subject_key_value, relevance_rank, publication_id
+         FROM subject_unit_bindings
+         ORDER BY unit_key",
+    )
+    .fetch_all(pool)
+    .await
+    .expect("published subject unit bindings are readable")
 }
 
 async fn published_state_rows(pool: &PgPool) -> Vec<(String, serde_json::Value, Vec<u8>, Uuid)> {

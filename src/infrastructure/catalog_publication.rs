@@ -16,7 +16,7 @@ use crate::{
     },
     domain::acquisition::{
         CatalogBatch, CatalogItem, CatalogRelation, CatalogRelationKey, ProviderItemKey,
-        StateBatch, StateObservation, StateSubject, StateValue,
+        StateBatch, StateObservation, StateSubject, StateValue, SubjectUnitBindingKey,
     },
 };
 
@@ -396,6 +396,13 @@ FOR UPDATE
         match stream_kind {
             StreamKind::Catalog => {
                 sqlx::query(
+                    "DELETE FROM subject_unit_bindings WHERE source_id = $1
+",
+                )
+                .bind(reset_task.source_id)
+                .execute(&mut *transaction)
+                .await?;
+                sqlx::query(
                     "DELETE FROM catalog_relations WHERE source_id = $1
 ",
                 )
@@ -540,6 +547,31 @@ FOR UPDATE
                 sequence,
                 ordinal(relation_delete_offset + row_ordinal)?,
                 key,
+            )
+            .await?;
+        }
+        for (row_ordinal, binding) in command.batch.unit_binding_upserts().iter().enumerate() {
+            stage_unit_binding(
+                &mut transaction,
+                command.attempt_id,
+                sequence,
+                ordinal(row_ordinal)?,
+                binding.key(),
+                Some(i64::from(binding.relevance_rank())),
+                "upsert",
+            )
+            .await?;
+        }
+        let binding_delete_offset = command.batch.unit_binding_upserts().len();
+        for (row_ordinal, binding) in command.batch.unit_binding_deletes().iter().enumerate() {
+            stage_unit_binding(
+                &mut transaction,
+                command.attempt_id,
+                sequence,
+                ordinal(binding_delete_offset + row_ordinal)?,
+                binding,
+                None,
+                "delete",
             )
             .await?;
         }
@@ -961,6 +993,31 @@ fn validate_batch_uniqueness(batch: &CatalogBatch) -> Result<(), PublicationErro
             return duplicate_staging_key("catalog relation");
         }
     }
+
+    let mut unit_bindings = HashSet::new();
+    for binding in batch.unit_binding_upserts() {
+        let key = binding.key();
+        let (subject_kind, subject_namespace, subject_value) = state_subject(key.subject());
+        if !unit_bindings.insert((
+            key.unit_key(),
+            subject_kind,
+            subject_namespace,
+            subject_value,
+        )) {
+            return duplicate_staging_key("subject unit binding");
+        }
+    }
+    for key in batch.unit_binding_deletes() {
+        let (subject_kind, subject_namespace, subject_value) = state_subject(key.subject());
+        if !unit_bindings.insert((
+            key.unit_key(),
+            subject_kind,
+            subject_namespace,
+            subject_value,
+        )) {
+            return duplicate_staging_key("subject unit binding");
+        }
+    }
     Ok(())
 }
 
@@ -1261,6 +1318,47 @@ row_ordinal = excluded.row_ordinal
     Ok(())
 }
 
+async fn stage_unit_binding(
+    transaction: &mut Transaction<'_, Postgres>,
+    attempt_id: Uuid,
+    sequence: i64,
+    row_ordinal: i32,
+    key: &SubjectUnitBindingKey,
+    relevance_rank: Option<i64>,
+    operation: &'static str,
+) -> Result<(), PublicationError> {
+    let (subject_kind, subject_key_namespace, subject_key_value) = state_subject(key.subject());
+    sqlx::query(
+        "INSERT INTO staged_subject_unit_bindings (
+    attempt_id, unit_key, subject_kind,
+    subject_key_namespace, subject_key_value,
+    operation, relevance_rank, batch_sequence, row_ordinal
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+ON CONFLICT (
+    attempt_id, unit_key, subject_kind,
+    subject_key_namespace, subject_key_value
+) DO UPDATE SET
+operation = excluded.operation,
+relevance_rank = excluded.relevance_rank,
+batch_sequence = excluded.batch_sequence,
+row_ordinal = excluded.row_ordinal
+",
+    )
+    .bind(attempt_id)
+    .bind(key.unit_key())
+    .bind(subject_kind)
+    .bind(subject_key_namespace)
+    .bind(subject_key_value)
+    .bind(operation)
+    .bind(relevance_rank)
+    .bind(sequence)
+    .bind(row_ordinal)
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
+}
+
 async fn validate_full_catalog_staging(
     transaction: &mut Transaction<'_, Postgres>,
     attempt_id: Uuid,
@@ -1313,6 +1411,22 @@ WHERE attempt_id = $1
         .iter()
         .map(|relation| KeyIdentity(relation.key_namespace.clone(), relation.key_value.clone()))
         .collect::<HashSet<_>>();
+    let bindings = sqlx::query_as::<_, UnitBindingSubjectRow>(
+        "SELECT
+    subject_kind, subject_key_namespace, subject_key_value, operation
+FROM staged_subject_unit_bindings
+WHERE attempt_id = $1
+",
+    )
+    .bind(attempt_id)
+    .fetch_all(&mut **transaction)
+    .await?;
+    if bindings.iter().any(|binding| binding.operation != "upsert") {
+        return Err(PublicationError::InvalidStaging {
+            reason: "full catalog staging must contain only unit binding upserts".to_owned(),
+        });
+    }
+    validate_unit_binding_subjects(&item_keys, &relation_keys, bindings)?;
     validate_catalog_hierarchy(item_keys, relation_keys, relations)
 }
 
@@ -1375,7 +1489,42 @@ WHERE source_id = $1
         .iter()
         .map(|relation| KeyIdentity(relation.key_namespace.clone(), relation.key_value.clone()))
         .collect::<HashSet<_>>();
+    let bindings = sqlx::query_as::<_, UnitBindingSubjectRow>(
+        "SELECT
+    subject_kind,
+    subject_key_namespace,
+    subject_key_value,
+    'upsert'::TEXT AS operation
+FROM subject_unit_bindings
+WHERE source_id = $1
+",
+    )
+    .bind(source_id)
+    .fetch_all(&mut **transaction)
+    .await?;
+    validate_unit_binding_subjects(&item_keys, &relation_keys, bindings)?;
     validate_catalog_hierarchy(item_keys, relation_keys, relations)
+}
+
+fn validate_unit_binding_subjects(
+    item_keys: &HashSet<KeyIdentity>,
+    relation_keys: &HashSet<KeyIdentity>,
+    bindings: Vec<UnitBindingSubjectRow>,
+) -> Result<(), PublicationError> {
+    for binding in bindings {
+        let subject = KeyIdentity(binding.subject_key_namespace, binding.subject_key_value);
+        let exists = match binding.subject_kind.as_str() {
+            "provider_item" => item_keys.contains(&subject),
+            "catalog_relation" => relation_keys.contains(&subject),
+            _ => false,
+        };
+        if !exists {
+            return Err(PublicationError::InvalidStaging {
+                reason: "subject unit binding has a missing subject".to_owned(),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn validate_catalog_hierarchy(
@@ -1445,6 +1594,13 @@ async fn replace_catalog_projection(
     source_id: Uuid,
     command: &PublishRead,
 ) -> Result<(), PublicationError> {
+    sqlx::query(
+        "DELETE FROM subject_unit_bindings WHERE source_id = $1
+",
+    )
+    .bind(source_id)
+    .execute(&mut **transaction)
+    .await?;
     sqlx::query(
         "DELETE FROM catalog_relations WHERE source_id = $1
 ",
@@ -1521,6 +1677,26 @@ WHERE attempt_id = $4 AND operation = 'upsert'
     .bind(command.attempt_id)
     .execute(&mut **transaction)
     .await?;
+    sqlx::query(
+        "INSERT INTO subject_unit_bindings (
+    source_id, unit_key, subject_kind,
+    subject_key_namespace, subject_key_value,
+    relevance_rank, publication_id, updated_at
+)
+SELECT
+    $1 AS source_id, unit_key, subject_kind,
+    subject_key_namespace, subject_key_value,
+    relevance_rank, $2 AS publication_id, $3 AS updated_at
+FROM staged_subject_unit_bindings
+WHERE attempt_id = $4 AND operation = 'upsert'
+",
+    )
+    .bind(source_id)
+    .bind(command.publication_id)
+    .bind(command.published_at)
+    .bind(command.attempt_id)
+    .execute(&mut **transaction)
+    .await?;
     Ok(())
 }
 
@@ -1529,6 +1705,23 @@ async fn apply_catalog_delta(
     source_id: Uuid,
     command: &PublishRead,
 ) -> Result<(), PublicationError> {
+    sqlx::query(
+        "DELETE FROM subject_unit_bindings AS published
+    USING staged_subject_unit_bindings AS staged
+WHERE
+    staged.attempt_id = $1
+    AND staged.operation = 'delete'
+    AND published.source_id = $2
+    AND published.unit_key = staged.unit_key
+    AND published.subject_kind = staged.subject_kind
+    AND published.subject_key_namespace = staged.subject_key_namespace
+    AND published.subject_key_value = staged.subject_key_value
+",
+    )
+    .bind(command.attempt_id)
+    .bind(source_id)
+    .execute(&mut **transaction)
+    .await?;
     sqlx::query(
         "DELETE FROM catalog_relations AS published
 USING staged_catalog_relations AS staged
@@ -1657,6 +1850,34 @@ updated_at = excluded.updated_at
     .await?;
 
     sqlx::query(
+        "INSERT INTO subject_unit_bindings (
+    source_id, unit_key, subject_kind,
+    subject_key_namespace, subject_key_value,
+    relevance_rank, publication_id, updated_at
+)
+SELECT
+    $1 AS source_id, unit_key, subject_kind,
+    subject_key_namespace, subject_key_value,
+    relevance_rank, $2 AS publication_id, $3 AS updated_at
+FROM staged_subject_unit_bindings
+WHERE attempt_id = $4 AND operation = 'upsert'
+ON CONFLICT (
+    source_id, unit_key, subject_kind,
+    subject_key_namespace, subject_key_value
+) DO UPDATE SET
+relevance_rank = excluded.relevance_rank,
+publication_id = excluded.publication_id,
+updated_at = excluded.updated_at
+",
+    )
+    .bind(source_id)
+    .bind(command.publication_id)
+    .bind(command.published_at)
+    .bind(command.attempt_id)
+    .execute(&mut **transaction)
+    .await?;
+
+    sqlx::query(
         "UPDATE catalog_items SET publication_id = $1 WHERE source_id = $2
 ",
     )
@@ -1674,6 +1895,14 @@ updated_at = excluded.updated_at
     .await?;
     sqlx::query(
         "UPDATE catalog_relations SET publication_id = $1 WHERE source_id = $2
+",
+    )
+    .bind(command.publication_id)
+    .bind(source_id)
+    .execute(&mut **transaction)
+    .await?;
+    sqlx::query(
+        "UPDATE subject_unit_bindings SET publication_id = $1 WHERE source_id = $2
 ",
     )
     .bind(command.publication_id)
@@ -2008,6 +2237,13 @@ async fn clear_attempt_staging(
     attempt_id: Uuid,
 ) -> Result<(), PublicationError> {
     sqlx::query(
+        "DELETE FROM staged_subject_unit_bindings WHERE attempt_id = $1
+",
+    )
+    .bind(attempt_id)
+    .execute(&mut **transaction)
+    .await?;
+    sqlx::query(
         "DELETE FROM staged_catalog_relations WHERE attempt_id = $1
 ",
     )
@@ -2147,6 +2383,14 @@ struct StagedRelationRow {
     parent_key_value: Option<Vec<u8>>,
     item_key_namespace: Option<String>,
     item_key_value: Option<Vec<u8>>,
+}
+
+#[derive(FromRow)]
+struct UnitBindingSubjectRow {
+    subject_kind: String,
+    subject_key_namespace: String,
+    subject_key_value: Vec<u8>,
+    operation: String,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]

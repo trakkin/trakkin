@@ -1,6 +1,7 @@
 use serde_json::Value;
 use thiserror::Error;
 use time::OffsetDateTime;
+use trakkin_mappings_language::parse_unit_key;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct ProviderItemKey {
@@ -285,6 +286,60 @@ impl CatalogRelation {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum StateSubject {
+    ProviderItem(ProviderItemKey),
+    CatalogRelation(CatalogRelationKey),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SubjectUnitBindingKey {
+    unit_key: String,
+    subject: StateSubject,
+}
+
+impl SubjectUnitBindingKey {
+    pub fn new(
+        unit_key: impl Into<String>,
+        subject: StateSubject,
+    ) -> Result<Self, AcquisitionValueError> {
+        let unit_key = unit_key.into();
+        parse_unit_key(&unit_key).map_err(|_| AcquisitionValueError::InvalidMappingUnit)?;
+        Ok(Self { unit_key, subject })
+    }
+
+    pub fn unit_key(&self) -> &str {
+        &self.unit_key
+    }
+
+    pub fn subject(&self) -> &StateSubject {
+        &self.subject
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SubjectUnitBinding {
+    key: SubjectUnitBindingKey,
+    relevance_rank: u32,
+}
+
+impl SubjectUnitBinding {
+    pub fn new(key: SubjectUnitBindingKey, relevance_rank: u32) -> Self {
+        Self {
+            key,
+            relevance_rank,
+        }
+    }
+
+    pub fn key(&self) -> &SubjectUnitBindingKey {
+        &self.key
+    }
+
+    pub fn relevance_rank(&self) -> u32 {
+        self.relevance_rank
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct CatalogBatch {
     sequence: u64,
@@ -292,6 +347,8 @@ pub struct CatalogBatch {
     item_deletes: Vec<ProviderItemKey>,
     relation_upserts: Vec<CatalogRelation>,
     relation_deletes: Vec<CatalogRelationKey>,
+    unit_binding_upserts: Vec<SubjectUnitBinding>,
+    unit_binding_deletes: Vec<SubjectUnitBindingKey>,
 }
 
 impl CatalogBatch {
@@ -301,6 +358,8 @@ impl CatalogBatch {
         item_deletes: Vec<ProviderItemKey>,
         relation_upserts: Vec<CatalogRelation>,
         relation_deletes: Vec<CatalogRelationKey>,
+        unit_binding_upserts: Vec<SubjectUnitBinding>,
+        unit_binding_deletes: Vec<SubjectUnitBindingKey>,
     ) -> Self {
         Self {
             sequence,
@@ -308,6 +367,8 @@ impl CatalogBatch {
             item_deletes,
             relation_upserts,
             relation_deletes,
+            unit_binding_upserts,
+            unit_binding_deletes,
         }
     }
 
@@ -330,12 +391,14 @@ impl CatalogBatch {
     pub fn relation_deletes(&self) -> &[CatalogRelationKey] {
         &self.relation_deletes
     }
-}
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum StateSubject {
-    ProviderItem(ProviderItemKey),
-    CatalogRelation(CatalogRelationKey),
+    pub fn unit_binding_upserts(&self) -> &[SubjectUnitBinding] {
+        &self.unit_binding_upserts
+    }
+
+    pub fn unit_binding_deletes(&self) -> &[SubjectUnitBindingKey] {
+        &self.unit_binding_deletes
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -485,4 +548,6 @@ pub enum AcquisitionValueError {
     AttributesMustBeObject,
     #[error("provider revision must not be empty")]
     EmptyProviderRevision,
+    #[error("mapping unit must be a canonical concrete unit key")]
+    InvalidMappingUnit,
 }

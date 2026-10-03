@@ -45,11 +45,23 @@ pub struct SourceStateInspection {
     pub observations: Vec<StateObservation>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PublishedStreamStatus {
-    Unavailable,
-    Available,
-    Failed,
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResolveSubjectUnits {
+    pub workspace_id: Uuid,
+    pub source_id: Uuid,
+    pub subject: StateSubject,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SubjectUnitCandidate {
+    pub unit_key: String,
+    pub relevance_rank: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SubjectUnitCandidates {
+    pub publication_id: Uuid,
+    pub candidates: Vec<SubjectUnitCandidate>,
 }
 
 pub trait CatalogQueryRepository: Send + Sync {
@@ -64,4 +76,9 @@ pub trait CatalogQueryRepository: Send + Sync {
         &self,
         query: InspectSourceState,
     ) -> CatalogQueryFuture<'_, SourceStateInspection, Self::Error>;
+
+    fn resolve_subject_units(
+        &self,
+        query: ResolveSubjectUnits,
+    ) -> CatalogQueryFuture<'_, SubjectUnitCandidates, Self::Error>;
 }

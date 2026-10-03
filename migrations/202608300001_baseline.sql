@@ -441,6 +441,32 @@ CREATE TABLE staged_catalog_relations (
     )
 );
 
+CREATE TABLE staged_subject_unit_bindings (
+    attempt_id UUID NOT NULL REFERENCES read_attempts(id) ON DELETE CASCADE,
+    unit_key TEXT NOT NULL CHECK (unit_key <> ''),
+    subject_kind TEXT NOT NULL CHECK (
+        subject_kind IN ('provider_item', 'catalog_relation')
+    ),
+    subject_key_namespace TEXT NOT NULL CHECK (subject_key_namespace <> ''),
+    subject_key_value BYTEA NOT NULL CHECK (
+        octet_length(subject_key_value) > 0
+    ),
+    operation TEXT NOT NULL CHECK (operation IN ('upsert', 'delete')),
+    relevance_rank BIGINT CHECK (
+        relevance_rank BETWEEN 0 AND 4294967295
+    ),
+    batch_sequence BIGINT NOT NULL CHECK (batch_sequence >= 0),
+    row_ordinal INTEGER NOT NULL CHECK (row_ordinal >= 0),
+    PRIMARY KEY (
+        attempt_id,
+        unit_key,
+        subject_kind,
+        subject_key_namespace,
+        subject_key_value
+    ),
+    CHECK ((operation = 'upsert') = (relevance_rank IS NOT NULL))
+);
+
 CREATE TABLE staged_state_observations (
     attempt_id UUID NOT NULL REFERENCES read_attempts(id) ON DELETE CASCADE,
     subject_kind TEXT NOT NULL CHECK (
@@ -542,6 +568,40 @@ ON catalog_relations (
     order_parts,
     key_namespace,
     key_value
+);
+
+CREATE TABLE subject_unit_bindings (
+    source_id UUID NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    unit_key TEXT NOT NULL CHECK (unit_key <> ''),
+    subject_kind TEXT NOT NULL CHECK (
+        subject_kind IN ('provider_item', 'catalog_relation')
+    ),
+    subject_key_namespace TEXT NOT NULL CHECK (subject_key_namespace <> ''),
+    subject_key_value BYTEA NOT NULL CHECK (
+        octet_length(subject_key_value) > 0
+    ),
+    relevance_rank BIGINT NOT NULL CHECK (
+        relevance_rank BETWEEN 0 AND 4294967295
+    ),
+    publication_id UUID NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (
+        source_id,
+        unit_key,
+        subject_kind,
+        subject_key_namespace,
+        subject_key_value
+    )
+);
+
+CREATE INDEX subject_unit_bindings_subject_idx
+ON subject_unit_bindings (
+    source_id,
+    subject_kind,
+    subject_key_namespace,
+    subject_key_value,
+    relevance_rank,
+    unit_key
 );
 
 CREATE TABLE state_observations (

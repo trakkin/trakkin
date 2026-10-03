@@ -20,7 +20,7 @@ use trakkin::{
     domain::acquisition::{
         BinaryAssetKey, BinaryAssetReference, CatalogBatch, CatalogItem, CatalogRelation,
         CatalogRelationKey, ProviderItemKey, StateBatch, StateField, StateObservation,
-        StateSubject, StateValue, Term,
+        StateSubject, StateValue, SubjectUnitBinding, SubjectUnitBindingKey, Term,
     },
     infrastructure::{
         catalog_publication::{PostgresPublicationRepository, PublicationError},
@@ -198,6 +198,7 @@ async fn catalog_reset_is_selective_and_full_refetch_publishes_only_successor() 
     assert_eq!(published_item_rows(&database.pool()).await, []);
     assert!(published_asset_keys(&database.pool()).await.is_empty());
     assert!(published_relation_keys(&database.pool()).await.is_empty());
+    assert!(published_unit_bindings(&database.pool()).await.is_empty());
     assert_eq!(
         catalog_stream(&database.pool()).await,
         ("unavailable".to_owned(), None, None, None)
@@ -263,6 +264,25 @@ async fn catalog_reset_is_selective_and_full_refetch_publishes_only_successor() 
         [b"group.root".to_vec(), b"relation.new".to_vec()]
     );
     assert_eq!(
+        published_unit_bindings(&database.pool()).await,
+        [
+            (
+                "fixture://item/new".to_owned(),
+                "provider_item".to_owned(),
+                b"item.new".to_vec(),
+                0,
+                NEW_PUBLICATION_ID,
+            ),
+            (
+                "fixture://relation/root".to_owned(),
+                "catalog_relation".to_owned(),
+                b"group.root".to_vec(),
+                1,
+                NEW_PUBLICATION_ID,
+            ),
+        ]
+    );
+    assert_eq!(
         catalog_stream(&database.pool()).await,
         (
             "available".to_owned(),
@@ -282,6 +302,10 @@ async fn catalog_reset_is_selective_and_full_refetch_publishes_only_successor() 
     );
     assert_eq!(
         staged_catalog_items(&database.pool(), REFETCH_READ_ATTEMPT_ID).await,
+        []
+    );
+    assert_eq!(
+        staged_unit_bindings(&database.pool(), REFETCH_READ_ATTEMPT_ID).await,
         []
     );
 
@@ -366,6 +390,10 @@ async fn reset_rejects_active_read_then_succeeds_after_abandonment() {
         staged_catalog_relations(&database.pool(), READ_ATTEMPT_ID).await,
         []
     );
+    assert_eq!(
+        staged_unit_bindings(&database.pool(), READ_ATTEMPT_ID).await,
+        []
+    );
     repository
         .reset_source_stream(ResetSourceStream {
             task_id: REFETCH_TASK_ID,
@@ -439,6 +467,24 @@ async fn adapter_failure_abandons_staged_catalog_atomically() {
         [
             (b"group.root".to_vec(), "upsert".to_owned()),
             (b"relation.new".to_vec(), "upsert".to_owned()),
+        ]
+    );
+    assert_eq!(published_unit_bindings(&database.pool()).await, []);
+    assert_eq!(
+        staged_unit_bindings(&database.pool(), READ_ATTEMPT_ID).await,
+        [
+            (
+                "fixture://item/new".to_owned(),
+                "provider_item".to_owned(),
+                b"item.new".to_vec(),
+                Some(0),
+            ),
+            (
+                "fixture://relation/root".to_owned(),
+                "catalog_relation".to_owned(),
+                b"group.root".to_vec(),
+                Some(1),
+            ),
         ]
     );
 
@@ -593,6 +639,25 @@ async fn staged_full_catalog_is_invisible_until_fenced_publication() {
     assert_eq!(
         published_relation_keys(&database.pool()).await,
         [b"group.root".to_vec(), b"relation.new".to_vec()]
+    );
+    assert_eq!(
+        published_unit_bindings(&database.pool()).await,
+        [
+            (
+                "fixture://item/new".to_owned(),
+                "provider_item".to_owned(),
+                b"item.new".to_vec(),
+                0,
+                NEW_PUBLICATION_ID,
+            ),
+            (
+                "fixture://relation/root".to_owned(),
+                "catalog_relation".to_owned(),
+                b"group.root".to_vec(),
+                1,
+                NEW_PUBLICATION_ID,
+            ),
+        ]
     );
     assert_eq!(
         staged_catalog_items(&database.pool(), READ_ATTEMPT_ID).await,
@@ -1040,14 +1105,39 @@ fn replacement_batch() -> CatalogBatch {
     let child = CatalogRelation::new(
         CatalogRelationKey::new("fixture.relation", b"relation.new".to_vec())
             .expect("child relation key is valid"),
-        Some(root_key),
-        Some(item_key),
+        Some(root_key.clone()),
+        Some(item_key.clone()),
         Term::new("fixture", "member").expect("child relation kind is valid"),
         vec![10],
         json!({}),
     )
     .expect("child catalog relation is valid");
-    CatalogBatch::new(0, vec![item], Vec::new(), vec![root, child], Vec::new())
+    CatalogBatch::new(
+        0,
+        vec![item],
+        Vec::new(),
+        vec![root, child],
+        Vec::new(),
+        vec![
+            SubjectUnitBinding::new(
+                SubjectUnitBindingKey::new(
+                    "fixture://item/new",
+                    StateSubject::ProviderItem(item_key),
+                )
+                .expect("item binding key is valid"),
+                0,
+            ),
+            SubjectUnitBinding::new(
+                SubjectUnitBindingKey::new(
+                    "fixture://relation/root",
+                    StateSubject::CatalogRelation(root_key),
+                )
+                .expect("relation binding key is valid"),
+                1,
+            ),
+        ],
+        Vec::new(),
+    )
 }
 
 fn incremental_batch() -> CatalogBatch {
@@ -1122,6 +1212,8 @@ fn incremental_batch() -> CatalogBatch {
             CatalogRelationKey::new("fixture.relation", b"relation.stale".to_vec())
                 .expect("deleted relation key is valid"),
         ],
+        Vec::new(),
+        Vec::new(),
     )
 }
 
@@ -1212,6 +1304,19 @@ async fn published_relation_keys(pool: &PgPool) -> Vec<Vec<u8>> {
     .expect("published relation keys are queryable")
 }
 
+async fn published_unit_bindings(pool: &PgPool) -> Vec<(String, String, Vec<u8>, i64, Uuid)> {
+    sqlx::query_as(
+        "SELECT unit_key, subject_kind, subject_key_value, relevance_rank, publication_id
+         FROM subject_unit_bindings
+         WHERE source_id = $1
+         ORDER BY unit_key",
+    )
+    .bind(SOURCE_ID)
+    .fetch_all(pool)
+    .await
+    .expect("published subject unit bindings are queryable")
+}
+
 async fn published_state_rows(pool: &PgPool) -> Vec<(String, serde_json::Value, Uuid)> {
     sqlx::query_as::<_, (String, serde_json::Value, Uuid)>(
         "SELECT field_name, value, publication_id
@@ -1252,6 +1357,22 @@ async fn staged_catalog_relations(pool: &PgPool, attempt_id: Uuid) -> Vec<(Vec<u
     .fetch_all(pool)
     .await
     .expect("staged catalog relations are queryable")
+}
+
+async fn staged_unit_bindings(
+    pool: &PgPool,
+    attempt_id: Uuid,
+) -> Vec<(String, String, Vec<u8>, Option<i64>)> {
+    sqlx::query_as(
+        "SELECT unit_key, subject_kind, subject_key_value, relevance_rank
+         FROM staged_subject_unit_bindings
+         WHERE attempt_id = $1
+         ORDER BY unit_key",
+    )
+    .bind(attempt_id)
+    .fetch_all(pool)
+    .await
+    .expect("staged subject unit bindings are queryable")
 }
 
 async fn staged_state_rows(pool: &PgPool, attempt_id: Uuid) -> Vec<(String, String)> {

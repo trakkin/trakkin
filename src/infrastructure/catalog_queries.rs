@@ -6,7 +6,8 @@ use uuid::Uuid;
 use crate::{
     application::catalog_queries::{
         CatalogEntry, CatalogPage, CatalogQueryFuture, CatalogQueryRepository, InspectSourceState,
-        QueryCatalogPage, SourceStateInspection,
+        QueryCatalogPage, ResolveSubjectUnits, SourceStateInspection, SubjectUnitCandidate,
+        SubjectUnitCandidates,
     },
     application::error::{ApplicationError, ApplicationErrorCode, IntoApplicationError},
     domain::acquisition::{
@@ -213,6 +214,48 @@ ORDER BY
             observations,
         })
     }
+
+    async fn resolve_subject_unit_candidates(
+        &self,
+        query: ResolveSubjectUnits,
+    ) -> Result<SubjectUnitCandidates, CatalogQueryError> {
+        let mut transaction = begin_snapshot(&self.pool).await?;
+        ensure_attachment(&mut transaction, query.workspace_id, query.source_id).await?;
+        let stream = load_stream(&mut transaction, query.source_id, "catalog").await?;
+        let publication_id = available_publication(&stream, "catalog")?;
+        let (subject_kind, subject_namespace, subject_value) = subject_filter(Some(&query.subject));
+        let rows = sqlx::query_as::<_, (String, i64)>(
+            "SELECT unit_key, relevance_rank
+             FROM subject_unit_bindings
+             WHERE source_id = $1
+               AND subject_kind = $2
+               AND subject_key_namespace = $3
+               AND subject_key_value = $4
+             ORDER BY relevance_rank, unit_key",
+        )
+        .bind(query.source_id)
+        .bind(subject_kind)
+        .bind(subject_namespace)
+        .bind(subject_value)
+        .fetch_all(&mut *transaction)
+        .await?;
+        let candidates = rows
+            .into_iter()
+            .map(|(unit_key, relevance_rank)| {
+                Ok(SubjectUnitCandidate {
+                    unit_key,
+                    relevance_rank: u32::try_from(relevance_rank).map_err(|_| {
+                        CatalogQueryError::InvalidStoredData("subject unit relevance rank")
+                    })?,
+                })
+            })
+            .collect::<Result<_, CatalogQueryError>>()?;
+        transaction.commit().await?;
+        Ok(SubjectUnitCandidates {
+            publication_id,
+            candidates,
+        })
+    }
 }
 
 impl CatalogQueryRepository for PostgresCatalogQueryRepository {
@@ -230,6 +273,13 @@ impl CatalogQueryRepository for PostgresCatalogQueryRepository {
         query: InspectSourceState,
     ) -> CatalogQueryFuture<'_, SourceStateInspection, Self::Error> {
         Box::pin(self.inspect_state(query))
+    }
+
+    fn resolve_subject_units(
+        &self,
+        query: ResolveSubjectUnits,
+    ) -> CatalogQueryFuture<'_, SubjectUnitCandidates, Self::Error> {
+        Box::pin(self.resolve_subject_unit_candidates(query))
     }
 }
 

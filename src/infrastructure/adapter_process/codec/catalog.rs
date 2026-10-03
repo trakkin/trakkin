@@ -6,6 +6,7 @@ use crate::{
     application::adapter_runtime::{AdapterReadEvent, ReadAdapterSource},
     domain::acquisition::{
         BinaryAssetReference, CatalogBatch, CatalogItem, CatalogRelation, ProviderItem,
+        SubjectUnitBinding, SubjectUnitBindingKey,
     },
 };
 
@@ -15,6 +16,7 @@ use super::{
         map_attributes, map_binary_asset_key, map_catalog_relation_key, map_domain_term,
         map_provider_item_key, map_read_completion, map_read_failure, map_read_request,
     },
+    state::map_state_subject_from_proto,
 };
 
 pub(in super::super) fn map_read_catalog_request(
@@ -85,7 +87,41 @@ fn map_catalog_batch(
             .into_iter()
             .map(|key| map_catalog_relation_key(Some(key)))
             .collect::<Result<_, _>>()?,
+        batch
+            .unit_binding_upserts
+            .into_iter()
+            .map(|binding| -> Result<_, AdapterProcessError> {
+                let relevance_rank =
+                    binding
+                        .relevance_rank
+                        .ok_or(AdapterProcessError::InvalidResponse(
+                            "subject unit binding relevance rank is missing",
+                        ))?;
+                Ok(SubjectUnitBinding::new(
+                    map_unit_binding_key(binding.key)?,
+                    relevance_rank,
+                ))
+            })
+            .collect::<Result<_, _>>()?,
+        batch
+            .unit_binding_deletes
+            .into_iter()
+            .map(|key| map_unit_binding_key(Some(key)))
+            .collect::<Result<_, _>>()?,
     ))
+}
+
+fn map_unit_binding_key(
+    key: Option<trakkin_provider_sdk::v1::SubjectUnitBindingKey>,
+) -> Result<SubjectUnitBindingKey, AdapterProcessError> {
+    let key = key.ok_or(AdapterProcessError::InvalidResponse(
+        "subject unit binding key is missing",
+    ))?;
+    let subject = map_state_subject_from_proto(key.subject.ok_or(
+        AdapterProcessError::InvalidResponse("mapping unit subject is missing"),
+    )?)?;
+    SubjectUnitBindingKey::new(key.unit_key, subject)
+        .map_err(|_| AdapterProcessError::InvalidResponse("mapping unit is invalid"))
 }
 
 fn map_catalog_item(

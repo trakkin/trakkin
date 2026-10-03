@@ -156,7 +156,7 @@ pub(in super::super) fn map_state_subject(
     }
 }
 
-fn map_domain_state_subject(
+pub(in super::super) fn map_state_subject_from_proto(
     subject: trakkin_provider_sdk::v1::SubjectReference,
 ) -> Result<StateSubject, AdapterProcessError> {
     match subject.subject.ok_or(AdapterProcessError::InvalidResponse(
@@ -305,7 +305,7 @@ pub(in super::super) fn map_targeted_state_outcome(
                 ambiguous
                     .candidates
                     .into_iter()
-                    .map(map_domain_state_subject)
+                    .map(map_state_subject_from_proto)
                     .collect::<Result<_, _>>()?,
             ))
         }

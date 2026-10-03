@@ -297,6 +297,7 @@ pub(super) async fn query_mappings(
             canonical_statement: parameters.canonical_statement,
             statement_id: parameters.statement_id,
             relation_key: parameters.relation_key,
+            operator: parameters.operator.map(Into::into),
             source_key: parameters.source_key,
             endpoint: parameters.endpoint,
             annotation_name: parameters.annotation_name,

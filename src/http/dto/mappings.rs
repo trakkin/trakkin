@@ -5,8 +5,8 @@ use uuid::Uuid;
 use crate::application::{
     error::ApplicationError,
     mappings::{
-        MappingPageSnapshot, MappingResult, MappingSourceKind, MappingSourceSnapshot,
-        MappingStateSnapshot,
+        MappingOperator, MappingPageSnapshot, MappingResult, MappingSourceKind,
+        MappingSourceSnapshot, MappingStateSnapshot,
     },
 };
 
@@ -58,6 +58,7 @@ pub struct MappingQueryParameters {
     pub canonical_statement: Option<String>,
     pub statement_id: Option<String>,
     pub relation_key: Option<String>,
+    pub operator: Option<MappingOperatorParameter>,
     pub source_key: Option<String>,
     pub endpoint: Option<String>,
     pub annotation_name: Option<String>,
@@ -67,6 +68,24 @@ pub struct MappingQueryParameters {
     #[param(minimum = 1, maximum = 250)]
     pub limit: Option<u32>,
     pub cursor: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MappingOperatorParameter {
+    Exact,
+    Coverage,
+    Implication,
+}
+
+impl From<MappingOperatorParameter> for MappingOperator {
+    fn from(value: MappingOperatorParameter) -> Self {
+        match value {
+            MappingOperatorParameter::Exact => Self::Exact,
+            MappingOperatorParameter::Coverage => Self::Coverage,
+            MappingOperatorParameter::Implication => Self::Implication,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, ToSchema)]

@@ -10,7 +10,6 @@ use std::{
     task::{Context, Poll},
 };
 
-use rusqlite::Connection;
 use sqlx::{FromRow, PgPool, Postgres, Transaction};
 use thiserror::Error;
 use time::OffsetDateTime;
@@ -19,19 +18,24 @@ use tokio::{
     sync::{Mutex, RwLock},
 };
 use trakkin_mappings_corpus::{
-    CompileOptions, MappingCursor, MappingLayer, MappingQuery, compile, list_mappings,
-    open_read_only,
+    CompileOptions, MAXIMUM_UNIT_RESOLUTION_BATCH_SIZE, MappingCursor, MappingLayer, MappingQuery,
+    MappingRelationSide as RuntimeMappingRelationSide, MappingSide as RuntimeMappingSide,
+    RuntimeIndex, compile,
 };
+use trakkin_mappings_language::parse_unit_key;
 use uuid::Uuid;
 
 use crate::application::{
     error::{ApplicationError, ApplicationErrorCode},
     mappings::{
-        CreateLocalMapping, CreateRemoteMappingSource, CreateUploadedMappingSource, MappingApi,
-        MappingContentReader, MappingFuture, MappingPageSnapshot, MappingResult,
-        MappingSourceContent, MappingSourceKind, MappingSourceSnapshot, MappingStateSnapshot,
+        CreateLocalMapping, CreateRemoteMappingSource, CreateUploadedMappingSource,
+        MappingAlignmentSegmentSnapshot, MappingApi, MappingContentReader, MappingFuture,
+        MappingOperator, MappingPageSnapshot, MappingRelationMemberSnapshot,
+        MappingRelationSideSnapshot, MappingResult, MappingSourceContent, MappingSourceKind,
+        MappingSourceSnapshot, MappingStateSnapshot, MappingUnitMatchSnapshot,
+        MappingUnitResolutionBatchSnapshot, MappingUnitResolutionSnapshot, MappingUnitSide,
         QueryMappings, RefreshRemoteMappingSource, RemoveLocalMapping, RemoveMappingSource,
-        ReorderMappingSources, UpdateLocalMapping, UpdateMappingSource,
+        ReorderMappingSources, ResolveMappingUnits, UpdateLocalMapping, UpdateMappingSource,
     },
 };
 
@@ -1124,7 +1128,11 @@ WHERE id = $1 AND source_kind <> 'local'
             canonical_statement: query.canonical_statement,
             statement_id: query.statement_id,
             relation_key: query.relation_key,
-            operator: None,
+            operator: query.operator.map(|operator| match operator {
+                MappingOperator::Exact => trakkin_mappings_language::Operator::Exact,
+                MappingOperator::Coverage => trakkin_mappings_language::Operator::Coverage,
+                MappingOperator::Implication => trakkin_mappings_language::Operator::Implication,
+            }),
             source_key: query.source_key,
             endpoint: query.endpoint,
             annotation_name: query.annotation_name,
@@ -1133,12 +1141,12 @@ WHERE id = $1 AND source_kind <> 'local'
             limit: query.limit,
         };
         let page = tokio::task::spawn_blocking(move || {
-            let position =
-                active.next_connection.fetch_add(1, Ordering::Relaxed) % active.connections.len();
-            let connection = active.connections[position]
+            let position = active.next_index.fetch_add(1, Ordering::Relaxed) % active.indexes.len();
+            let index = active.indexes[position]
                 .lock()
                 .map_err(|_| "mapping runtime connection is unavailable".to_owned())?;
-            list_mappings(&connection, &runtime_query, cursor.as_ref())
+            index
+                .mappings(&runtime_query, cursor.as_ref())
                 .map_err(|error| error.to_string())
         })
         .await
@@ -1171,6 +1179,97 @@ WHERE id = $1 AND source_kind <> 'local'
                 })
                 .collect(),
             next_cursor: page.next_cursor.map(encode_cursor).transpose()?,
+        })
+    }
+
+    async fn resolve_units_inner(
+        &self,
+        command: ResolveMappingUnits,
+    ) -> Result<MappingUnitResolutionBatchSnapshot, ApplicationError> {
+        if command.unit_keys.len() > MAXIMUM_UNIT_RESOLUTION_BATCH_SIZE {
+            return Err(ApplicationError::new(
+                ApplicationErrorCode::InvalidRequest,
+                format!(
+                    "mapping unit resolution is limited to {MAXIMUM_UNIT_RESOLUTION_BATCH_SIZE} keys"
+                ),
+            ));
+        }
+        for unit_key in &command.unit_keys {
+            parse_unit_key(unit_key).map_err(|error| {
+                ApplicationError::new(
+                    ApplicationErrorCode::InvalidRequest,
+                    format!("mapping unit key is invalid: {error}"),
+                )
+            })?;
+        }
+        let active = self
+            .active_index
+            .read()
+            .await
+            .as_ref()
+            .map(Arc::clone)
+            .ok_or_else(|| ApplicationError::internal("mapping index is not initialized"))?;
+        if command
+            .expected_chain_fingerprint
+            .as_deref()
+            .is_some_and(|expected| expected != active.chain_fingerprint)
+        {
+            return Err(mapping_chain_changed());
+        }
+        let unit_keys = command.unit_keys;
+        let batch = tokio::task::spawn_blocking(move || {
+            let position = active.next_index.fetch_add(1, Ordering::Relaxed) % active.indexes.len();
+            let index = active.indexes[position]
+                .lock()
+                .map_err(|_| "mapping runtime connection is unavailable".to_owned())?;
+            index
+                .resolve_units(&unit_keys)
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(internal_error("mapping unit resolution task failed"))?
+        .map_err(ApplicationError::internal)?;
+        Ok(MappingUnitResolutionBatchSnapshot {
+            chain_fingerprint: batch.chain_fingerprint,
+            units: batch
+                .units
+                .into_iter()
+                .map(|unit| MappingUnitResolutionSnapshot {
+                    unit_key: unit.unit_key,
+                    matches: unit
+                        .matches
+                        .into_iter()
+                        .map(|matched| MappingUnitMatchSnapshot {
+                            relation_key: matched.relation_key,
+                            statement_id: matched.statement_id,
+                            operator: matched.operator.text().to_owned(),
+                            matched_side: match matched.matched_side {
+                                RuntimeMappingSide::Left => MappingUnitSide::Left,
+                                RuntimeMappingSide::Right => MappingUnitSide::Right,
+                            },
+                            member_ordinal: matched.member_ordinal,
+                            left: relation_side_snapshot(matched.left),
+                            right: relation_side_snapshot(matched.right),
+                            alignments: matched
+                                .alignments
+                                .into_iter()
+                                .map(|segment| MappingAlignmentSegmentSnapshot {
+                                    left_ordinal: segment.left_ordinal,
+                                    right_ordinal: segment.right_ordinal,
+                                    left_offset: segment.left_offset,
+                                    right_offset: segment.right_offset,
+                                    extent: segment.extent,
+                                })
+                                .collect(),
+                            evidence_fingerprint: matched.evidence_fingerprint,
+                            source_key: matched.source_key,
+                            source_content_hash: matched.source_content_hash,
+                            layer_position: matched.layer_position,
+                            record_ordinal: matched.record_ordinal,
+                        })
+                        .collect(),
+                })
+                .collect(),
         })
     }
 
@@ -1630,13 +1729,38 @@ impl MappingApi for PostgresMappingManager {
     fn query(&self, query: QueryMappings) -> MappingFuture<'_, MappingPageSnapshot> {
         Box::pin(self.query_inner(query))
     }
+
+    fn resolve_units(
+        &self,
+        command: ResolveMappingUnits,
+    ) -> MappingFuture<'_, MappingUnitResolutionBatchSnapshot> {
+        Box::pin(self.resolve_units_inner(command))
+    }
+}
+
+fn relation_side_snapshot(side: RuntimeMappingRelationSide) -> MappingRelationSideSnapshot {
+    MappingRelationSideSnapshot {
+        expression: side.expression.canonical(),
+        ordered: side.ordered,
+        total_extent: side.total_extent,
+        members: side
+            .members
+            .into_iter()
+            .map(|member| MappingRelationMemberSnapshot {
+                unit_key: member.unit_key,
+                ordinal: member.ordinal,
+                extent: member.extent,
+                coordinate: member.coordinate,
+            })
+            .collect(),
+    }
 }
 
 struct ActiveMappingIndex {
     chain_fingerprint: String,
     path: PathBuf,
-    connections: Vec<SyncMutex<Connection>>,
-    next_connection: AtomicUsize,
+    indexes: Vec<SyncMutex<RuntimeIndex>>,
+    next_index: AtomicUsize,
     artifacts: Arc<RuntimeArtifactLifecycle>,
     retire_on_drop: AtomicBool,
 }
@@ -2188,42 +2312,30 @@ async fn open_runtime_index(
     retire_on_drop: bool,
 ) -> Result<Arc<ActiveMappingIndex>, RuntimeIndexError> {
     tokio::task::spawn_blocking(move || {
-        let mut connections = Vec::with_capacity(RUNTIME_CONNECTIONS);
+        let mut indexes = Vec::with_capacity(RUNTIME_CONNECTIONS);
         for _ in 0..RUNTIME_CONNECTIONS {
-            connections
-                .push(SyncMutex::new(open_read_only(&path).map_err(|error| {
-                    RuntimeIndexError::Invalid(error.to_string())
-                })?));
+            indexes
+                .push(SyncMutex::new(RuntimeIndex::open(&path).map_err(
+                    |error| RuntimeIndexError::Invalid(error.to_string()),
+                )?));
         }
-        let connection = connections[0]
+        let index = indexes[0]
             .lock()
             .map_err(|_| RuntimeIndexError::Invalid("connection lock is poisoned".to_owned()))?;
-        #[allow(unknown_lints, cargo_sqruff)]
-        let integrity = connection
-            .query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0))
+        index
+            .verify_integrity()
             .map_err(|error| RuntimeIndexError::Invalid(error.to_string()))?;
-        if integrity != "ok" {
-            return Err(RuntimeIndexError::Invalid(integrity));
-        }
-        #[allow(unknown_lints, cargo_sqruff)]
-        let stored_fingerprint = connection
-            .query_row(
-                "SELECT value FROM build_metadata WHERE key = 'chain_fingerprint'",
-                [],
-                |row| row.get::<_, String>(0),
-            )
-            .map_err(|error| RuntimeIndexError::Invalid(error.to_string()))?;
-        if stored_fingerprint != chain_fingerprint {
+        if index.chain_fingerprint() != chain_fingerprint {
             return Err(RuntimeIndexError::Invalid(
                 "chain fingerprint does not match the active manifest".to_owned(),
             ));
         }
-        drop(connection);
+        drop(index);
         Ok(Arc::new(ActiveMappingIndex {
             chain_fingerprint,
             path,
-            connections,
-            next_connection: AtomicUsize::new(0),
+            indexes,
+            next_index: AtomicUsize::new(0),
             artifacts,
             retire_on_drop: AtomicBool::new(retire_on_drop),
         }))
