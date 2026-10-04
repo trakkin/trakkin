@@ -8,7 +8,6 @@ use trakkin::{
         catalog_queries::{CatalogQueryRepository, InspectSourceState, QueryCatalogPage},
         workspaces::{
             AttachWorkspaceSource, CreateWorkspace, DetachWorkspaceSource, WorkspaceRepository,
-            WorkspaceService,
         },
     },
     database::DatabaseRuntime,
@@ -37,10 +36,8 @@ async fn workspace_crud_and_source_attachments_are_idempotent() {
         .expect("fresh database starts");
     seed_source(&database.pool()).await;
     let repository = PostgresWorkspaceRepository::new(database.pool());
-    let service = WorkspaceService::new(repository.clone());
-
-    let workspace = service
-        .create(CreateWorkspace {
+    let workspace = repository
+        .create_workspace(CreateWorkspace {
             workspace_id: WORKSPACE_ID,
             name: "  Main workspace  ".to_owned(),
             created_at: timestamp(0),
@@ -48,8 +45,8 @@ async fn workspace_crud_and_source_attachments_are_idempotent() {
         .await
         .expect("workspace is created");
     assert_eq!(workspace.name, "Main workspace");
-    service
-        .create(CreateWorkspace {
+    repository
+        .create_workspace(CreateWorkspace {
             workspace_id: SECOND_WORKSPACE_ID,
             name: "Second workspace".to_owned(),
             created_at: timestamp(1),
@@ -57,8 +54,8 @@ async fn workspace_crud_and_source_attachments_are_idempotent() {
         .await
         .expect("second workspace is created");
     assert_eq!(
-        service
-            .list()
+        repository
+            .list_workspaces()
             .await
             .expect("workspaces are listed")
             .into_iter()
@@ -67,15 +64,15 @@ async fn workspace_crud_and_source_attachments_are_idempotent() {
         [WORKSPACE_ID, SECOND_WORKSPACE_ID]
     );
     assert_eq!(
-        service
-            .get(WORKSPACE_ID)
+        repository
+            .get_workspace(WORKSPACE_ID)
             .await
             .expect("workspace is queried"),
         Some(workspace)
     );
     assert!(matches!(
-        service
-            .create(CreateWorkspace {
+        repository
+            .create_workspace(CreateWorkspace {
                 workspace_id: WORKSPACE_ID,
                 name: "Duplicate".to_owned(),
                 created_at: timestamp(2),
@@ -84,16 +81,16 @@ async fn workspace_crud_and_source_attachments_are_idempotent() {
         Err(WorkspaceError::AlreadyExists)
     ));
 
-    let attachment = service
-        .attach(AttachWorkspaceSource {
+    let attachment = repository
+        .attach_source(AttachWorkspaceSource {
             workspace_id: WORKSPACE_ID,
             source_id: SOURCE_ID,
             attached_at: timestamp(3),
         })
         .await
         .expect("source is attached");
-    let repeated = service
-        .attach(AttachWorkspaceSource {
+    let repeated = repository
+        .attach_source(AttachWorkspaceSource {
             workspace_id: WORKSPACE_ID,
             source_id: SOURCE_ID,
             attached_at: timestamp(4),
@@ -101,8 +98,8 @@ async fn workspace_crud_and_source_attachments_are_idempotent() {
         .await
         .expect("repeated attachment is idempotent");
     assert_eq!(repeated, attachment);
-    let shared_attachment = service
-        .attach(AttachWorkspaceSource {
+    let shared_attachment = repository
+        .attach_source(AttachWorkspaceSource {
             workspace_id: SECOND_WORKSPACE_ID,
             source_id: SOURCE_ID,
             attached_at: timestamp(5),
@@ -110,15 +107,15 @@ async fn workspace_crud_and_source_attachments_are_idempotent() {
         .await
         .expect("source is shared with a second workspace");
     assert_eq!(
-        service
-            .attachments(WORKSPACE_ID)
+        repository
+            .list_source_attachments(WORKSPACE_ID)
             .await
             .expect("attachments are listed"),
         [attachment]
     );
     assert!(
-        service
-            .detach(DetachWorkspaceSource {
+        repository
+            .detach_source(DetachWorkspaceSource {
                 workspace_id: WORKSPACE_ID,
                 source_id: SOURCE_ID,
             })
@@ -126,8 +123,8 @@ async fn workspace_crud_and_source_attachments_are_idempotent() {
             .expect("source is detached")
     );
     assert!(
-        !service
-            .detach(DetachWorkspaceSource {
+        !repository
+            .detach_source(DetachWorkspaceSource {
                 workspace_id: WORKSPACE_ID,
                 source_id: SOURCE_ID,
             })
@@ -135,15 +132,15 @@ async fn workspace_crud_and_source_attachments_are_idempotent() {
             .expect("repeated detachment is idempotent")
     );
     assert!(
-        service
-            .attachments(WORKSPACE_ID)
+        repository
+            .list_source_attachments(WORKSPACE_ID)
             .await
             .expect("detached workspace is empty")
             .is_empty()
     );
     assert_eq!(
-        service
-            .attachments(SECOND_WORKSPACE_ID)
+        repository
+            .list_source_attachments(SECOND_WORKSPACE_ID)
             .await
             .expect("shared attachment remains visible"),
         [shared_attachment]
@@ -236,6 +233,136 @@ async fn attached_workspace_pages_catalog_and_inspects_state() {
     assert_eq!(state.observations.len(), 1);
     assert_eq!(state.observations[0].value(), Some(&StateValue::Integer(7)));
 
+    database.shutdown().await.expect("database shuts down");
+}
+
+#[tokio::test]
+async fn catalog_page_batches_assets_without_changing_relations_or_pagination() {
+    let directory = tempdir().expect("temporary directory is created");
+    let database = DatabaseRuntime::start(directory.path())
+        .await
+        .expect("fresh database starts");
+    let pool = database.pool();
+    seed_published_source(&pool).await;
+    insert_relation(
+        &pool,
+        b"relation.series.again",
+        None,
+        b"item.series",
+        vec![2],
+        timestamp(0),
+    )
+    .await;
+    sqlx::query(
+        "INSERT INTO catalog_relations (
+    source_id, key_namespace, key_value, kind_namespace, kind_name,
+    order_parts, attributes, publication_id, updated_at
+)
+VALUES ($1, 'fixture.relation', $2, 'fixture', 'group', ARRAY[3]::BIGINT[], '{}', $3, $4)",
+    )
+    .bind(SOURCE_ID)
+    .bind(b"relation.empty".as_slice())
+    .bind(CATALOG_PUBLICATION_ID)
+    .bind(timestamp(0))
+    .execute(&pool)
+    .await
+    .expect("itemless relation is seeded");
+    for (item, namespace, value) in [
+        (
+            b"item.series".as_slice(),
+            "fixture.asset.z",
+            b"a".as_slice(),
+        ),
+        (
+            b"item.series".as_slice(),
+            "fixture.asset.a",
+            b"z".as_slice(),
+        ),
+        (
+            b"item.series".as_slice(),
+            "fixture.asset.a",
+            b"a".as_slice(),
+        ),
+        (
+            b"item.movie".as_slice(),
+            "fixture.asset",
+            b"movie".as_slice(),
+        ),
+    ] {
+        sqlx::query(
+            "INSERT INTO catalog_assets (
+    source_id, item_key_namespace, item_key_value, asset_key_namespace,
+    asset_key_value, kind_namespace, kind_name, publication_id
+)
+VALUES ($1, 'fixture.item', $2, $3, $4, 'fixture', 'poster', $5)",
+        )
+        .bind(SOURCE_ID)
+        .bind(item)
+        .bind(namespace)
+        .bind(value)
+        .bind(CATALOG_PUBLICATION_ID)
+        .execute(&pool)
+        .await
+        .expect("page asset is seeded");
+    }
+    let repository = PostgresCatalogQueryRepository::new(pool);
+    let first = repository
+        .query_catalog_page(catalog_query(None, None, 3, None))
+        .await
+        .expect("multi-item page is queried");
+    assert_eq!(first.publication_id, CATALOG_PUBLICATION_ID);
+    assert_eq!(
+        first
+            .entries
+            .iter()
+            .map(|entry| entry.relation.key().value())
+            .collect::<Vec<_>>(),
+        [
+            b"relation.series".as_slice(),
+            b"relation.movie".as_slice(),
+            b"relation.series.again".as_slice()
+        ]
+    );
+    let series = first.entries[0].item.as_ref().expect("series has an item");
+    assert_eq!(
+        series
+            .binary_assets()
+            .iter()
+            .map(|asset| (asset.key().namespace(), asset.key().value()))
+            .collect::<Vec<_>>(),
+        [
+            ("fixture.asset.a", b"a".as_slice()),
+            ("fixture.asset.a", b"z".as_slice()),
+            ("fixture.asset.z", b"a".as_slice())
+        ]
+    );
+    assert_eq!(first.entries[2].item.as_ref(), Some(series));
+    let movie = first.entries[1].item.as_ref().expect("movie has an item");
+    assert_eq!(movie.binary_assets().len(), 1);
+    assert_eq!(movie.binary_assets()[0].key().value(), b"movie");
+    let last = repository
+        .query_catalog_page(catalog_query(
+            None,
+            None,
+            3,
+            Some(first.next_cursor.expect("page continues")),
+        ))
+        .await
+        .expect("itemless continuation is queried");
+    assert_eq!(last.publication_id, first.publication_id);
+    assert_eq!(last.entries.len(), 1);
+    assert_eq!(last.entries[0].relation.key().value(), b"relation.empty");
+    assert!(last.entries[0].item.is_none());
+    assert!(last.next_cursor.is_none());
+    let complete = repository
+        .query_catalog_page(catalog_query(None, None, 10, None))
+        .await
+        .expect("mixed page is queried");
+    assert_eq!(complete.entries.len(), 4);
+    assert_eq!(complete.entries[0].item.as_ref(), Some(series));
+    assert_eq!(complete.entries[2].item.as_ref(), Some(series));
+    assert!(complete.entries[3].item.is_none());
+    assert!(complete.next_cursor.is_none());
     database.shutdown().await.expect("database shuts down");
 }
 

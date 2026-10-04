@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde_json::{Value, json};
 use sqlx::{FromRow, PgPool, Postgres, Transaction};
 use thiserror::Error;
@@ -363,9 +365,14 @@ LIMIT 100
         .bind(workspace_id)
         .fetch_all(&mut *transaction)
         .await?;
+        let ids = rows.iter().map(|row| row.id).collect::<Vec<_>>();
+        let mut details = load_task_details(&mut transaction, &ids).await?;
         let mut snapshots = Vec::with_capacity(rows.len());
         for row in rows {
-            let definition = load_task_definition(&mut transaction, row.id, &row.kind).await?;
+            let definition = details
+                .remove(&row.id)
+                .ok_or(TaskManagerError::MissingTaskDetail)?
+                .decode(&row.kind)?;
             snapshots.push(row.into_snapshot(definition)?);
         }
         transaction.commit().await?;
@@ -527,53 +534,43 @@ async fn load_task_definition(
     task_id: Uuid,
     kind: &str,
 ) -> Result<TaskDefinition, TaskManagerError> {
-    match kind {
-        "source_discovery" => {
-            let connection_id = sqlx::query_scalar::<_, Uuid>(
-                "SELECT connection_id FROM source_discovery_tasks WHERE task_id = $1
-",
-            )
-            .bind(task_id)
-            .fetch_optional(&mut **transaction)
-            .await?
-            .ok_or(TaskManagerError::MissingTaskDetail)?;
-            Ok(TaskDefinition::SourceDiscovery { connection_id })
-        }
-        "catalog_read" | "state_read" => {
-            let detail = sqlx::query_as::<_, ReadTaskRow>(
-                "SELECT source_id, stream_kind, read_mode
-FROM read_tasks
-WHERE task_id = $1
-",
-            )
-            .bind(task_id)
-            .fetch_optional(&mut **transaction)
-            .await?
-            .ok_or(TaskManagerError::MissingTaskDetail)?;
-            Ok(TaskDefinition::Read {
-                source_id: detail.source_id,
-                stream: parse_stream(&detail.stream_kind)?,
-                mode: parse_read_mode(&detail.read_mode)?,
-            })
-        }
-        "catalog_reset" | "state_reset" => {
-            let detail = sqlx::query_as::<_, ResetTaskRow>(
-                "SELECT source_id, stream_kind
-FROM reset_tasks
-WHERE task_id = $1
-",
-            )
-            .bind(task_id)
-            .fetch_optional(&mut **transaction)
-            .await?
-            .ok_or(TaskManagerError::MissingTaskDetail)?;
-            Ok(TaskDefinition::Reset {
-                source_id: detail.source_id,
-                stream: parse_stream(&detail.stream_kind)?,
-            })
-        }
-        _ => Err(TaskManagerError::UnknownTaskKind(kind.to_owned())),
+    load_task_details(transaction, &[task_id])
+        .await?
+        .remove(&task_id)
+        .ok_or(TaskManagerError::MissingTaskDetail)?
+        .decode(kind)
+}
+
+async fn load_task_details(
+    transaction: &mut Transaction<'_, Postgres>,
+    task_ids: &[Uuid],
+) -> Result<HashMap<Uuid, TaskDetailRow>, TaskManagerError> {
+    if task_ids.is_empty() {
+        return Ok(HashMap::new());
     }
+    let details = sqlx::query_as::<_, TaskDetailRow>(
+        "SELECT
+    tasks.id AS task_id,
+    source_discovery_tasks.connection_id AS discovery_connection_id,
+    read_tasks.source_id AS read_source_id,
+    read_tasks.stream_kind AS read_stream,
+    read_tasks.read_mode,
+    reset_tasks.source_id AS reset_source_id,
+    reset_tasks.stream_kind AS reset_stream
+FROM tasks
+LEFT JOIN source_discovery_tasks ON source_discovery_tasks.task_id = tasks.id
+LEFT JOIN read_tasks ON read_tasks.task_id = tasks.id
+LEFT JOIN reset_tasks ON reset_tasks.task_id = tasks.id
+WHERE tasks.id = ANY($1)
+",
+    )
+    .bind(task_ids)
+    .fetch_all(&mut **transaction)
+    .await?;
+    Ok(details
+        .into_iter()
+        .map(|detail| (detail.task_id, detail))
+        .collect())
 }
 
 async fn lock_task(
@@ -788,16 +785,59 @@ impl TaskRow {
 }
 
 #[derive(FromRow)]
-struct ReadTaskRow {
-    source_id: Uuid,
-    stream_kind: String,
-    read_mode: String,
+struct TaskDetailRow {
+    task_id: Uuid,
+    discovery_connection_id: Option<Uuid>,
+    read_source_id: Option<Uuid>,
+    read_stream: Option<String>,
+    read_mode: Option<String>,
+    reset_source_id: Option<Uuid>,
+    reset_stream: Option<String>,
 }
 
-#[derive(FromRow)]
-struct ResetTaskRow {
-    source_id: Uuid,
-    stream_kind: String,
+impl TaskDetailRow {
+    fn decode(self, kind: &str) -> Result<TaskDefinition, TaskManagerError> {
+        let definition = match kind {
+            "source_discovery" => TaskDefinition::SourceDiscovery {
+                connection_id: self
+                    .discovery_connection_id
+                    .ok_or(TaskManagerError::MissingTaskDetail)?,
+            },
+            "catalog_read" | "state_read" => TaskDefinition::Read {
+                source_id: self
+                    .read_source_id
+                    .ok_or(TaskManagerError::MissingTaskDetail)?,
+                stream: parse_stream(
+                    self.read_stream
+                        .as_deref()
+                        .ok_or(TaskManagerError::MissingTaskDetail)?,
+                )?,
+                mode: parse_read_mode(
+                    self.read_mode
+                        .as_deref()
+                        .ok_or(TaskManagerError::MissingTaskDetail)?,
+                )?,
+            },
+            "catalog_reset" | "state_reset" => TaskDefinition::Reset {
+                source_id: self
+                    .reset_source_id
+                    .ok_or(TaskManagerError::MissingTaskDetail)?,
+                stream: parse_stream(
+                    self.reset_stream
+                        .as_deref()
+                        .ok_or(TaskManagerError::MissingTaskDetail)?,
+                )?,
+            },
+            _ => return Err(TaskManagerError::UnknownTaskKind(kind.to_owned())),
+        };
+        let detail_count = usize::from(self.discovery_connection_id.is_some())
+            + usize::from(self.read_source_id.is_some())
+            + usize::from(self.reset_source_id.is_some());
+        if detail_count != 1 || task_kind(&definition) != kind {
+            return Err(TaskManagerError::InvalidTaskDetail);
+        }
+        Ok(definition)
+    }
 }
 
 #[derive(Debug, Error)]

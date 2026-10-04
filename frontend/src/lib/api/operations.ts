@@ -1,5 +1,6 @@
 import { request } from "./client.ts";
 import type { components, operations } from "./generated/schema.ts";
+import { pollUntilTerminal } from "./taskPolling.ts";
 
 export type TaskRun = components["schemas"]["TaskResponse"];
 
@@ -36,29 +37,6 @@ export async function resetAndRefetch(workspaceId: string, sourceId: string, sig
   return pollCatalog(workspaceId, sourceId, signal);
 }
 
-export async function waitForTask(workspaceId: string, task: TaskRun, signal?: AbortSignal): Promise<TaskRun> {
-  let current = task;
-  while (!current.terminal) {
-    await delay(250, signal);
-    current = await getTask(workspaceId, current.id, signal);
-  }
-  return current;
-}
-
-function delay(milliseconds: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(signal.reason);
-      return;
-    }
-    const timeout = window.setTimeout(resolve, milliseconds);
-    signal?.addEventListener(
-      "abort",
-      () => {
-        window.clearTimeout(timeout);
-        reject(signal.reason);
-      },
-      { once: true },
-    );
-  });
+export function waitForTask(workspaceId: string, task: TaskRun, signal?: AbortSignal): Promise<TaskRun> {
+  return pollUntilTerminal(task, (taskId, signal) => getTask(workspaceId, taskId, signal), signal);
 }

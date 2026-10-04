@@ -39,9 +39,12 @@ import {
   type ProviderKey,
 } from "$lib/api/catalog";
 import { pollCatalog, resetAndRefetch, waitForTask } from "$lib/api/operations";
+import type {
+  WorkspaceSourceDirectory,
+  WorkspaceSourceDirectoryEntry,
+} from "$lib/features/workspaces/workspaceSourceDirectory";
 import { type CatalogViewMode, catalogViewPreference, decodeCatalogViewMode } from "./catalogPreferences";
 import { catalogPublicationIssue } from "./catalogPublicationIssue";
-import type { WorkspaceCatalog, WorkspaceCatalogSource } from "./workspaceCatalog";
 
 type BrowsePart = { key: ProviderKey; label: string };
 type AttributeRow = { key: string; label: string; value: string };
@@ -51,7 +54,7 @@ type EncodedAttribute = {
 };
 
 type Props = {
-  data: WorkspaceCatalog;
+  data: WorkspaceSourceDirectory;
   onreload: () => Promise<void>;
 };
 
@@ -62,11 +65,12 @@ let query = $state("");
 let catalogSearch = $state("");
 let kindFilter = $state("all");
 let browsePath = $state<BrowsePart[]>([]);
-let entries = $state<CatalogEntry[]>([]);
-let publicationId = $state("");
-let nextCursor = $state<string | null>(null);
 let catalogPages = $state<CatalogPage[]>([]);
 let pageIndex = $state(0);
+let currentPage = $derived(catalogPages[pageIndex]);
+let entries = $derived(currentPage?.entries ?? []);
+let publicationId = $derived(currentPage?.publicationId ?? "");
+let nextCursor = $derived(currentPage?.nextCursor ?? null);
 let loading = $state(false);
 let loadingPage = $state(false);
 let operationBusy = $state(false);
@@ -136,11 +140,9 @@ $effect(() => {
   const search = catalogSearch;
   const parent = currentParent;
   reloadSequence;
-  if (!source || source.error) {
+  if (source?.source.availability !== "available") {
     requestSequence += 1;
-    entries = [];
-    publicationId = "";
-    nextCursor = null;
+    errorMessage = "";
     catalogPages = [];
     pageIndex = 0;
     loading = false;
@@ -153,7 +155,7 @@ $effect(() => {
 });
 
 async function loadFirstPage(
-  source: WorkspaceCatalogSource,
+  source: WorkspaceSourceDirectoryEntry,
   parent: ProviderKey | undefined,
   search: string,
   signal?: AbortSignal,
@@ -162,7 +164,8 @@ async function loadFirstPage(
   loading = true;
   loadingPage = false;
   errorMessage = "";
-  entries = [];
+  catalogPages = [];
+  pageIndex = 0;
   focusedRelationId = "";
   kindFilter = "all";
   try {
@@ -177,9 +180,6 @@ async function loadFirstPage(
       signal,
     );
     if (requestId !== requestSequence) return;
-    entries = page.entries;
-    publicationId = page.publicationId;
-    nextCursor = page.nextCursor ?? null;
     catalogPages = [page];
     pageIndex = 0;
   } catch (error) {
@@ -205,7 +205,7 @@ async function showNextPage() {
   if (!source || loadingPage) return;
   const cachedPage = catalogPages[pageIndex + 1];
   if (cachedPage) {
-    showCatalogPage(cachedPage, pageIndex + 1);
+    showCatalogPage(pageIndex + 1);
     return;
   }
   if (!cursor) return;
@@ -230,7 +230,7 @@ async function showNextPage() {
       return;
     }
     catalogPages = [...catalogPages.slice(0, pageIndex + 1), page];
-    showCatalogPage(page, pageIndex + 1);
+    showCatalogPage(pageIndex + 1);
   } catch (error) {
     if (requestId === requestSequence) {
       errorMessage = error instanceof Error ? error.message : "Catalog page could not be loaded";
@@ -243,13 +243,10 @@ async function showNextPage() {
 function showPreviousPage() {
   if (loadingPage || pageIndex === 0) return;
   const previousIndex = pageIndex - 1;
-  showCatalogPage(catalogPages[previousIndex], previousIndex);
+  showCatalogPage(previousIndex);
 }
 
-function showCatalogPage(page: CatalogPage, nextPageIndex: number) {
-  entries = page.entries;
-  publicationId = page.publicationId;
-  nextCursor = page.nextCursor ?? null;
+function showCatalogPage(nextPageIndex: number) {
   pageIndex = nextPageIndex;
   focusedRelationId = "";
   kindFilter = "all";
@@ -699,10 +696,10 @@ function formatGenericAttributeValue(value: unknown): string {
         </Button>
       {/snippet}
     </EmptyState>
-  {:else if selectedSource?.error}
+  {:else if selectedSource && selectedSource.source.availability !== "available"}
     <EmptyState
       class="flex-1"
-      description={selectedSource.error}
+      description="Source unavailable"
       icon={Layers}
       role="alert"
       title="Catalog unavailable"

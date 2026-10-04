@@ -1,5 +1,6 @@
 import { request } from "./client.ts";
 import type { components, operations } from "./generated/schema.ts";
+import { pollUntilTerminal } from "./taskPolling.ts";
 
 export type AdapterField = components["schemas"]["AdapterConfigurationFieldResponse"];
 export type AdapterSetting = components["schemas"]["AdapterSettingRequest"];
@@ -105,14 +106,15 @@ export async function discoverConnectionSources(
   connectionId: string,
   signal?: AbortSignal,
 ): Promise<ConnectionSource[]> {
-  let task = await request<ConnectionTask>(`/api/v1/connections/${connectionId}/discovery-tasks`, {
+  const started = await request<ConnectionTask>(`/api/v1/connections/${connectionId}/discovery-tasks`, {
     method: "POST",
     signal,
   });
-  while (!task.terminal) {
-    await delay(250, signal);
-    task = await request(`/api/v1/connections/${connectionId}/tasks/${task.id}`, { signal });
-  }
+  const task = await pollUntilTerminal(
+    started,
+    (taskId, signal) => request<ConnectionTask>(`/api/v1/connections/${connectionId}/tasks/${taskId}`, { signal }),
+    signal,
+  );
   if (task.status !== "succeeded") {
     throw new Error(
       task.status === "cancelled"
@@ -126,22 +128,4 @@ export async function discoverConnectionSources(
 export function retryAfterMilliseconds(step: AuthenticationStep): number {
   if (!step.retryAfter) return 1_500;
   return Math.max(200, step.retryAfter.seconds * 1_000 + Math.ceil(step.retryAfter.nanoseconds / 1_000_000));
-}
-
-function delay(milliseconds: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(signal.reason);
-      return;
-    }
-    const timeout = window.setTimeout(resolve, milliseconds);
-    signal?.addEventListener(
-      "abort",
-      () => {
-        window.clearTimeout(timeout);
-        reject(signal.reason);
-      },
-      { once: true },
-    );
-  });
 }

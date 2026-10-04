@@ -258,7 +258,7 @@ FOR UPDATE
             }
         };
 
-        clear_attempt_staging(&mut transaction, command.attempt_id).await?;
+        clear_read_staging(&mut transaction, &[command.attempt_id]).await?;
         let read_attempt = sqlx::query(
             "UPDATE read_attempts
 SET status = 'abandoned', updated_at = $1, completed_at = $1
@@ -2147,7 +2147,7 @@ WHERE source_id = $6 AND stream_kind = $7
     .execute(&mut **transaction)
     .await?;
 
-    clear_attempt_staging(transaction, command.attempt_id).await?;
+    clear_read_staging(transaction, &[command.attempt_id]).await?;
     sqlx::query(
         "UPDATE read_attempts
 SET
@@ -2232,36 +2232,36 @@ WHERE id = $2 AND status = 'running' AND cancellation_requested_at IS NULL
     Ok(())
 }
 
-async fn clear_attempt_staging(
+pub(super) async fn clear_read_staging(
     transaction: &mut Transaction<'_, Postgres>,
-    attempt_id: Uuid,
-) -> Result<(), PublicationError> {
+    attempt_ids: &[Uuid],
+) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "DELETE FROM staged_subject_unit_bindings WHERE attempt_id = $1
+        "DELETE FROM staged_subject_unit_bindings WHERE attempt_id = ANY($1)
 ",
     )
-    .bind(attempt_id)
+    .bind(attempt_ids)
     .execute(&mut **transaction)
     .await?;
     sqlx::query(
-        "DELETE FROM staged_catalog_relations WHERE attempt_id = $1
+        "DELETE FROM staged_catalog_relations WHERE attempt_id = ANY($1)
 ",
     )
-    .bind(attempt_id)
+    .bind(attempt_ids)
     .execute(&mut **transaction)
     .await?;
     sqlx::query(
-        "DELETE FROM staged_catalog_items WHERE attempt_id = $1
+        "DELETE FROM staged_catalog_items WHERE attempt_id = ANY($1)
 ",
     )
-    .bind(attempt_id)
+    .bind(attempt_ids)
     .execute(&mut **transaction)
     .await?;
     sqlx::query(
-        "DELETE FROM staged_state_observations WHERE attempt_id = $1
+        "DELETE FROM staged_state_observations WHERE attempt_id = ANY($1)
 ",
     )
-    .bind(attempt_id)
+    .bind(attempt_ids)
     .execute(&mut **transaction)
     .await?;
     Ok(())

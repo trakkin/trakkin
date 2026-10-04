@@ -1,22 +1,19 @@
-use std::{future::Future, pin::Pin, sync::Arc};
+use std::sync::Arc;
 
 use uuid::Uuid;
 
 use super::{
     adapter_runtime::AdapterBinaryAsset,
     assets::{BinaryAssetInteraction, ReadPublishedBinaryAsset},
-    catalog_queries::{
-        CatalogPage, CatalogQueryRepository, InspectSourceState, QueryCatalogPage,
-        SourceStateInspection,
-    },
+    catalog_queries::{CatalogPage, InspectSourceState, QueryCatalogPage, SourceStateInspection},
     connection::{
         BeginConnectionDeletion, CancelConnectionAuthentication, ConnectionDeletionImpact,
-        ConnectionInspection, ConnectionInteraction, ConnectionRepository, ConnectionRetirement,
-        ConnectionSourceSummary, ConnectionSummary, ContinueConnectionAuthentication,
-        CreateConnection, FinishConnectionDeletion, InspectConnection, ReconfigureConnection,
-        RenameConnection, StartConnectionAuthentication, StartedConnectionAuthentication,
+        ConnectionInspection, ConnectionInteraction, ConnectionSourceSummary, ConnectionSummary,
+        ContinueConnectionAuthentication, CreateConnection, InspectConnection,
+        ReconfigureConnection, RenameConnection, StartConnectionAuthentication,
+        StartedConnectionAuthentication,
     },
-    error::{ApplicationError, ApplicationErrorCode, IntoApplicationError},
+    error::ApplicationFuture,
     mappings::{
         CreateLocalMapping, CreateRemoteMappingSource, CreateUploadedMappingSource,
         MappingContentReader, MappingPageSnapshot, MappingSourceContent, MappingStateSnapshot,
@@ -29,44 +26,11 @@ use super::{
         RefreshProviderSource, RemoveProvider, RemoveProviderSource, SharedProviderRegistry,
         TrustProviderSource, UpdateProvider,
     },
-    task_manager::{AdmitTask, RequestTaskCancellation, TaskManager, TaskRepository, TaskSnapshot},
-    workspaces::{
-        AttachWorkspaceSource, CreateWorkspace, DetachWorkspaceSource, WorkspaceRepository,
-        WorkspaceService, WorkspaceSnapshot, WorkspaceSourceAttachment,
-    },
+    task_manager::{AdmitTask, RequestTaskCancellation, TaskSnapshot},
+    workspaces::{AttachWorkspaceSource, CreateWorkspace, DetachWorkspaceSource},
 };
 
-pub type ApplicationFuture<'a, T> =
-    Pin<Box<dyn Future<Output = Result<T, ApplicationError>> + Send + 'a>>;
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WorkspaceView {
-    pub workspace: WorkspaceSnapshot,
-    pub sources: Vec<WorkspaceSourceAttachment>,
-}
-
-pub struct ApplicationInteractions {
-    pub connections: Arc<dyn ConnectionInteraction>,
-    pub binary_assets: Arc<dyn BinaryAssetInteraction>,
-    pub providers: SharedProviderRegistry,
-    pub mappings: SharedMappingApi,
-}
-
-impl ApplicationInteractions {
-    pub fn new(
-        connections: Arc<dyn ConnectionInteraction>,
-        binary_assets: Arc<dyn BinaryAssetInteraction>,
-        providers: SharedProviderRegistry,
-        mappings: SharedMappingApi,
-    ) -> Self {
-        Self {
-            connections,
-            binary_assets,
-            providers,
-            mappings,
-        }
-    }
-}
+use super::workspaces::WorkspaceView;
 
 pub trait ApplicationApi: Send + Sync {
     fn create_workspace(&self, command: CreateWorkspace) -> ApplicationFuture<'_, WorkspaceView>;
@@ -213,240 +177,65 @@ pub trait ApplicationApi: Send + Sync {
 }
 
 #[derive(Clone)]
-pub struct ApplicationFacade<W, C, T, R, D> {
-    workspaces: WorkspaceService<W>,
-    catalog: C,
-    tasks: TaskManager<T>,
-    connections: R,
-    connection_retirement: D,
-    connection_interaction: Arc<dyn ConnectionInteraction>,
-    binary_assets: Arc<dyn BinaryAssetInteraction>,
-    providers: SharedProviderRegistry,
-    mappings: SharedMappingApi,
+pub struct ApplicationFacade {
+    pub workspaces: Arc<dyn super::workspaces::WorkspaceApi>,
+    pub catalog: Arc<dyn super::catalog_queries::CatalogApi>,
+    pub tasks: Arc<dyn super::task_manager::TaskApi>,
+    pub connections: Arc<dyn super::connection::ConnectionApi>,
+    pub connection_interaction: Arc<dyn ConnectionInteraction>,
+    pub binary_assets: Arc<dyn BinaryAssetInteraction>,
+    pub providers: SharedProviderRegistry,
+    pub mappings: SharedMappingApi,
 }
 
-impl<W, C, T, R, D> ApplicationFacade<W, C, T, R, D>
-where
-    W: WorkspaceRepository,
-    W::Error: IntoApplicationError,
-    C: CatalogQueryRepository,
-    C::Error: IntoApplicationError,
-    T: TaskRepository,
-    T::Error: IntoApplicationError,
-    R: ConnectionRepository,
-    R::Error: IntoApplicationError,
-    D: ConnectionRetirement,
-    D::Error: IntoApplicationError,
-{
-    pub fn new(
-        workspaces: W,
-        catalog: C,
-        tasks: T,
-        connections: R,
-        connection_retirement: D,
-        interactions: ApplicationInteractions,
-    ) -> Self {
-        Self {
-            workspaces: WorkspaceService::new(workspaces),
-            catalog,
-            tasks: TaskManager::new(tasks),
-            connections,
-            connection_retirement,
-            connection_interaction: interactions.connections,
-            binary_assets: interactions.binary_assets,
-            providers: interactions.providers,
-            mappings: interactions.mappings,
-        }
-    }
-
-    async fn workspace_view(&self, workspace_id: Uuid) -> Result<WorkspaceView, ApplicationError> {
-        let workspace = self
-            .workspaces
-            .get(workspace_id)
-            .await
-            .map_err(IntoApplicationError::into_application_error)?
-            .ok_or_else(|| {
-                ApplicationError::new(
-                    ApplicationErrorCode::WorkspaceNotFound,
-                    "workspace was not found",
-                )
-            })?;
-        let sources = self
-            .workspaces
-            .attachments(workspace_id)
-            .await
-            .map_err(IntoApplicationError::into_application_error)?;
-        Ok(WorkspaceView { workspace, sources })
-    }
-
-    async fn workspace_task(
-        &self,
-        workspace_id: Uuid,
-        task_id: Uuid,
-    ) -> Result<TaskSnapshot, ApplicationError> {
-        self.tasks
-            .get(task_id)
-            .await
-            .map_err(IntoApplicationError::into_application_error)?
-            .filter(|task| task.workspace_id == Some(workspace_id))
-            .ok_or_else(|| {
-                ApplicationError::new(ApplicationErrorCode::TaskNotFound, "task was not found")
-            })
-    }
-
-    async fn connection_task(
-        &self,
-        connection_id: Uuid,
-        task_id: Uuid,
-    ) -> Result<TaskSnapshot, ApplicationError> {
-        self.tasks
-            .get(task_id)
-            .await
-            .map_err(IntoApplicationError::into_application_error)?
-            .filter(|task| {
-                task.workspace_id.is_none()
-                    && task.connection_id == connection_id
-                    && matches!(
-                        task.definition,
-                        super::task_manager::TaskDefinition::SourceDiscovery { .. }
-                    )
-            })
-            .ok_or_else(|| {
-                ApplicationError::new(ApplicationErrorCode::TaskNotFound, "task was not found")
-            })
-    }
-}
-
-impl<W, C, T, R, D> ApplicationApi for ApplicationFacade<W, C, T, R, D>
-where
-    W: WorkspaceRepository + 'static,
-    W::Error: IntoApplicationError,
-    C: CatalogQueryRepository + 'static,
-    C::Error: IntoApplicationError,
-    T: TaskRepository + 'static,
-    T::Error: IntoApplicationError,
-    R: ConnectionRepository + 'static,
-    R::Error: IntoApplicationError,
-    D: ConnectionRetirement + 'static,
-    D::Error: IntoApplicationError,
-{
+impl ApplicationApi for ApplicationFacade {
     fn create_workspace(&self, command: CreateWorkspace) -> ApplicationFuture<'_, WorkspaceView> {
-        Box::pin(async move {
-            let workspace_id = command.workspace_id;
-            let workspace = self
-                .workspaces
-                .create(command)
-                .await
-                .map_err(IntoApplicationError::into_application_error)?;
-            tracing::info!(workspace.id = %workspace_id, "workspace created");
-            Ok(WorkspaceView {
-                workspace,
-                sources: Vec::new(),
-            })
-        })
+        self.workspaces.create_workspace(command)
     }
 
     fn list_workspaces(&self) -> ApplicationFuture<'_, Vec<WorkspaceView>> {
-        Box::pin(async move {
-            let workspaces = self
-                .workspaces
-                .list()
-                .await
-                .map_err(IntoApplicationError::into_application_error)?;
-            let mut views = Vec::with_capacity(workspaces.len());
-            for workspace in workspaces {
-                let sources = self
-                    .workspaces
-                    .attachments(workspace.id)
-                    .await
-                    .map_err(IntoApplicationError::into_application_error)?;
-                views.push(WorkspaceView { workspace, sources });
-            }
-            Ok(views)
-        })
+        self.workspaces.list_workspaces()
     }
 
     fn get_workspace(&self, workspace_id: Uuid) -> ApplicationFuture<'_, WorkspaceView> {
-        Box::pin(self.workspace_view(workspace_id))
+        self.workspaces.get_workspace(workspace_id)
     }
 
     fn attach_source(
         &self,
         command: AttachWorkspaceSource,
     ) -> ApplicationFuture<'_, WorkspaceView> {
-        Box::pin(async move {
-            let workspace_id = command.workspace_id;
-            let source_id = command.source_id;
-            self.workspaces
-                .attach(command)
-                .await
-                .map_err(IntoApplicationError::into_application_error)?;
-            tracing::info!(%workspace_id, %source_id, "workspace source attached");
-            self.workspace_view(workspace_id).await
-        })
+        self.workspaces.attach_source(command)
     }
 
     fn detach_source(
         &self,
         command: DetachWorkspaceSource,
     ) -> ApplicationFuture<'_, WorkspaceView> {
-        Box::pin(async move {
-            let workspace_id = command.workspace_id;
-            let source_id = command.source_id;
-            let detached = self
-                .workspaces
-                .detach(command)
-                .await
-                .map_err(IntoApplicationError::into_application_error)?;
-            if detached {
-                tracing::info!(%workspace_id, %source_id, "workspace source detached");
-            }
-            self.workspace_view(workspace_id).await
-        })
+        self.workspaces.detach_source(command)
     }
 
     fn query_catalog(&self, query: QueryCatalogPage) -> ApplicationFuture<'_, CatalogPage> {
-        Box::pin(async move {
-            self.catalog
-                .query_catalog_page(query)
-                .await
-                .map_err(IntoApplicationError::into_application_error)
-        })
+        self.catalog.query_catalog(query)
     }
 
     fn inspect_state(
         &self,
         query: InspectSourceState,
     ) -> ApplicationFuture<'_, SourceStateInspection> {
-        Box::pin(async move {
-            self.catalog
-                .inspect_source_state(query)
-                .await
-                .map_err(IntoApplicationError::into_application_error)
-        })
+        self.catalog.inspect_state(query)
     }
 
     fn admit_task(&self, command: AdmitTask) -> ApplicationFuture<'_, TaskSnapshot> {
-        Box::pin(async move {
-            self.tasks
-                .admit(command)
-                .await
-                .map_err(IntoApplicationError::into_application_error)
-        })
+        self.tasks.admit_task(command)
     }
 
     fn list_tasks(&self, workspace_id: Uuid) -> ApplicationFuture<'_, Vec<TaskSnapshot>> {
-        Box::pin(async move {
-            self.workspace_view(workspace_id).await?;
-            self.tasks
-                .list_workspace(workspace_id)
-                .await
-                .map_err(IntoApplicationError::into_application_error)
-        })
+        self.tasks.list_tasks(workspace_id)
     }
 
     fn get_task(&self, workspace_id: Uuid, task_id: Uuid) -> ApplicationFuture<'_, TaskSnapshot> {
-        Box::pin(self.workspace_task(workspace_id, task_id))
+        self.tasks.get_task(workspace_id, task_id)
     }
 
     fn cancel_task(
@@ -454,118 +243,39 @@ where
         workspace_id: Uuid,
         command: RequestTaskCancellation,
     ) -> ApplicationFuture<'_, TaskSnapshot> {
-        Box::pin(async move {
-            self.workspace_task(workspace_id, command.task_id).await?;
-            self.tasks
-                .request_cancellation(command.clone())
-                .await
-                .map_err(IntoApplicationError::into_application_error)?;
-            self.workspace_task(workspace_id, command.task_id).await
-        })
+        self.tasks.cancel_task(workspace_id, command)
     }
 
     fn create_connection(
         &self,
         command: CreateConnection,
     ) -> ApplicationFuture<'_, ConnectionSummary> {
-        Box::pin(async move {
-            let connection_id = command.connection_id;
-            let provider_id = command.provider_id.clone();
-            let setting_count = command.settings.len();
-            let secret_count = command.secrets.len();
-            self.providers
-                .ensure_provider_installed(&command.provider_id)
-                .await?;
-            self.connections
-                .store_connection(command)
-                .await
-                .map_err(IntoApplicationError::into_application_error)?;
-            let connection = self
-                .connections
-                .get_connection_summary(connection_id)
-                .await
-                .map_err(IntoApplicationError::into_application_error)?
-                .ok_or_else(|| {
-                    ApplicationError::new(
-                        ApplicationErrorCode::Internal,
-                        "stored connection could not be loaded",
-                    )
-                })?;
-            tracing::info!(
-                %connection_id,
-                %provider_id,
-                setting_count,
-                secret_count,
-                status = ?connection.status,
-                "connection created"
-            );
-            Ok(connection)
-        })
+        self.connections.create_connection(command)
     }
 
     fn list_connections(&self) -> ApplicationFuture<'_, Vec<ConnectionSummary>> {
-        Box::pin(async move {
-            self.connections
-                .list_connections()
-                .await
-                .map_err(IntoApplicationError::into_application_error)
-        })
+        self.connections.list_connections()
     }
 
     fn rename_connection(
         &self,
         command: RenameConnection,
     ) -> ApplicationFuture<'_, ConnectionSummary> {
-        Box::pin(async move {
-            let connection_id = command.connection_id;
-            let connection = self
-                .connections
-                .rename_connection(command)
-                .await
-                .map_err(IntoApplicationError::into_application_error)?;
-            tracing::info!(%connection_id, "connection renamed");
-            Ok(connection)
-        })
+        self.connections.rename_connection(command)
     }
 
     fn reconfigure_connection(
         &self,
         command: ReconfigureConnection,
     ) -> ApplicationFuture<'_, ConnectionSummary> {
-        Box::pin(async move {
-            let connection_id = command.connection_id;
-            let setting_count = command.settings.len();
-            let secret_patch_count = command.secret_patches.len();
-            self.connection_retirement
-                .retire_connection(connection_id)
-                .await
-                .map_err(IntoApplicationError::into_application_error)?;
-            let connection = self
-                .connections
-                .reconfigure_connection(command)
-                .await
-                .map_err(IntoApplicationError::into_application_error)?;
-            tracing::info!(
-                %connection_id,
-                setting_count,
-                secret_patch_count,
-                status = ?connection.status,
-                "connection reconfigured"
-            );
-            Ok(connection)
-        })
+        self.connections.reconfigure_connection(command)
     }
 
     fn list_connection_sources(
         &self,
         connection_id: Uuid,
     ) -> ApplicationFuture<'_, Vec<ConnectionSourceSummary>> {
-        Box::pin(async move {
-            self.connections
-                .list_connection_sources(connection_id)
-                .await
-                .map_err(IntoApplicationError::into_application_error)
-        })
+        self.connections.list_connection_sources(connection_id)
     }
 
     fn get_connection_task(
@@ -573,7 +283,7 @@ where
         connection_id: Uuid,
         task_id: Uuid,
     ) -> ApplicationFuture<'_, TaskSnapshot> {
-        Box::pin(self.connection_task(connection_id, task_id))
+        self.tasks.get_connection_task(connection_id, task_id)
     }
 
     fn cancel_connection_task(
@@ -581,58 +291,21 @@ where
         connection_id: Uuid,
         command: RequestTaskCancellation,
     ) -> ApplicationFuture<'_, TaskSnapshot> {
-        Box::pin(async move {
-            self.connection_task(connection_id, command.task_id).await?;
-            self.tasks
-                .request_cancellation(command.clone())
-                .await
-                .map_err(IntoApplicationError::into_application_error)?;
-            self.connection_task(connection_id, command.task_id).await
-        })
+        self.tasks.cancel_connection_task(connection_id, command)
     }
 
     fn connection_deletion_impact(
         &self,
         connection_id: Uuid,
     ) -> ApplicationFuture<'_, ConnectionDeletionImpact> {
-        Box::pin(async move {
-            self.connections
-                .connection_deletion_impact(connection_id)
-                .await
-                .map_err(IntoApplicationError::into_application_error)
-        })
+        self.connections.connection_deletion_impact(connection_id)
     }
 
     fn delete_connection(
         &self,
         command: BeginConnectionDeletion,
     ) -> ApplicationFuture<'_, ConnectionDeletionImpact> {
-        Box::pin(async move {
-            let connection_id = command.connection_id;
-            let impact = self
-                .connections
-                .begin_connection_deletion(command)
-                .await
-                .map_err(IntoApplicationError::into_application_error)?;
-            self.connection_retirement
-                .retire_connection(connection_id)
-                .await
-                .map_err(IntoApplicationError::into_application_error)?;
-            self.connections
-                .finish_connection_deletion(FinishConnectionDeletion { connection_id })
-                .await
-                .map_err(IntoApplicationError::into_application_error)?;
-            tracing::info!(
-                %connection_id,
-                source_count = impact.source_count,
-                workspace_attachment_count = impact.workspace_attachment_count,
-                task_count = impact.task_count,
-                active_task_count = impact.active_task_count,
-                authentication_session_count = impact.authentication_session_count,
-                "connection deleted"
-            );
-            Ok(impact)
-        })
+        self.connections.delete_connection(command)
     }
 
     fn inspect_connection(

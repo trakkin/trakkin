@@ -17,6 +17,31 @@ import {
 } from "./support/api.ts";
 import { catalogEntry, catalogPage, childCatalog, rootCatalog } from "./support/catalog.ts";
 
+test("unavailable attached sources retain their error without requesting a catalog", async ({ page }) => {
+  let catalogRequests = 0;
+  await mockApi(page, async (route) => {
+    const pathname = new URL(route.request().url()).pathname;
+    if (pathname === "/api/v1/workspaces") return json(route, [workspace]);
+    if (pathname === `/api/v1/workspaces/${workspaceId}`) return json(route, workspace);
+    if (pathname === "/api/v1/connections") return json(route, [connection]);
+    if (pathname === `/api/v1/connections/${connectionId}/sources`) {
+      return json(route, [{ ...source, availability: "unavailable" }]);
+    }
+    if (pathname === `/api/v1/workspaces/${workspaceId}/tasks`) return json(route, []);
+    if (pathname === `/api/v1/workspaces/${workspaceId}/sources/${sourceId}/catalog`) {
+      catalogRequests += 1;
+      return json(route, rootCatalog());
+    }
+    return fallback(route);
+  });
+
+  await page.goto(`/w/${workspaceId}/catalog`);
+  await expect(page.getByRole("heading", { name: "Catalog unavailable" })).toBeVisible();
+  await expect(page.getByText("Source unavailable", { exact: true })).toBeVisible();
+  expect(catalogRequests).toBe(0);
+  await expectNoHorizontalOverflow(page);
+});
+
 test("preserves healthy sources and keeps mobile inspection in a persistent lower pane", async ({ page }) => {
   const unavailableConnectionId = "22222222-2222-2222-2222-444444444444";
   const firstEntry = catalogEntry("First entry", "media/first", "first", false, false);
@@ -158,6 +183,37 @@ test("prompts for a first scan when no catalog has been published", async ({ pag
     page.getByText("This source has not published a catalog yet. Start a scan to load its entries."),
   ).toBeVisible();
   await expect(page.getByText("published source stream is unavailable")).toHaveCount(0);
+});
+
+test("unknown task availability does not claim an unpublished catalog and clears obsolete errors", async ({ page }) => {
+  let unavailable = false;
+  await mockApi(page, async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname === "/api/v1/workspaces") return json(route, [workspace]);
+    if (url.pathname === `/api/v1/workspaces/${workspaceId}`) return json(route, workspace);
+    if (url.pathname === "/api/v1/connections") return json(route, [connection]);
+    if (url.pathname === `/api/v1/connections/${connectionId}/sources`) {
+      return json(route, [{ ...source, availability: unavailable ? "unavailable" : "available" }]);
+    }
+    if (url.pathname === `/api/v1/workspaces/${workspaceId}/tasks`) {
+      return apiError(route, 503, "tasks_unavailable", "Task service unavailable");
+    }
+    if (url.pathname === `/api/v1/workspaces/${workspaceId}/sources/${sourceId}/catalog`) {
+      return apiError(route, 409, "stream_unavailable", "published source stream is unavailable");
+    }
+    if (url.pathname === `/api/v1/workspaces/${workspaceId}/sources/${sourceId}/reads`) {
+      unavailable = true;
+      return json(route, task("succeeded", true), 202);
+    }
+    return fallback(route);
+  });
+
+  await page.goto(`/w/${workspaceId}/catalog`);
+  await expect(page.getByText("published source stream is unavailable", { exact: true })).toBeVisible();
+  await expect(page.getByText(/This source has not published a catalog yet/)).toHaveCount(0);
+  await page.getByRole("button", { name: "Scan Fixture Catalog" }).click();
+  await expect(page.getByText("Source unavailable", { exact: true })).toBeVisible();
+  await expect(page.getByText("published source stream is unavailable", { exact: true })).toHaveCount(0);
 });
 
 test("explains a failed catalog scan without exposing its task code", async ({ page }) => {

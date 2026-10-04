@@ -3,7 +3,7 @@
 use tempfile::tempdir;
 use time::OffsetDateTime;
 use trakkin::{
-    application::task_manager::{AdmitTask, TaskDefinition, TaskStatus},
+    application::task_manager::{AdmitTask, TaskDefinition, TaskRepository, TaskStatus},
     database::DatabaseRuntime,
     host::Host,
 };
@@ -64,8 +64,8 @@ async fn startup_interrupts_existing_work_and_accepts_new_tasks() {
         .expect("host starts after recovering active work");
 
     assert_eq!(
-        host.task_manager()
-            .get(INTERRUPTED_TASK_ID)
+        host.task_repository()
+            .get_task(INTERRUPTED_TASK_ID)
             .await
             .expect("recovered task can be read")
             .expect("recovered task exists")
@@ -73,8 +73,8 @@ async fn startup_interrupts_existing_work_and_accepts_new_tasks() {
         TaskStatus::Interrupted
     );
     let admitted = host
-        .task_manager()
-        .admit(AdmitTask {
+        .task_repository()
+        .admit_task(AdmitTask {
             task_id: ADMITTED_TASK_ID,
             workspace_id: None,
             definition: TaskDefinition::SourceDiscovery {

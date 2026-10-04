@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::application::{error::ApplicationError, facade::WorkspaceView};
+use crate::application::{error::ApplicationError, workspaces::WorkspaceView};
 
 use super::timestamp;
 

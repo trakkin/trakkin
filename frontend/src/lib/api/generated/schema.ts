@@ -985,6 +985,8 @@ export interface components {
             hasMoreAfter: boolean;
             hasMoreBefore: boolean;
         };
+        /** @enum {string} */
+        MappingOperatorParameter: "exact" | "coverage" | "implication";
         MappingPageResponse: {
             chainFingerprint: string;
             items: components["schemas"]["MappingResultResponse"][];
@@ -2385,6 +2387,7 @@ export interface operations {
                 canonicalStatement?: string;
                 statementId?: string;
                 relationKey?: string;
+                operator?: components["schemas"]["MappingOperatorParameter"];
                 sourceKey?: string;
                 endpoint?: string;
                 annotationName?: string;

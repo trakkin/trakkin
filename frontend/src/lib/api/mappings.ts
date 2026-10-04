@@ -1,4 +1,4 @@
-import { type ApiErrorBody, ApiRequestError, request } from "./client.ts";
+import { request } from "./client.ts";
 import type { components } from "./generated/schema.ts";
 
 export type MappingSource = components["schemas"]["MappingSourceResponse"];
@@ -42,7 +42,12 @@ export function createUploadedMappingSource(
     displayName: input.displayName,
     enabled: String(input.enabled),
   });
-  return contentRequest(`/api/v1/mapping-sources/uploads?${parameters}`, "POST", content, signal);
+  return request(`/api/v1/mapping-sources/uploads?${parameters}`, {
+    method: "POST",
+    rawBody: content,
+    headers: { "content-type": "text/plain; charset=utf-8" },
+    signal,
+  });
 }
 
 export function createRemoteMappingSource(
@@ -113,33 +118,4 @@ export function queryMappings(options: MappingQueryOptions, signal?: AbortSignal
   parameters.set("limit", String(options.limit ?? MAPPING_PAGE_LIMIT));
   if (options.cursor) parameters.set("cursor", options.cursor);
   return request(`/api/v1/mappings?${parameters}`, { signal });
-}
-
-async function contentRequest(
-  path: string,
-  method: "POST",
-  content: string,
-  signal?: AbortSignal,
-): Promise<MappingState> {
-  const response = await fetch(path, {
-    method,
-    body: content,
-    headers: { "content-type": "text/plain; charset=utf-8" },
-    signal,
-  });
-  if (!response.ok) throw await responseError(response);
-  return response.json() as Promise<MappingState>;
-}
-
-async function responseError(response: Response): Promise<ApiRequestError> {
-  const payload: unknown = await response.json().catch(() => null);
-  const body: ApiErrorBody =
-    payload && typeof payload === "object" && "code" in payload
-      ? (payload as ApiErrorBody)
-      : {
-          code: "unexpected_response",
-          message: `Request failed with status ${response.status}`,
-          fieldProblems: [],
-        };
-  return new ApiRequestError(response.status, body);
 }

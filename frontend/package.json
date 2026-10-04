@@ -12,7 +12,9 @@
     "lint": "biome check --formatter-enabled=false . && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "setup": "pnpm exec playwright install chromium",
     "start": "vite preview --host 0.0.0.0 --port 5173",
-    "test": "playwright test"
+    "test": "pnpm test:unit && pnpm test:browser",
+    "test:browser": "playwright test",
+    "test:unit": "node --experimental-strip-types --test src/lib/api/*.test.ts src/lib/features/connections/*.test.ts"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.3.0",

@@ -360,9 +360,9 @@ CREATE TABLE staged_catalog_items (
     CHECK (
         operation <> 'upsert'
         OR (
-            kind_namespace <> ''
-            AND kind_name <> ''
-            AND display_name <> ''
+            kind_namespace IS NOT NULL AND kind_namespace <> ''
+            AND kind_name IS NOT NULL AND kind_name <> ''
+            AND display_name IS NOT NULL AND display_name <> ''
             AND attributes IS NOT NULL
         )
     )
@@ -433,8 +433,8 @@ CREATE TABLE staged_catalog_relations (
             AND coalesce(octet_length(parent_key_value) > 0, TRUE)
             AND coalesce(item_key_namespace <> '', TRUE)
             AND coalesce(octet_length(item_key_value) > 0, TRUE)
-            AND kind_namespace <> ''
-            AND kind_name <> ''
+            AND kind_namespace IS NOT NULL AND kind_namespace <> ''
+            AND kind_name IS NOT NULL AND kind_name <> ''
             AND order_parts IS NOT NULL
             AND attributes IS NOT NULL
         )
@@ -726,6 +726,7 @@ CREATE TABLE mapping_sources (
         OR (
             source_kind = 'remote'
             AND priority > 0
+            AND remote_url IS NOT NULL
             AND btrim(remote_url) <> ''
         )
     ),

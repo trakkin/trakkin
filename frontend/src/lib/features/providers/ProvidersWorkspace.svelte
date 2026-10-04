@@ -259,7 +259,6 @@ async function runMutation(
   try {
     await mutation(signal);
     await loadProviders(signal);
-    window.dispatchEvent(new CustomEvent("trakkin:providers-changed"));
     return true;
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") return false;

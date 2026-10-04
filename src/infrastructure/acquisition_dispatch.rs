@@ -18,10 +18,11 @@ use crate::application::{
     connection::ConnectionSessionRegistry,
     task_dispatcher::{TaskHandler, TaskHandlerFuture, TaskHandlerOutcome},
     task_manager::{
-        ClaimedTask, TaskCompletion, TaskDefinition, TaskFailure, TaskKind, TaskManager,
+        ClaimedTask, SourceStream, TaskCompletion, TaskDefinition, TaskFailure, TaskKind,
         TaskRepository, TaskStatus,
     },
 };
+use crate::domain::acquisition::{CatalogBatch, StateBatch};
 use crate::infrastructure::connection::ProcessSessionRegistry;
 
 const READ_TASK_KINDS: [TaskKind; 4] = [
@@ -33,7 +34,7 @@ const READ_TASK_KINDS: [TaskKind; 4] = [
 
 pub struct AcquisitionTaskHandler<P, T, S> {
     publication: P,
-    tasks: TaskManager<T>,
+    tasks: T,
     sessions: ProcessSessionRegistry<S>,
     preferred_batch_size: u32,
     cancellation_poll_interval: Duration,
@@ -43,7 +44,7 @@ pub struct AcquisitionTaskHandler<P, T, S> {
 }
 
 impl<P, T, S> AcquisitionTaskHandler<P, T, S> {
-    pub fn new(publication: P, tasks: TaskManager<T>, sessions: ProcessSessionRegistry<S>) -> Self {
+    pub fn new(publication: P, tasks: T, sessions: ProcessSessionRegistry<S>) -> Self {
         Self {
             publication,
             tasks,
@@ -87,11 +88,7 @@ where
         &READ_TASK_KINDS
     }
 
-    fn execute<'a>(
-        &'a self,
-        claimed: &'a ClaimedTask,
-        completed_at: OffsetDateTime,
-    ) -> TaskHandlerFuture<'a, Self::Error> {
+    fn execute<'a>(&'a self, claimed: &'a ClaimedTask) -> TaskHandlerFuture<'a, Self::Error> {
         Box::pin(async move {
             match &claimed.task.definition {
                 TaskDefinition::Reset { .. } => {
@@ -101,7 +98,7 @@ where
                             task_id: claimed.task.id,
                             task_attempt_id: claimed.attempt_id,
                             owner_id: claimed.owner_id,
-                            completed_at,
+                            completed_at: OffsetDateTime::now_utc(),
                         })
                         .await
                     {
@@ -172,36 +169,19 @@ where
                             return Ok(failed_completion_with_error(code, error, false));
                         }
                     };
-                    let read_result = match stream {
-                        crate::application::task_manager::SourceStream::Catalog => {
-                            self.run_catalog_read(
-                                claimed,
-                                completed_at,
-                                ReadAttempt {
-                                    publication_id,
-                                    attempt_id,
-                                },
-                                fence,
-                                &mut session,
-                                &mut shutdown,
-                            )
-                            .await
-                        }
-                        crate::application::task_manager::SourceStream::State => {
-                            self.run_state_read(
-                                claimed,
-                                completed_at,
-                                ReadAttempt {
-                                    publication_id,
-                                    attempt_id,
-                                },
-                                fence,
-                                &mut session,
-                                &mut shutdown,
-                            )
-                            .await
-                        }
-                    };
+                    let read_result = self
+                        .run_read(
+                            claimed,
+                            *stream,
+                            ReadAttempt {
+                                publication_id,
+                                attempt_id,
+                            },
+                            fence,
+                            &mut session,
+                            &mut shutdown,
+                        )
+                        .await;
                     let disposition = match read_result {
                         Ok(disposition) => disposition,
                         Err(error) => {
@@ -245,10 +225,10 @@ where
     T::Error: std::fmt::Display,
     S::Error: std::fmt::Display,
 {
-    async fn run_catalog_read(
+    async fn run_read(
         &self,
         claimed: &ClaimedTask,
-        completed_at: OffsetDateTime,
+        source_stream: SourceStream,
         attempt: ReadAttempt,
         fence: ReadFence,
         session: &mut S,
@@ -259,21 +239,19 @@ where
             attempt_id,
         } = attempt;
         let operation_id = attempt_id.as_bytes().to_vec();
-        let mut stream = match session
-            .read_catalog(read_command(
-                &fence,
-                operation_id.clone(),
-                self.preferred_batch_size,
-            ))
-            .await
-        {
+        let command = read_command(&fence, operation_id.clone(), self.preferred_batch_size);
+        let started = match source_stream {
+            SourceStream::Catalog => session.read_catalog(command).await.map(ReadStream::Catalog),
+            SourceStream::State => session.read_state(command).await.map(ReadStream::State),
+        };
+        let codes = ReadFailureCodes::for_stream(source_stream);
+        let mut stream: ReadStream<S> = match started {
             Ok(stream) => stream,
             Err(error) => {
                 self.abandon_current(
                     claimed.task.id,
                     attempt_id,
-                    completed_at,
-                    ReadFailure::new("adapter_catalog_read_failed", error.to_string(), true),
+                    ReadFailure::new(codes.start, error.to_string(), true),
                 )
                 .await?;
                 return Ok(ReadDisposition::Retire);
@@ -297,21 +275,19 @@ where
                     self.abandon_current(
                         claimed.task.id,
                         attempt_id,
-                        completed_at,
-                        ReadFailure::coded("adapter_catalog_stream_ended", true),
+                        ReadFailure::coded(codes.ended, true),
                     )
                     .await?;
                     return Ok(ReadDisposition::Retire);
                 }
                 Err(NextEventError::CancellationTimeout) => {
-                    self.abandon_cancelled(attempt_id, completed_at).await?;
+                    self.abandon_cancelled(attempt_id).await?;
                     return Ok(ReadDisposition::Retire);
                 }
                 Err(NextEventError::Task(error)) => {
                     self.abandon_current(
                         claimed.task.id,
                         attempt_id,
-                        completed_at,
                         ReadFailure::new("task_state_unavailable", error.to_string(), true),
                     )
                     .await?;
@@ -321,7 +297,6 @@ where
                     self.abandon_current(
                         claimed.task.id,
                         attempt_id,
-                        completed_at,
                         ReadFailure::coded("task_state_unavailable", true),
                     )
                     .await?;
@@ -331,8 +306,7 @@ where
                     self.abandon_current(
                         claimed.task.id,
                         attempt_id,
-                        completed_at,
-                        ReadFailure::new("adapter_catalog_stream_failed", error.to_string(), true),
+                        ReadFailure::new(codes.stream, error.to_string(), true),
                     )
                     .await?;
                     return Ok(ReadDisposition::Retire);
@@ -345,7 +319,7 @@ where
                     AdapterReadEvent::Completed(_)
                     | AdapterReadEvent::Failed(_)
                     | AdapterReadEvent::Cancelled => {
-                        self.abandon_cancelled(attempt_id, completed_at).await?;
+                        self.abandon_cancelled(attempt_id).await?;
                         return Ok(ReadDisposition::Restore);
                     }
                 }
@@ -353,192 +327,41 @@ where
             match event {
                 AdapterReadEvent::Heartbeat { .. } => {}
                 AdapterReadEvent::Batch(batch) => {
-                    if let Err(error) = self
-                        .publication
-                        .stage_catalog_batch(StageCatalogBatch { attempt_id, batch })
-                        .await
-                    {
-                        self.abandon_current(
-                            claimed.task.id,
-                            attempt_id,
-                            completed_at,
-                            ReadFailure::new("catalog_staging_failed", error.to_string(), false),
-                        )
-                        .await?;
-                        return Ok(ReadDisposition::Restore);
-                    }
-                }
-                AdapterReadEvent::Completed(completed) => {
-                    let command =
-                        publish_command(attempt_id, publication_id, completed, completed_at);
-                    let published = match fence.read_mode {
-                        ReadMode::Full => self.publication.publish_full_catalog(command).await,
-                        ReadMode::Incremental => {
-                            self.publication.publish_incremental_catalog(command).await
+                    let staged = match batch {
+                        ReadBatch::Catalog(batch) => {
+                            self.publication
+                                .stage_catalog_batch(StageCatalogBatch { attempt_id, batch })
+                                .await
+                        }
+                        ReadBatch::State(batch) => {
+                            self.publication
+                                .stage_state_batch(StageStateBatch { attempt_id, batch })
+                                .await
                         }
                     };
-                    if let Err(error) = published {
+                    if let Err(error) = staged {
                         self.abandon_current(
                             claimed.task.id,
                             attempt_id,
-                            completed_at,
-                            ReadFailure::new(
-                                "catalog_publication_failed",
-                                error.to_string(),
-                                false,
-                            ),
+                            ReadFailure::new(codes.staging, error.to_string(), false),
                         )
                         .await?;
-                    }
-                    return Ok(ReadDisposition::Restore);
-                }
-                AdapterReadEvent::Failed(error) => {
-                    self.abandon_current(
-                        claimed.task.id,
-                        attempt_id,
-                        completed_at,
-                        ReadFailure::new(error.code, error.safe_message, error.retryable),
-                    )
-                    .await?;
-                    return Ok(ReadDisposition::Restore);
-                }
-                AdapterReadEvent::Cancelled => {
-                    self.abandon_cancelled(attempt_id, completed_at).await?;
-                    return Ok(ReadDisposition::Restore);
-                }
-            }
-        }
-    }
-
-    async fn run_state_read(
-        &self,
-        claimed: &ClaimedTask,
-        completed_at: OffsetDateTime,
-        attempt: ReadAttempt,
-        fence: ReadFence,
-        session: &mut S,
-        shutdown: &mut Option<watch::Receiver<bool>>,
-    ) -> Result<ReadDisposition, AcquisitionDispatchError<P::Error, T::Error, S::Error>> {
-        let ReadAttempt {
-            publication_id,
-            attempt_id,
-        } = attempt;
-        let operation_id = attempt_id.as_bytes().to_vec();
-        let mut stream = match session
-            .read_state(read_command(
-                &fence,
-                operation_id.clone(),
-                self.preferred_batch_size,
-            ))
-            .await
-        {
-            Ok(stream) => stream,
-            Err(error) => {
-                self.abandon_current(
-                    claimed.task.id,
-                    attempt_id,
-                    completed_at,
-                    ReadFailure::new("adapter_state_read_failed", error.to_string(), true),
-                )
-                .await?;
-                return Ok(ReadDisposition::Retire);
-            }
-        };
-        let mut cancellation = CancellationMonitor::new(self.cancellation_poll_interval);
-        loop {
-            let next = self
-                .next_event(
-                    claimed.task.id,
-                    &operation_id,
-                    session,
-                    &mut stream,
-                    &mut cancellation,
-                    shutdown,
-                )
-                .await;
-            let event = match next {
-                Ok(Some(event)) => event,
-                Ok(None) => {
-                    self.abandon_current(
-                        claimed.task.id,
-                        attempt_id,
-                        completed_at,
-                        ReadFailure::coded("adapter_state_stream_ended", true),
-                    )
-                    .await?;
-                    return Ok(ReadDisposition::Retire);
-                }
-                Err(NextEventError::CancellationTimeout) => {
-                    self.abandon_cancelled(attempt_id, completed_at).await?;
-                    return Ok(ReadDisposition::Retire);
-                }
-                Err(NextEventError::Task(error)) => {
-                    self.abandon_current(
-                        claimed.task.id,
-                        attempt_id,
-                        completed_at,
-                        ReadFailure::new("task_state_unavailable", error.to_string(), true),
-                    )
-                    .await?;
-                    return Ok(ReadDisposition::Retire);
-                }
-                Err(NextEventError::TaskMissing) => {
-                    self.abandon_current(
-                        claimed.task.id,
-                        attempt_id,
-                        completed_at,
-                        ReadFailure::coded("task_state_unavailable", true),
-                    )
-                    .await?;
-                    return Ok(ReadDisposition::Retire);
-                }
-                Err(NextEventError::Adapter(error)) => {
-                    self.abandon_current(
-                        claimed.task.id,
-                        attempt_id,
-                        completed_at,
-                        ReadFailure::new("adapter_state_stream_failed", error.to_string(), true),
-                    )
-                    .await?;
-                    return Ok(ReadDisposition::Retire);
-                }
-                Err(NextEventError::Shutdown) => return Ok(ReadDisposition::Shutdown),
-            };
-            if cancellation.requested {
-                match event {
-                    AdapterReadEvent::Heartbeat { .. } | AdapterReadEvent::Batch(_) => continue,
-                    AdapterReadEvent::Completed(_)
-                    | AdapterReadEvent::Failed(_)
-                    | AdapterReadEvent::Cancelled => {
-                        self.abandon_cancelled(attempt_id, completed_at).await?;
-                        return Ok(ReadDisposition::Restore);
-                    }
-                }
-            }
-            match event {
-                AdapterReadEvent::Heartbeat { .. } => {}
-                AdapterReadEvent::Batch(batch) => {
-                    if let Err(error) = self
-                        .publication
-                        .stage_state_batch(StageStateBatch { attempt_id, batch })
-                        .await
-                    {
-                        self.abandon_current(
-                            claimed.task.id,
-                            attempt_id,
-                            completed_at,
-                            ReadFailure::new("state_staging_failed", error.to_string(), false),
-                        )
-                        .await?;
-                        return Ok(ReadDisposition::Restore);
+                        return Ok(ReadDisposition::Retire);
                     }
                 }
                 AdapterReadEvent::Completed(completed) => {
-                    let command =
-                        publish_command(attempt_id, publication_id, completed, completed_at);
-                    let published = match fence.read_mode {
-                        ReadMode::Full => self.publication.publish_full_state(command).await,
-                        ReadMode::Incremental => {
+                    let command = publish_command(attempt_id, publication_id, completed);
+                    let published = match (source_stream, fence.read_mode) {
+                        (SourceStream::Catalog, ReadMode::Full) => {
+                            self.publication.publish_full_catalog(command).await
+                        }
+                        (SourceStream::Catalog, ReadMode::Incremental) => {
+                            self.publication.publish_incremental_catalog(command).await
+                        }
+                        (SourceStream::State, ReadMode::Full) => {
+                            self.publication.publish_full_state(command).await
+                        }
+                        (SourceStream::State, ReadMode::Incremental) => {
                             self.publication.publish_incremental_state(command).await
                         }
                     };
@@ -546,8 +369,7 @@ where
                         self.abandon_current(
                             claimed.task.id,
                             attempt_id,
-                            completed_at,
-                            ReadFailure::new("state_publication_failed", error.to_string(), false),
+                            ReadFailure::new(codes.publication, error.to_string(), false),
                         )
                         .await?;
                     }
@@ -557,14 +379,13 @@ where
                     self.abandon_current(
                         claimed.task.id,
                         attempt_id,
-                        completed_at,
                         ReadFailure::new(error.code, error.safe_message, error.retryable),
                     )
                     .await?;
                     return Ok(ReadDisposition::Restore);
                 }
                 AdapterReadEvent::Cancelled => {
-                    self.abandon_cancelled(attempt_id, completed_at).await?;
+                    self.abandon_cancelled(attempt_id).await?;
                     return Ok(ReadDisposition::Restore);
                 }
             }
@@ -583,34 +404,30 @@ where
     where
         R: AdapterReadStream<B, Error = S::Error>,
     {
-        if let Some(deadline) = cancellation.deadline {
-            return tokio::select! {
-                result = timeout_at(deadline, stream.next_event()) => {
-                    result
-                        .map_err(|_| NextEventError::CancellationTimeout)?
-                        .map_err(NextEventError::Adapter)
-                }
-                () = wait_for_shutdown(shutdown) => Err(NextEventError::Shutdown),
-            };
-        }
         loop {
+            if let Some(deadline) = cancellation.deadline {
+                return next_cancelled_event(deadline, stream, shutdown).await;
+            }
             tokio::select! {
                 event = stream.next_event() => {
                     return event.map_err(NextEventError::Adapter);
                 }
                 _ = cancellation.interval.tick() => {
                     let status = self.tasks
-                        .get(task_id)
+                        .get_task(task_id)
                         .await
                         .map_err(NextEventError::Task)?
                         .map(|task| task.status)
                         .ok_or(NextEventError::TaskMissing)?;
                     if status == TaskStatus::Cancelling {
-                        if let Err(error) = session.cancel_operation(operation_id.to_vec()).await {
-                            return Err(NextEventError::Adapter(error));
-                        }
+                        let deadline = Instant::now() + self.cancellation_grace_period;
                         cancellation.requested = true;
-                        cancellation.deadline = Some(Instant::now() + self.cancellation_grace_period);
+                        cancellation.deadline = Some(deadline);
+                        cancel_before_deadline(
+                            session.cancel_operation(operation_id.to_vec()),
+                            deadline,
+                            shutdown,
+                        ).await?;
                     }
                 }
                 () = wait_for_shutdown(shutdown) => {
@@ -624,14 +441,13 @@ where
         &self,
         _task_id: Uuid,
         attempt_id: Uuid,
-        completed_at: OffsetDateTime,
         failure: ReadFailure,
     ) -> Result<(), AcquisitionDispatchError<P::Error, T::Error, S::Error>> {
         self.publication
             .abandon_read(AbandonRead {
                 attempt_id,
                 outcome: ReadAbandonment::Failed(failure),
-                completed_at,
+                completed_at: OffsetDateTime::now_utc(),
             })
             .await
             .map_err(AcquisitionDispatchError::Publication)
@@ -640,13 +456,12 @@ where
     async fn abandon_cancelled(
         &self,
         attempt_id: Uuid,
-        completed_at: OffsetDateTime,
     ) -> Result<(), AcquisitionDispatchError<P::Error, T::Error, S::Error>> {
         self.publication
             .abandon_read(AbandonRead {
                 attempt_id,
                 outcome: ReadAbandonment::Cancelled,
-                completed_at,
+                completed_at: OffsetDateTime::now_utc(),
             })
             .await
             .map_err(AcquisitionDispatchError::Publication)
@@ -674,6 +489,77 @@ struct CancellationMonitor {
     deadline: Option<Instant>,
 }
 
+enum ReadBatch {
+    Catalog(CatalogBatch),
+    State(StateBatch),
+}
+
+enum ReadStream<S: AdapterSession> {
+    Catalog(S::CatalogReadStream),
+    State(S::StateReadStream),
+}
+
+impl<S: AdapterSession> AdapterReadStream<ReadBatch> for ReadStream<S> {
+    type Error = S::Error;
+
+    async fn next_event(&mut self) -> Result<Option<AdapterReadEvent<ReadBatch>>, Self::Error> {
+        match self {
+            Self::Catalog(stream) => stream
+                .next_event()
+                .await
+                .map(|event| event.map(|event| map_batch(event, ReadBatch::Catalog))),
+            Self::State(stream) => stream
+                .next_event()
+                .await
+                .map(|event| event.map(|event| map_batch(event, ReadBatch::State))),
+        }
+    }
+}
+
+fn map_batch<B>(
+    event: AdapterReadEvent<B>,
+    wrap: impl FnOnce(B) -> ReadBatch,
+) -> AdapterReadEvent<ReadBatch> {
+    match event {
+        AdapterReadEvent::Heartbeat { records_emitted } => {
+            AdapterReadEvent::Heartbeat { records_emitted }
+        }
+        AdapterReadEvent::Batch(batch) => AdapterReadEvent::Batch(wrap(batch)),
+        AdapterReadEvent::Completed(completed) => AdapterReadEvent::Completed(completed),
+        AdapterReadEvent::Failed(error) => AdapterReadEvent::Failed(error),
+        AdapterReadEvent::Cancelled => AdapterReadEvent::Cancelled,
+    }
+}
+
+struct ReadFailureCodes {
+    start: &'static str,
+    ended: &'static str,
+    stream: &'static str,
+    staging: &'static str,
+    publication: &'static str,
+}
+
+impl ReadFailureCodes {
+    fn for_stream(stream: SourceStream) -> Self {
+        match stream {
+            SourceStream::Catalog => Self {
+                start: "adapter_catalog_read_failed",
+                ended: "adapter_catalog_stream_ended",
+                stream: "adapter_catalog_stream_failed",
+                staging: "catalog_staging_failed",
+                publication: "catalog_publication_failed",
+            },
+            SourceStream::State => Self {
+                start: "adapter_state_read_failed",
+                ended: "adapter_state_stream_ended",
+                stream: "adapter_state_stream_failed",
+                staging: "state_staging_failed",
+                publication: "state_publication_failed",
+            },
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct ReadAttempt {
     publication_id: Uuid,
@@ -685,6 +571,38 @@ enum ReadDisposition {
     Retire,
     Restore,
     Shutdown,
+}
+
+async fn cancel_before_deadline<T, E>(
+    cancellation: impl std::future::Future<Output = Result<(), E>>,
+    deadline: Instant,
+    shutdown: &mut Option<watch::Receiver<bool>>,
+) -> Result<(), NextEventError<T, E>> {
+    tokio::select! {
+        result = timeout_at(deadline, cancellation) => {
+            result.map_err(|_| NextEventError::CancellationTimeout)?
+                .map_err(NextEventError::Adapter)
+        }
+        () = wait_for_shutdown(shutdown) => Err(NextEventError::Shutdown),
+    }
+}
+
+async fn next_cancelled_event<B, R, T>(
+    deadline: Instant,
+    stream: &mut R,
+    shutdown: &mut Option<watch::Receiver<bool>>,
+) -> Result<Option<AdapterReadEvent<B>>, NextEventError<T, R::Error>>
+where
+    R: AdapterReadStream<B>,
+{
+    tokio::select! {
+        result = timeout_at(deadline, stream.next_event()) => {
+            result
+                .map_err(|_| NextEventError::CancellationTimeout)?
+                .map_err(NextEventError::Adapter)
+        }
+        () = wait_for_shutdown(shutdown) => Err(NextEventError::Shutdown),
+    }
 }
 
 async fn wait_for_shutdown(shutdown: &mut Option<watch::Receiver<bool>>) {
@@ -729,7 +647,6 @@ fn publish_command(
     attempt_id: Uuid,
     publication_id: Uuid,
     completed: crate::application::adapter_runtime::AdapterReadCompletion,
-    published_at: OffsetDateTime,
 ) -> PublishRead {
     PublishRead {
         attempt_id,
@@ -737,7 +654,7 @@ fn publish_command(
         next_cursor: Some(completed.next_cursor),
         evidence_revision: completed.evidence_revision,
         observed_at: completed.observed_at,
-        published_at,
+        published_at: OffsetDateTime::now_utc(),
     }
 }
 
@@ -787,11 +704,156 @@ enum NextEventError<TaskError, AdapterError> {
 
 #[cfg(test)]
 mod tests {
-    use std::future::pending;
+    use std::{convert::Infallible, future::pending};
 
     use tokio::sync::watch;
 
-    use super::wait_for_shutdown;
+    use super::*;
+    use crate::application::adapter_runtime::{
+        AdapterCallError, AdapterFailureCategory, AdapterReadCompletion,
+    };
+
+    struct SilentStream;
+
+    impl AdapterReadStream<()> for SilentStream {
+        type Error = Infallible;
+
+        async fn next_event(&mut self) -> Result<Option<AdapterReadEvent<()>>, Self::Error> {
+            pending().await
+        }
+    }
+
+    #[tokio::test]
+    async fn stalled_cancellation_rpc_expires_at_grace_deadline() {
+        let result =
+            cancel_before_deadline::<Infallible, Infallible>(pending(), Instant::now(), &mut None)
+                .await;
+        assert!(matches!(result, Err(NextEventError::CancellationTimeout)));
+    }
+
+    #[tokio::test]
+    async fn shutdown_interrupts_stalled_cancellation_rpc() {
+        let (_sender, receiver) = watch::channel(true);
+        let result = cancel_before_deadline::<Infallible, Infallible>(
+            pending(),
+            Instant::now() + Duration::from_secs(60),
+            &mut Some(receiver),
+        )
+        .await;
+        assert!(matches!(result, Err(NextEventError::Shutdown)));
+    }
+
+    #[tokio::test]
+    async fn cancelled_silent_read_expires_at_grace_deadline() {
+        let mut stream = SilentStream;
+        let result =
+            next_cancelled_event::<(), _, Infallible>(Instant::now(), &mut stream, &mut None).await;
+        assert!(matches!(result, Err(NextEventError::CancellationTimeout)));
+    }
+
+    #[tokio::test]
+    async fn shutdown_interrupts_cancellation_grace_wait() {
+        let (sender, receiver) = watch::channel(true);
+        let mut stream = SilentStream;
+        let result = next_cancelled_event::<(), _, Infallible>(
+            Instant::now() + Duration::from_secs(60),
+            &mut stream,
+            &mut Some(receiver),
+        )
+        .await;
+        assert!(matches!(result, Err(NextEventError::Shutdown)));
+        drop(sender);
+    }
+
+    fn completion() -> AdapterReadCompletion {
+        AdapterReadCompletion {
+            next_cursor: vec![1, 2],
+            evidence_revision: vec![3, 4],
+            observed_at: OffsetDateTime::UNIX_EPOCH,
+        }
+    }
+
+    #[test]
+    fn publication_uses_current_time_and_preserves_adapter_evidence() {
+        let before = OffsetDateTime::now_utc();
+        let attempt_id = Uuid::from_u128(1);
+        let publication_id = Uuid::from_u128(2);
+        let completed = completion();
+        let command = publish_command(attempt_id, publication_id, completed.clone());
+        assert!(command.published_at >= before);
+        assert!(command.published_at <= OffsetDateTime::now_utc());
+        assert_eq!(command.attempt_id, attempt_id);
+        assert_eq!(command.publication_id, publication_id);
+        assert_eq!(command.next_cursor, Some(completed.next_cursor));
+        assert_eq!(command.evidence_revision, completed.evidence_revision);
+        assert_eq!(command.observed_at, completed.observed_at);
+    }
+
+    #[test]
+    fn shared_events_preserve_typed_batches() {
+        let catalog = CatalogBatch::new(7, vec![], vec![], vec![], vec![], vec![], vec![]);
+        let state = StateBatch::new(8, vec![]);
+        assert!(matches!(
+            map_batch(AdapterReadEvent::Batch(catalog.clone()), ReadBatch::Catalog),
+            AdapterReadEvent::Batch(ReadBatch::Catalog(batch)) if batch == catalog
+        ));
+        assert!(matches!(
+            map_batch(AdapterReadEvent::Batch(state.clone()), ReadBatch::State),
+            AdapterReadEvent::Batch(ReadBatch::State(batch)) if batch == state
+        ));
+    }
+
+    #[test]
+    fn shared_events_preserve_control_events_for_both_streams() {
+        let failure = AdapterCallError {
+            category: AdapterFailureCategory::Unavailable,
+            code: "unavailable".to_owned(),
+            safe_message: "provider unavailable".to_owned(),
+            retryable: true,
+            retry_after: None,
+            field_problems: vec![],
+        };
+        for catalog in [true, false] {
+            let wrap = |()| {
+                if catalog {
+                    ReadBatch::Catalog(CatalogBatch::new(
+                        1,
+                        vec![],
+                        vec![],
+                        vec![],
+                        vec![],
+                        vec![],
+                        vec![],
+                    ))
+                } else {
+                    ReadBatch::State(StateBatch::new(1, vec![]))
+                }
+            };
+            assert!(matches!(
+                map_batch(
+                    AdapterReadEvent::Heartbeat {
+                        records_emitted: 42
+                    },
+                    wrap
+                ),
+                AdapterReadEvent::Heartbeat {
+                    records_emitted: 42
+                }
+            ));
+            assert!(matches!(
+                map_batch(AdapterReadEvent::Completed(completion()), wrap),
+                AdapterReadEvent::Completed(completed) if completed == completion()
+            ));
+            assert!(matches!(
+                map_batch(AdapterReadEvent::Failed(failure.clone()), wrap),
+                AdapterReadEvent::Failed(error) if error == failure
+            ));
+            assert!(matches!(
+                map_batch(AdapterReadEvent::Cancelled, wrap),
+                AdapterReadEvent::Cancelled
+            ));
+        }
+    }
 
     #[tokio::test]
     async fn shutdown_interrupts_a_pending_read() {

@@ -16,8 +16,10 @@ use tower::ServiceExt;
 use trakkin::{
     application::{
         adapter_runtime::AdapterValue,
-        connection::ConnectionRepository,
-        facade::{ApplicationFacade, ApplicationInteractions},
+        connection::{ConnectionRepository, ConnectionService},
+        facade::ApplicationFacade,
+        task_manager::TaskService,
+        workspaces::WorkspaceService,
     },
     database::DatabaseRuntime,
     http,
@@ -31,6 +33,110 @@ use trakkin::{
     },
 };
 use uuid::Uuid;
+
+#[tokio::test]
+async fn invalid_reconfiguration_does_not_retire_connection() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use trakkin::application::{
+        adapter_runtime::{AdapterSecretPatch, AdapterSetting},
+        connection::*,
+        error::{ApplicationError, ApplicationErrorCode},
+    };
+
+    struct UnusedRepository;
+    macro_rules! unused_repository_method {
+        ($name:ident, $input:ty, $output:ty) => {
+            fn $name(&self, _command: $input) -> ConnectionFuture<'_, $output, Self::Error> {
+                panic!("invalid configuration must not reach repository")
+            }
+        };
+    }
+    impl ConnectionRepository for UnusedRepository {
+        type Error = ApplicationError;
+        unused_repository_method!(store_connection, CreateConnection, ());
+        unused_repository_method!(load_connection, Uuid, Option<StoredConnection>);
+        unused_repository_method!(publish_connection_snapshot, PublishConnectionSnapshot, ());
+        unused_repository_method!(mark_connection_unavailable, MarkConnectionUnavailable, ());
+        unused_repository_method!(save_authentication_step, SaveAuthenticationStep, ());
+        unused_repository_method!(
+            load_authentication_session,
+            Uuid,
+            Option<StoredAuthenticationSession>
+        );
+        unused_repository_method!(
+            mark_authentication_cancelled,
+            MarkAuthenticationCancelled,
+            ()
+        );
+        fn list_connections(&self) -> ConnectionFuture<'_, Vec<ConnectionSummary>, Self::Error> {
+            panic!("invalid configuration must not reach repository")
+        }
+        unused_repository_method!(get_connection_summary, Uuid, Option<ConnectionSummary>);
+        unused_repository_method!(rename_connection, RenameConnection, ConnectionSummary);
+        unused_repository_method!(
+            reconfigure_connection,
+            ReconfigureConnection,
+            ConnectionSummary
+        );
+        unused_repository_method!(list_connection_sources, Uuid, Vec<ConnectionSourceSummary>);
+        unused_repository_method!(connection_deletion_impact, Uuid, ConnectionDeletionImpact);
+        unused_repository_method!(
+            begin_connection_deletion,
+            BeginConnectionDeletion,
+            ConnectionDeletionImpact
+        );
+        unused_repository_method!(finish_connection_deletion, FinishConnectionDeletion, ());
+    }
+    struct Retirement(Arc<AtomicUsize>);
+    impl ConnectionRetirement for Retirement {
+        type Error = ApplicationError;
+        fn retire_connection(&self, _connection_id: Uuid) -> ConnectionFuture<'_, (), Self::Error> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Ok(()) })
+        }
+    }
+    let retirements = Arc::new(AtomicUsize::new(0));
+    let service = ConnectionService::new(
+        UnusedRepository,
+        Retirement(retirements.clone()),
+        static_provider_registry(),
+    );
+    for keys in [vec![""], vec!["duplicate", "duplicate"]] {
+        for secret_patches in [false, true] {
+            let command = ReconfigureConnection {
+                connection_id: Uuid::from_u128(1),
+                settings: if secret_patches {
+                    Vec::new()
+                } else {
+                    keys.iter()
+                        .map(|key| AdapterSetting {
+                            key: (*key).to_owned(),
+                            value: AdapterValue::Text("value".to_owned()),
+                        })
+                        .collect()
+                },
+                secret_patches: if secret_patches {
+                    keys.iter()
+                        .map(|key| AdapterSecretPatch {
+                            key: (*key).to_owned(),
+                            value: None,
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                },
+                reconfigured_at: timestamp(0),
+            };
+            let error = service
+                .reconfigure_connection(command)
+                .await
+                .expect_err("invalid keys rejected");
+            assert_eq!(error.code, ApplicationErrorCode::InvalidRequest);
+            assert_eq!(error.message, "connection configuration is invalid");
+            assert_eq!(retirements.load(Ordering::SeqCst), 0);
+        }
+    }
+}
 
 #[path = "support/http/router.rs"]
 pub mod support;
@@ -52,19 +158,30 @@ async fn connection_and_acquisition_routes_are_closed_bounded_and_secret_safe() 
             .await
             .expect("mapping manager starts"),
     );
-    let application = ApplicationFacade::new(
-        PostgresWorkspaceRepository::new(database.pool()),
-        PostgresCatalogQueryRepository::new(database.pool()),
-        PostgresTaskRepository::new(database.pool()),
-        PostgresConnectionRepository::new(database.pool(), ConnectionMasterKey::new([7_u8; 32])),
-        ProcessSessionRegistry::<AdapterProcess>::default(),
-        ApplicationInteractions::new(
-            Arc::new(StaticConnectionInteraction),
-            Arc::new(StaticBinaryAssetInteraction),
-            static_provider_registry(),
-            mappings,
-        ),
-    );
+    let workspaces = Arc::new(WorkspaceService::new(PostgresWorkspaceRepository::new(
+        database.pool(),
+    )));
+    let providers = static_provider_registry();
+    let application = ApplicationFacade {
+        workspaces: workspaces.clone(),
+        catalog: Arc::new(PostgresCatalogQueryRepository::new(database.pool())),
+        tasks: Arc::new(TaskService::new(
+            PostgresTaskRepository::new(database.pool()),
+            workspaces,
+        )),
+        connections: Arc::new(ConnectionService::new(
+            PostgresConnectionRepository::new(
+                database.pool(),
+                ConnectionMasterKey::new([7_u8; 32]),
+            ),
+            ProcessSessionRegistry::<AdapterProcess>::default(),
+            providers.clone(),
+        )),
+        connection_interaction: Arc::new(StaticConnectionInteraction),
+        binary_assets: Arc::new(StaticBinaryAssetInteraction),
+        providers,
+        mappings,
+    };
     let router = http::router(Arc::new(application), ".".into());
 
     let created_connection = request(

@@ -13,16 +13,18 @@ use uuid::Uuid;
 
 use crate::{
     application::task_lifecycle::{InterruptActiveTasks, TaskLifecycleRepository},
-    application::task_manager::{TaskManager, TaskRepository},
+    application::task_manager::TaskRepository,
     application::{
         assets::BinaryAssetInteractionService,
         connection::{
-            ConnectionCoordinator, ConnectionRepository, ConnectionStatus, OpenConnection,
-            SourceDiscoveryTaskHandler,
+            ConnectionCoordinator, ConnectionRepository, ConnectionService, ConnectionStatus,
+            OpenConnection, SourceDiscoveryTaskHandler,
         },
         error::ApplicationError,
-        facade::{ApplicationApi, ApplicationFacade, ApplicationInteractions},
+        facade::{ApplicationApi, ApplicationFacade},
         task_dispatcher::{DispatchNextTask, TaskDispatcher},
+        task_manager::TaskService,
+        workspaces::WorkspaceService,
     },
     database::{DatabaseError, DatabaseRuntime},
     infrastructure::task_lifecycle::{PostgresTaskLifecycleRepository, TaskLifecycleError},
@@ -51,7 +53,7 @@ const PROVIDER_UPDATE_INTERVAL: Duration = Duration::from_secs(15 * 60);
 
 pub struct Host {
     database: DatabaseRuntime,
-    task_manager: TaskManager<PostgresTaskRepository>,
+    task_repository: PostgresTaskRepository,
 }
 
 impl Host {
@@ -72,8 +74,8 @@ impl Host {
         Self::compose(database, started_at).await
     }
 
-    pub fn task_manager(&self) -> &TaskManager<PostgresTaskRepository> {
-        &self.task_manager
+    pub fn task_repository(&self) -> &PostgresTaskRepository {
+        &self.task_repository
     }
 
     pub async fn into_runtime(
@@ -150,50 +152,65 @@ impl Host {
         let provider_management =
             ProbedProviderRegistry::new(provider_registry.clone(), env!("CARGO_PKG_VERSION"));
         let provider_access = PostgresProviderAccessRepository::new(pool.clone());
-        let application: Arc<dyn ApplicationApi> = Arc::new(ApplicationFacade::new(
-            PostgresWorkspaceRepository::new(pool.clone()),
-            PostgresCatalogQueryRepository::new(pool.clone()),
-            PostgresTaskRepository::new(pool.clone()),
-            connection_repository.clone(),
-            sessions.clone(),
-            ApplicationInteractions::new(
-                Arc::new(ConnectionCoordinator::new(
-                    connection_repository.clone(),
-                    launcher.clone(),
-                    sessions.clone(),
-                )),
-                Arc::new(BinaryAssetInteractionService::<_, _, AdapterProcess>::new(
-                    provider_access.clone(),
-                    sessions.clone(),
-                    HOST_MAXIMUM_ASSET_BYTES,
-                )),
-                Arc::new(provider_management.clone()),
-                mappings,
-            ),
-        ));
+        let workspaces = Arc::new(WorkspaceService::new(PostgresWorkspaceRepository::new(
+            pool.clone(),
+        )));
+        let providers = Arc::new(provider_management.clone());
+        let application: Arc<dyn ApplicationApi> = Arc::new(ApplicationFacade {
+            workspaces: workspaces.clone(),
+            catalog: Arc::new(PostgresCatalogQueryRepository::new(pool.clone())),
+            tasks: Arc::new(TaskService::new(
+                PostgresTaskRepository::new(pool.clone()),
+                workspaces,
+            )),
+            connections: Arc::new(ConnectionService::new(
+                connection_repository.clone(),
+                sessions.clone(),
+                providers.clone(),
+            )),
+            connection_interaction: Arc::new(ConnectionCoordinator::new(
+                connection_repository.clone(),
+                launcher.clone(),
+                sessions.clone(),
+            )),
+            binary_assets: Arc::new(BinaryAssetInteractionService::<_, _, AdapterProcess>::new(
+                provider_access.clone(),
+                sessions.clone(),
+                HOST_MAXIMUM_ASSET_BYTES,
+            )),
+            providers,
+            mappings,
+        });
         let (shutdown_sender, shutdown_receiver) = watch::channel(false);
+        let execution = crate::application::task_dispatcher::ConnectionExecutionLocks::default();
         let mut workers = Vec::with_capacity(TASK_WORKERS_PER_KIND * 2 + 1);
         for _ in 0..TASK_WORKERS_PER_KIND {
             let discovery = TaskDispatcher::new(
-                self.task_manager.clone(),
+                self.task_repository.clone(),
                 SourceDiscoveryTaskHandler::new(ConnectionCoordinator::new(
                     connection_repository.clone(),
                     launcher.clone(),
                     sessions.clone(),
                 )),
             );
-            workers.push(spawn_dispatcher(discovery, shutdown_receiver.clone())?);
+            workers.push(spawn_dispatcher(
+                discovery.with_execution_locks(execution.clone()),
+                shutdown_receiver.clone(),
+            )?);
 
             let acquisition = TaskDispatcher::new(
-                self.task_manager.clone(),
+                self.task_repository.clone(),
                 AcquisitionTaskHandler::new(
                     PostgresPublicationRepository::new(pool.clone()),
-                    self.task_manager.clone(),
+                    self.task_repository.clone(),
                     sessions.clone(),
                 )
                 .with_shutdown(shutdown_receiver.clone()),
             );
-            workers.push(spawn_dispatcher(acquisition, shutdown_receiver.clone())?);
+            workers.push(spawn_dispatcher(
+                acquisition.with_execution_locks(execution.clone()),
+                shutdown_receiver.clone(),
+            )?);
         }
         workers.push(tokio::spawn(run_provider_updates(
             provider_management,
@@ -233,10 +250,10 @@ impl Host {
                 interrupted_at: started_at,
             })
             .await?;
-        let task_manager = TaskManager::new(PostgresTaskRepository::new(database.pool()));
+        let task_repository = PostgresTaskRepository::new(database.pool());
         Ok(Self {
             database,
-            task_manager,
+            task_repository,
         })
     }
 }
@@ -359,7 +376,6 @@ async fn run_dispatcher<R, H>(
                 owner_id,
                 attempt_id,
                 claimed_at: now,
-                completed_at: now,
             })
             .await;
         match dispatch {

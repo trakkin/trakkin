@@ -1,7 +1,8 @@
-use sqlx::{PgPool, Postgres, Transaction};
+use sqlx::PgPool;
 use thiserror::Error;
 use uuid::Uuid;
 
+use super::catalog_publication::clear_read_staging;
 use crate::application::task_lifecycle::{
     InterruptActiveTasks, TaskLifecycleRepository, TaskRepositoryFuture,
 };
@@ -42,7 +43,7 @@ FOR UPDATE
         .bind(&task_ids)
         .fetch_all(&mut *transaction)
         .await?;
-        clear_interrupted_read_staging(&mut transaction, &read_attempt_ids).await?;
+        clear_read_staging(&mut transaction, &read_attempt_ids).await?;
         sqlx::query(
             "UPDATE read_attempts
 SET status = 'abandoned', updated_at = $1, completed_at = $1
@@ -102,37 +103,6 @@ impl TaskLifecycleRepository for PostgresTaskLifecycleRepository {
     ) -> TaskRepositoryFuture<'_, (), Self::Error> {
         Box::pin(self.interrupt(command))
     }
-}
-
-async fn clear_interrupted_read_staging(
-    transaction: &mut Transaction<'_, Postgres>,
-    read_attempt_ids: &[Uuid],
-) -> Result<(), TaskLifecycleError> {
-    sqlx::query(
-        "DELETE FROM staged_catalog_relations
-WHERE attempt_id = ANY($1)
-",
-    )
-    .bind(read_attempt_ids)
-    .execute(&mut **transaction)
-    .await?;
-    sqlx::query(
-        "DELETE FROM staged_catalog_items
-WHERE attempt_id = ANY($1)
-",
-    )
-    .bind(read_attempt_ids)
-    .execute(&mut **transaction)
-    .await?;
-    sqlx::query(
-        "DELETE FROM staged_state_observations
-WHERE attempt_id = ANY($1)
-",
-    )
-    .bind(read_attempt_ids)
-    .execute(&mut **transaction)
-    .await?;
-    Ok(())
 }
 
 #[derive(Debug, Error)]

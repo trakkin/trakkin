@@ -7,7 +7,8 @@ export default defineConfig({
   outputDir: "test-results",
   retries: 0,
   reporter: "line",
-  timeout: 0,
+  timeout: 60_000,
+  globalTimeout: 600_000,
   workers: 4,
   use: {
     baseURL: "http://127.0.0.1:4173",

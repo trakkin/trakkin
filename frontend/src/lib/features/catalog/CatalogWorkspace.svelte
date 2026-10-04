@@ -2,10 +2,13 @@
 import { RefreshCw } from "@lucide/svelte";
 import { page } from "$app/state";
 import { Button, IconButton, PageHeader, Panel, Spinner } from "$lib";
+import {
+  loadWorkspaceSourceDirectory,
+  type WorkspaceSourceDirectory,
+} from "$lib/features/workspaces/workspaceSourceDirectory";
 import CatalogBrowser from "./CatalogBrowser.svelte";
-import { loadWorkspaceCatalog, type WorkspaceCatalog } from "./workspaceCatalog";
 
-let data = $state<WorkspaceCatalog | null>(null);
+let data = $state<WorkspaceSourceDirectory | null>(null);
 let loading = $state(true);
 let reloading = $state(false);
 let errorMessage = $state("");
@@ -25,7 +28,7 @@ async function load(activeWorkspaceId: string, requestId: number, signal?: Abort
   loading = true;
   errorMessage = "";
   try {
-    const snapshot = await loadWorkspaceCatalog(activeWorkspaceId, signal);
+    const snapshot = await loadWorkspaceSourceDirectory(activeWorkspaceId, signal);
     if (requestId === snapshotRequest) data = snapshot;
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") return;
@@ -51,7 +54,7 @@ async function reload() {
   reloading = true;
   errorMessage = "";
   try {
-    const snapshot = await loadWorkspaceCatalog(activeWorkspaceId);
+    const snapshot = await loadWorkspaceSourceDirectory(activeWorkspaceId);
     if (requestId === snapshotRequest) data = snapshot;
   } catch (error) {
     if (requestId !== snapshotRequest) return;

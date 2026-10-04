@@ -82,3 +82,36 @@ pub trait CatalogQueryRepository: Send + Sync {
         query: ResolveSubjectUnits,
     ) -> CatalogQueryFuture<'_, SubjectUnitCandidates, Self::Error>;
 }
+
+use super::error::{ApplicationFuture, IntoApplicationError};
+
+pub trait CatalogApi: Send + Sync {
+    fn query_catalog(&self, query: QueryCatalogPage) -> ApplicationFuture<'_, CatalogPage>;
+    fn inspect_state(
+        &self,
+        query: InspectSourceState,
+    ) -> ApplicationFuture<'_, SourceStateInspection>;
+}
+
+impl<R: CatalogQueryRepository> CatalogApi for R
+where
+    R::Error: IntoApplicationError,
+{
+    fn query_catalog(&self, query: QueryCatalogPage) -> ApplicationFuture<'_, CatalogPage> {
+        Box::pin(async move {
+            self.query_catalog_page(query)
+                .await
+                .map_err(IntoApplicationError::into_application_error)
+        })
+    }
+    fn inspect_state(
+        &self,
+        query: InspectSourceState,
+    ) -> ApplicationFuture<'_, SourceStateInspection> {
+        Box::pin(async move {
+            self.inspect_source_state(query)
+                .await
+                .map_err(IntoApplicationError::into_application_error)
+        })
+    }
+}

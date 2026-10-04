@@ -16,9 +16,10 @@ use crate::http::{
         },
         logs::{LogEntryResponse, LogPageResponse},
         mappings::{
-            CreateRemoteMappingSourceRequest, MappingPageResponse, MappingResultResponse,
-            MappingSourceKindValue, MappingSourceResponse, MappingStateResponse,
-            ReorderMappingSourcesRequest, UpdateMappingSourceRequest, WriteLocalMappingRequest,
+            CreateRemoteMappingSourceRequest, MappingOperatorParameter, MappingPageResponse,
+            MappingResultResponse, MappingSourceKindValue, MappingSourceResponse,
+            MappingStateResponse, ReorderMappingSourcesRequest, UpdateMappingSourceRequest,
+            WriteLocalMappingRequest,
         },
         providers::{
             AvailableProviderResponse, ChangeProviderUpdatePolicyRequest, InstallProviderRequest,
@@ -134,6 +135,7 @@ use super::{connections, logs, mappings, providers, workspaces};
         MappingStateResponse,
         MappingResultResponse,
         MappingPageResponse,
+        MappingOperatorParameter,
         TrustProviderSourceRequest,
         InstallProviderRequest,
         UpdateProviderRequest,
@@ -201,3 +203,38 @@ impl utoipa::PartialSchema for OpenApiDocumentResponse {
 }
 
 impl utoipa::ToSchema for OpenApiDocumentResponse {}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::Value;
+
+    #[test]
+    fn document_resolves_every_local_reference() {
+        let document = serde_json::to_value(super::openapi()).expect("OpenAPI serializes");
+        assert_references(&document, &document);
+    }
+
+    fn assert_references(value: &Value, document: &Value) {
+        match value {
+            Value::Object(fields) => {
+                if let Some(reference) = fields.get("$ref").and_then(Value::as_str)
+                    && let Some(pointer) = reference.strip_prefix('#')
+                {
+                    assert!(
+                        document.pointer(pointer).is_some(),
+                        "unresolved reference: {reference}"
+                    );
+                }
+                for child in fields.values() {
+                    assert_references(child, document);
+                }
+            }
+            Value::Array(values) => {
+                for child in values {
+                    assert_references(child, document);
+                }
+            }
+            _ => {}
+        }
+    }
+}

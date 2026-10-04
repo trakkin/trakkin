@@ -10,7 +10,10 @@ use http_body_util::BodyExt;
 use tempfile::tempdir;
 use tower::ServiceExt;
 use trakkin::{
-    application::facade::{ApplicationFacade, ApplicationInteractions},
+    application::{
+        connection::ConnectionService, facade::ApplicationFacade, task_manager::TaskService,
+        workspaces::WorkspaceService,
+    },
     database::DatabaseRuntime,
     http,
     infrastructure::{
@@ -42,19 +45,30 @@ async fn mapping_routes_manage_local_rows_and_stream_read_only_source_content() 
             .await
             .expect("mapping manager starts"),
     );
-    let application = ApplicationFacade::new(
-        PostgresWorkspaceRepository::new(database.pool()),
-        PostgresCatalogQueryRepository::new(database.pool()),
-        PostgresTaskRepository::new(database.pool()),
-        PostgresConnectionRepository::new(database.pool(), ConnectionMasterKey::new([9_u8; 32])),
-        ProcessSessionRegistry::<AdapterProcess>::default(),
-        ApplicationInteractions::new(
-            Arc::new(StaticConnectionInteraction),
-            Arc::new(StaticBinaryAssetInteraction),
-            static_provider_registry(),
-            mappings,
-        ),
-    );
+    let workspaces = Arc::new(WorkspaceService::new(PostgresWorkspaceRepository::new(
+        database.pool(),
+    )));
+    let providers = static_provider_registry();
+    let application = ApplicationFacade {
+        workspaces: workspaces.clone(),
+        catalog: Arc::new(PostgresCatalogQueryRepository::new(database.pool())),
+        tasks: Arc::new(TaskService::new(
+            PostgresTaskRepository::new(database.pool()),
+            workspaces,
+        )),
+        connections: Arc::new(ConnectionService::new(
+            PostgresConnectionRepository::new(
+                database.pool(),
+                ConnectionMasterKey::new([9_u8; 32]),
+            ),
+            ProcessSessionRegistry::<AdapterProcess>::default(),
+            providers.clone(),
+        )),
+        connection_interaction: Arc::new(StaticConnectionInteraction),
+        binary_assets: Arc::new(StaticBinaryAssetInteraction),
+        providers,
+        mappings,
+    };
     let router = http::router(Arc::new(application), directory.path().to_owned());
 
     let initial = request(

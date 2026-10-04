@@ -1,3 +1,5 @@
+use std::collections::{BTreeMap, BTreeSet};
+
 use serde_json::{Value, json};
 use sqlx::{FromRow, PgPool, Postgres, Transaction};
 use thiserror::Error;
@@ -143,9 +145,10 @@ LIMIT $8
         } else {
             None
         };
+        let assets = load_assets(&mut transaction, query.source_id, &rows).await?;
         let mut entries = Vec::with_capacity(rows.len());
         for row in rows {
-            entries.push(map_catalog_entry(&mut transaction, query.source_id, row).await?);
+            entries.push(map_catalog_entry(row, &assets)?);
         }
         transaction.commit().await?;
         Ok(CatalogPage {
@@ -343,10 +346,11 @@ fn available_publication(
         ))
 }
 
-async fn map_catalog_entry(
-    transaction: &mut Transaction<'_, Postgres>,
-    source_id: Uuid,
+type ItemAssets = BTreeMap<(String, Vec<u8>), Vec<BinaryAssetReference>>;
+
+fn map_catalog_entry(
     row: CatalogRow,
+    assets: &ItemAssets,
 ) -> Result<CatalogEntry, CatalogQueryError> {
     let relation = row.relation()?;
     let has_children = row.has_children;
@@ -355,9 +359,11 @@ async fn map_catalog_entry(
             .item_key_value
             .as_ref()
             .ok_or(CatalogQueryError::InvalidStoredData("catalog item key"))?;
-        let assets =
-            load_assets(transaction, source_id, item_key_namespace, item_key_value).await?;
-        Some(row.item(assets)?)
+        let item_assets = assets
+            .get(&(item_key_namespace.clone(), item_key_value.clone()))
+            .cloned()
+            .unwrap_or_default();
+        Some(row.item(item_assets)?)
     } else {
         None
     };
@@ -371,37 +377,54 @@ async fn map_catalog_entry(
 async fn load_assets(
     transaction: &mut Transaction<'_, Postgres>,
     source_id: Uuid,
-    item_namespace: &str,
-    item_value: &[u8],
-) -> Result<Vec<BinaryAssetReference>, CatalogQueryError> {
-    sqlx::query_as::<_, AssetRow>(
+    rows: &[CatalogRow],
+) -> Result<ItemAssets, CatalogQueryError> {
+    let keys = rows
+        .iter()
+        .filter_map(|row| {
+            row.item_key_namespace
+                .as_ref()
+                .zip(row.item_key_value.as_ref())
+                .map(|(namespace, value)| (namespace.clone(), value.clone()))
+        })
+        .collect::<BTreeSet<_>>();
+    if keys.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let (namespaces, values): (Vec<_>, Vec<_>) = keys.into_iter().unzip();
+    let asset_rows = sqlx::query_as::<_, AssetRow>(
         "SELECT
+    asset.item_key_namespace,
+    asset.item_key_value,
     asset_key_namespace,
     asset_key_value,
     kind_namespace,
     kind_name
-FROM catalog_assets
-WHERE
-    source_id = $1
-    AND item_key_namespace = $2
-    AND item_key_value = $3
+FROM catalog_assets AS asset
+JOIN UNNEST($2::TEXT[], $3::BYTEA[]) AS requested(namespace, value)
+    ON asset.item_key_namespace = requested.namespace
+    AND asset.item_key_value = requested.value
+WHERE asset.source_id = $1
 ORDER BY asset_key_namespace, asset_key_value
 ",
     )
     .bind(source_id)
-    .bind(item_namespace)
-    .bind(item_value)
+    .bind(&namespaces)
+    .bind(&values)
     .fetch_all(&mut **transaction)
-    .await?
-    .into_iter()
-    .map(|row| {
+    .await?;
+    let mut assets = ItemAssets::new();
+    for row in asset_rows {
         let key = BinaryAssetKey::new(row.asset_key_namespace, row.asset_key_value)
             .map_err(|_| CatalogQueryError::InvalidStoredData("binary asset key"))?;
         let kind = Term::new(row.kind_namespace, row.kind_name)
             .map_err(|_| CatalogQueryError::InvalidStoredData("binary asset kind"))?;
-        Ok(BinaryAssetReference::new(key, kind))
-    })
-    .collect()
+        assets
+            .entry((row.item_key_namespace, row.item_key_value))
+            .or_default()
+            .push(BinaryAssetReference::new(key, kind));
+    }
+    Ok(assets)
 }
 
 fn normalize_search(search: Option<&str>) -> Option<String> {
@@ -642,6 +665,8 @@ impl CatalogRow {
 
 #[derive(FromRow)]
 struct AssetRow {
+    item_key_namespace: String,
+    item_key_value: Vec<u8>,
     asset_key_namespace: String,
     asset_key_value: Vec<u8>,
     kind_namespace: String,

@@ -17,6 +17,7 @@ let { children }: Props = $props();
 
 const year = new Date().getFullYear();
 let workspaces = $state<Workspace[]>([]);
+let workspaceDirectoryLoaded = $state(false);
 let workspaceError = $state("");
 let workspaceRequestSequence = 0;
 let rememberedWorkspaceId = $state("");
@@ -32,6 +33,7 @@ let workspacePlaceholder = $derived(
 
 $effect(() => {
   if (!routeWorkspaceId) return;
+  if (workspaceDirectoryLoaded && !workspaces.some((workspace) => workspace.id === routeWorkspaceId)) return;
   rememberedWorkspaceId = routeWorkspaceId;
   if (workspaces.some((workspace) => workspace.id === routeWorkspaceId)) {
     activeWorkspacePreference.write(routeWorkspaceId);
@@ -43,14 +45,31 @@ onMount(() => {
 
   async function refreshWorkspaces() {
     const sequence = ++workspaceRequestSequence;
+    const requestedUrl = page.url.href;
     workspaceError = "";
     try {
       const loadedWorkspaces = await listWorkspaces();
       if (sequence === workspaceRequestSequence) {
         workspaces = loadedWorkspaces;
+        workspaceDirectoryLoaded = true;
         if (rememberedWorkspaceId && !loadedWorkspaces.some((workspace) => workspace.id === rememberedWorkspaceId)) {
           rememberedWorkspaceId = "";
           activeWorkspacePreference.clear();
+        }
+        if (
+          page.url.href === requestedUrl &&
+          routeWorkspaceId &&
+          !loadedWorkspaces.some((workspace) => workspace.id === routeWorkspaceId)
+        ) {
+          if ((page.params as Record<string, string | undefined>).workspaceId) {
+            void goto(loadedWorkspaces[0] ? `/w/${loadedWorkspaces[0].id}/catalog` : "/workspaces/new", {
+              replaceState: true,
+            });
+          } else {
+            const url = new URL(page.url);
+            url.searchParams.delete("workspace");
+            void goto(url, { replaceState: true });
+          }
         }
       }
     } catch (error) {
@@ -77,7 +96,10 @@ function isCurrent(href: string): boolean {
 }
 </script>
 
-<div class="app-canvas h-dvh overflow-hidden lg:p-2">
+<div class="app-canvas relative h-dvh overflow-hidden lg:p-2">
+  <div class="absolute top-2 right-12 z-20 lg:top-5 lg:right-auto lg:left-52">
+    <WorkspaceActivityPopover workspaceId={activeWorkspaceId} />
+  </div>
   <div class="flex h-full min-h-0">
     <aside class="app-sidebar hidden w-61 shrink-0 flex-col px-3 pt-3 pb-2 lg:flex">
       <div class="flex h-8 shrink-0 items-center justify-between gap-3 px-1">
@@ -93,7 +115,6 @@ function isCurrent(href: string): boolean {
           </span>
           <span class="text-heading font-semibold text-text-primary">Trakkin</span>
         </div>
-        <WorkspaceActivityPopover workspaceId={activeWorkspaceId} />
       </div>
 
       <div class="mt-4 flex items-center gap-1.5">
@@ -214,7 +235,10 @@ function isCurrent(href: string): boolean {
           triggerClass="min-w-0 w-full max-w-52 border-0 bg-transparent px-1.5 hover:bg-white/4"
           value={activeWorkspaceId}
         />
-        <WorkspaceActivityPopover workspaceId={activeWorkspaceId} />
+        <div
+          aria-hidden="true"
+          class="size-7 shrink-0"
+        ></div>
         <DropdownMenu.Root>
           <DropdownMenu.Trigger>
             {#snippet child({ props })}

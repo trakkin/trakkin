@@ -1,3 +1,8 @@
+use std::{future::Future, pin::Pin};
+
+pub type ApplicationFuture<'a, T> =
+    Pin<Box<dyn Future<Output = Result<T, ApplicationError>> + Send + 'a>>;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ApplicationErrorCode {
     InvalidRequest,

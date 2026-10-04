@@ -200,10 +200,10 @@ run = "actionlint"
 
 [tasks."server:check"]
 description = "Check server lints"
-run = "cargo clippy --workspace --all-targets --all-features -- -D warnings"
+run = ["cargo fmt --all -- --check", "cargo clippy --workspace --all-targets --all-features -- -D warnings"]
 
 [tasks."web:check"]
-description = "Check web formatting, lints, and types"
+description = "Check web lints and types"
 dir = "frontend"
 run = "pnpm lint"
 
@@ -215,7 +215,7 @@ run = [
 ]
 
 [tasks."docs:check"]
-description = "Check documentation formatting and types"
+description = "Check documentation lints and types"
 dir = "docs"
 run = "pnpm lint"
 

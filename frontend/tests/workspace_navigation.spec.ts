@@ -5,9 +5,122 @@ import {
   fallback,
   json,
   mockApi,
+  task,
   workspace,
   workspaceId,
 } from "./support/api.ts";
+
+test("workspace activity uses one responsive trigger and polling stream", async ({ page }) => {
+  let taskRequests = 0;
+  await page.clock.install();
+  await mockApi(page, async (route) => {
+    const pathname = new URL(route.request().url()).pathname;
+    if (pathname === "/api/v1/workspaces") return json(route, [workspace]);
+    if (pathname === "/api/v1/connections") return json(route, []);
+    if (pathname === `/api/v1/workspaces/${workspaceId}/tasks`) {
+      taskRequests += 1;
+      return json(route, [task("running", false)]);
+    }
+    return fallback(route);
+  });
+
+  await page.goto(`/connections?workspace=${workspaceId}`);
+  const trigger = page.getByRole("button", { name: "Tasks, 1 active task", exact: true });
+  await expect(trigger).toHaveCount(1);
+  await expect(trigger).toBeVisible();
+  expect(taskRequests).toBe(1);
+  await page.clock.runFor(4_000);
+  await expect.poll(() => taskRequests).toBe(2);
+
+  await trigger.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("heading", { name: "Task status" })).toBeVisible();
+  await expect.poll(() => taskRequests).toBe(3);
+  await page.keyboard.press("Escape");
+  await expect(trigger).toBeFocused();
+
+  const startsMobile = (page.viewportSize()?.width ?? 0) < 1024;
+  await page.setViewportSize(startsMobile ? { width: 1440, height: 960 } : { width: 393, height: 851 });
+  await expect(trigger).toHaveCount(1);
+  await expect(trigger).toBeVisible();
+  await page.clock.runFor(4_000);
+  await expect.poll(() => taskRequests).toBe(4);
+  const triggerBox = await trigger.boundingBox();
+  expect(triggerBox?.y).toBeLessThan(44);
+  if (!startsMobile) {
+    const navigationBox = await page.getByRole("button", { name: "Open navigation" }).boundingBox();
+    expect((triggerBox?.x ?? 0) + (triggerBox?.width ?? 0)).toBeLessThanOrEqual(navigationBox?.x ?? 0);
+  }
+  await trigger.click();
+  await expect(page.getByRole("button", { name: "Cancel catalog read" })).toBeVisible();
+  await expectNoHorizontalOverflow(page);
+});
+
+test("closing activity aborts a pending poll and reopening releases the refresh lock", async ({ page }) => {
+  let requests = 0;
+  let releasePoll: () => void = () => {};
+  const pollGate = new Promise<void>((resolve) => {
+    releasePoll = resolve;
+  });
+  await page.clock.install();
+  await mockApi(page, async (route) => {
+    const pathname = new URL(route.request().url()).pathname;
+    if (pathname === "/api/v1/workspaces") return json(route, [workspace]);
+    if (pathname === "/api/v1/connections") return json(route, []);
+    if (pathname === `/api/v1/workspaces/${workspaceId}/tasks`) {
+      requests += 1;
+      if (requests === 3) {
+        await pollGate;
+        return apiError(route, 503, "tasks_unavailable", "Obsolete activity error");
+      }
+      return json(route, []);
+    }
+    return fallback(route);
+  });
+  await page.goto(`/connections?workspace=${workspaceId}`);
+  await expect.poll(() => requests).toBe(1);
+  const trigger = page.getByRole("button", { name: "Tasks", exact: true });
+  await trigger.click();
+  await expect(page.getByText("No recent tasks", { exact: true })).toBeVisible();
+  await page.clock.runFor(4_000);
+  await expect.poll(() => requests).toBe(3);
+  const aborted = page.waitForEvent("requestfailed", {
+    predicate: (request) => new URL(request.url()).pathname.endsWith("/tasks"),
+  });
+  await page.keyboard.press("Escape");
+  await aborted;
+  await trigger.click();
+  await expect.poll(() => requests).toBe(4);
+  releasePoll();
+  await expect(page.getByText("No recent tasks", { exact: true })).toBeVisible();
+  await expect(page.getByText("Obsolete activity error", { exact: true })).toHaveCount(0);
+});
+
+for (const directoryFails of [false, true]) {
+  test(`invalid URL workspace is reconciled only with a successful directory (${directoryFails})`, async ({ page }) => {
+    const invalidId = "11111111-1111-1111-1111-999999999999";
+    await mockApi(page, async (route) => {
+      const pathname = new URL(route.request().url()).pathname;
+      if (pathname === "/api/v1/workspaces") {
+        return directoryFails
+          ? apiError(route, 503, "workspaces_unavailable", "Directory unavailable")
+          : json(route, [workspace]);
+      }
+      if (pathname === "/api/v1/connections") return json(route, []);
+      return fallback(route);
+    });
+    await page.goto(`/connections?workspace=${invalidId}&keep=value`);
+    if (directoryFails) {
+      await expect(page.getByLabel("Active workspace").filter({ visible: true })).toBeDisabled();
+      await expect(page).toHaveURL(new RegExp(`workspace=${invalidId}`));
+    } else {
+      await expect(page).toHaveURL(/\/connections\?keep=value$/);
+      await expect(page.getByLabel("Active workspace").filter({ visible: true })).toContainText("Select workspace");
+      await page.goto(`/w/${invalidId}/catalog`);
+      await expect(page).toHaveURL(new RegExp(`/w/${workspaceId}/catalog$`));
+    }
+  });
+}
 
 test("shared controls use consistent dimensions and visible keyboard focus", async ({ page }) => {
   await mockApi(page, async (route) => {

@@ -331,6 +331,116 @@ test("reconfigures provider settings without exposing stored secrets", async ({ 
   await expectNoHorizontalOverflow(page);
 });
 
+test("completed authentication can reconnect after saving configuration", async ({ page }) => {
+  let configurationRequests = 0;
+  let authenticationRequests = 0;
+  let continuationRequests = 0;
+  let revision = "v1";
+  const commands: string[] = [];
+  await mockApi(page, async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/v1/workspaces") return json(route, [workspace]);
+    if (path === "/api/v1/connections") return json(route, [connection]);
+    if (path.endsWith("/inspection")) {
+      return json(route, {
+        ...configurationInspection(revision),
+        authenticationMethods: authenticationInspection().authenticationMethods,
+      });
+    }
+    if (path.endsWith("/sources")) return json(route, []);
+    if (path.endsWith("/configuration")) {
+      configurationRequests += 1;
+      commands.push("configure");
+      if (configurationRequests === 2) {
+        return apiError(route, 503, "configuration_failed", "Configuration could not be saved");
+      }
+      revision = route.request().postDataJSON().settings[0].value.value;
+      return json(route, connection);
+    }
+    if (path.endsWith("/authentications")) {
+      authenticationRequests += 1;
+      commands.push("authenticate");
+      return json(route, inputRequiredAuthentication(), 201);
+    }
+    if (path.endsWith("/continuation")) {
+      continuationRequests += 1;
+      return json(route, completedAuthentication());
+    }
+    if (path.endsWith("/discovery-tasks")) {
+      return json(route, { ...task("succeeded", true), kind: "source_discovery", sourceId: null }, 202);
+    }
+    return fallback(route);
+  });
+
+  await page.goto(`/connections?workspace=${workspaceId}`);
+  await page.getByRole("button", { name: "Expand Fixture account" }).first().click();
+  await page.getByLabel("Account name").fill("Alex");
+  await page.getByRole("button", { name: "Connect", exact: true }).click();
+  await page.getByLabel("Verification code").fill("123456");
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await expect(page.getByText("Connected as Alex")).toBeVisible();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("Configuration could not be saved");
+  await expect(page.getByText("Connected as Alex")).toBeVisible();
+  await page.getByLabel("Catalog revision").click();
+  await page.getByRole("option", { name: "Revision v2", exact: true }).click();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByText("Connected as Alex")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Connect", exact: true })).toBeEnabled();
+  await expect(page.getByLabel("Catalog revision")).toHaveText("Revision v2");
+  await page.getByLabel("Account name").fill("Alex");
+  await page.getByRole("button", { name: "Connect", exact: true }).click();
+  await expect(page.getByLabel("Verification code")).toBeVisible();
+  expect(authenticationRequests).toBe(2);
+  expect(commands).toEqual(["configure", "authenticate", "configure", "configure", "configure", "authenticate"]);
+  expect(continuationRequests).toBe(1);
+  await page.getByLabel("Verification code").fill("654321");
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await expect(page.getByText("Connected as Alex")).toBeVisible();
+  expect(continuationRequests).toBe(2);
+  await expectNoHorizontalOverflow(page);
+});
+
+test("unavailable attached sources remain detachable but cannot scan or reattach", async ({ page }) => {
+  let detachRequests = 0;
+  let attachRequests = 0;
+  let scanRequests = 0;
+  await mockApi(page, async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const method = route.request().method();
+    if (path === "/api/v1/workspaces") return json(route, [workspace]);
+    if (path === "/api/v1/connections") return json(route, [connection]);
+    if (path.endsWith("/inspection")) return json(route, configurationInspection("v1"));
+    if (path === `/api/v1/connections/${connectionId}/sources`) {
+      return json(route, [{ ...source, availability: "unavailable" }]);
+    }
+    if (path === `/api/v1/workspaces/${workspaceId}/sources/${sourceId}`) {
+      if (method === "DELETE") detachRequests += 1;
+      if (method === "PUT") attachRequests += 1;
+      return json(route, { ...workspace, sources: [] });
+    }
+    if (path.endsWith("/reads") && method === "POST") scanRequests += 1;
+    return fallback(route);
+  });
+
+  await page.goto(`/connections?workspace=${workspaceId}`);
+  await page.getByRole("button", { name: "Expand Fixture account" }).first().click();
+  const attachment = page.getByLabel("Attach Fixture Catalog to the workspace");
+  const scan = page.getByRole("button", { name: "Scan", exact: true });
+  await expect(attachment).toBeChecked();
+  await expect(attachment).toBeEnabled();
+  await expect(scan).toBeDisabled();
+  await scan.dispatchEvent("click");
+  await attachment.click();
+  await expect(attachment).not.toBeChecked();
+  await expect(attachment).toBeDisabled();
+  await expect(scan).toBeDisabled();
+  expect(detachRequests).toBe(1);
+  expect(attachRequests).toBe(0);
+  expect(scanRequests).toBe(0);
+  await expectNoHorizontalOverflow(page);
+});
+
 test("authenticates, discovers, and attaches a source", async ({ page }) => {
   let sourceAttached = false;
   let discovered = false;
@@ -554,6 +664,332 @@ test("connection authentication highlights and saves required configuration befo
     settings: [{ key: "service_url", value: { kind: "text", value: "http://localhost:8096" } }],
     secretPatches: [],
   });
+});
+
+test("scan pending state stays local and survives collapse until the task finishes", async ({ page }) => {
+  let scans = 0;
+  let releaseScan: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    releaseScan = resolve;
+  });
+  await mockApi(page, async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/v1/workspaces") return json(route, [workspace]);
+    if (path === "/api/v1/connections") return json(route, [connection]);
+    if (path === `/api/v1/connections/${connectionId}/sources`) return json(route, [source]);
+    if (path === `/api/v1/connections/${connectionId}/inspection`) return json(route, configurationInspection("v1"));
+    if (path === `/api/v1/workspaces/${workspaceId}/sources/${sourceId}/reads`) {
+      scans += 1;
+      await gate;
+      return json(route, task("succeeded", true), 202);
+    }
+    return fallback(route);
+  });
+  await page.goto(`/connections?workspace=${workspaceId}`);
+  await page.getByRole("button", { name: "Expand Fixture account" }).first().click();
+  const scan = page.getByRole("button", { name: "Scan", exact: true });
+  await scan.click();
+  await expect.poll(() => scans).toBe(1);
+  await expect(scan).toBeDisabled();
+  await expect(scan.locator("svg")).toHaveClass(/animate-spin/);
+  await page.getByRole("button", { name: "Collapse Fixture account" }).first().click();
+  await page.getByRole("button", { name: "Expand Fixture account" }).first().click();
+  await expect(scan).toBeDisabled();
+  expect(scans).toBe(1);
+  releaseScan();
+  await expect(scan).toBeEnabled();
+  await expect(scan.locator("svg")).not.toHaveClass(/animate-spin/);
+  await scan.click();
+  await expect.poll(() => scans).toBe(2);
+  await expect(scan).toBeEnabled();
+  await expectNoHorizontalOverflow(page);
+});
+
+test("connection entries retain isolated drafts and input prompts across collapse", async ({ page }) => {
+  const second = { ...connection, id: "22222222-2222-2222-2222-333333333333", displayName: "Second account" };
+  let inspections = 0;
+  await mockApi(page, async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/v1/workspaces") return json(route, [workspace]);
+    if (path === "/api/v1/connections") return json(route, [connection, second]);
+    if (path.endsWith("/inspection")) {
+      inspections += 1;
+      return json(route, authenticationInspection());
+    }
+    if (path.endsWith("/sources")) return json(route, []);
+    if (path === `/api/v1/connections/${connectionId}/authentications`)
+      return json(route, inputRequiredAuthentication(), 201);
+    return fallback(route);
+  });
+  await page.goto("/connections");
+  await page.getByRole("button", { name: "Expand Fixture account" }).first().click();
+  await page.getByLabel("Account name").fill("Alex");
+  await page.getByRole("button", { name: "Connect", exact: true }).click();
+  await page.getByLabel("Verification code").fill("123456");
+  await page.getByRole("button", { name: "Expand Second account" }).first().click();
+  const visibleAccount = page.getByRole("textbox", { name: "Account name" });
+  await expect(visibleAccount).toHaveValue("");
+  await visibleAccount.fill("Other draft");
+  await page.getByRole("button", { name: "Expand Fixture account" }).first().click();
+  await expect(page.getByRole("textbox", { name: "Verification code" })).toHaveValue("123456");
+  await page.getByRole("button", { name: "Expand Second account" }).first().click();
+  await expect(visibleAccount).toHaveValue("Other draft");
+  expect(inspections).toBe(2);
+  await expectNoHorizontalOverflow(page);
+});
+
+test("collapsed authentication keeps polling and deletion aborts the in-flight continuation", async ({ page }) => {
+  let continuationRequests = 0;
+  let deleted = false;
+  let releaseContinuation: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    releaseContinuation = resolve;
+  });
+  const continuationPath = `/api/v1/connections/${connectionId}/authentications/${authenticationId}/continuation`;
+  let aborted = false;
+  page.on("requestfailed", (request) => {
+    if (new URL(request.url()).pathname === continuationPath) aborted = true;
+  });
+  await mockApi(page, async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/v1/workspaces") return json(route, [workspace]);
+    if (path === "/api/v1/connections") return json(route, deleted ? [] : [connection]);
+    if (path.endsWith("/inspection")) return json(route, authenticationInspection());
+    if (path.endsWith("/sources")) return json(route, []);
+    if (path === `/api/v1/connections/${connectionId}/authentications`) {
+      return json(route, { ...waitingAuthentication(), retryAfter: { seconds: 1, nanoseconds: 0 } }, 201);
+    }
+    if (path === continuationPath) {
+      continuationRequests += 1;
+      await gate;
+      return json(route, waitingAuthentication());
+    }
+    if (path.endsWith("/deletion-impact")) return json(route, deletionImpact());
+    if (path.endsWith("/deletion")) {
+      deleted = true;
+      return json(route, deletionImpact());
+    }
+    return fallback(route);
+  });
+  await page.goto("/connections");
+  await page.getByRole("button", { name: "Expand Fixture account" }).first().click();
+  await page.getByLabel("Account name").fill("Alex");
+  await page.getByRole("button", { name: "Connect", exact: true }).click();
+  await expect(page.getByText("Complete authentication with the provider.")).toBeVisible();
+  await page.getByRole("button", { name: "Collapse Fixture account" }).first().click();
+  await expect.poll(() => continuationRequests).toBe(1);
+  await page.getByRole("button", { name: "Expand Fixture account" }).first().click();
+  await expect(page.getByText("Complete authentication with the provider.")).toBeVisible();
+  await page.getByRole("button", { name: "Delete Fixture account" }).focus();
+  await page.keyboard.press("Enter");
+  await page.getByRole("button", { name: "Delete permanently" }).focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("button", { name: "Expand Fixture account" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "New connection" }).first()).toBeFocused();
+  await expect.poll(() => aborted).toBe(true);
+  releaseContinuation();
+  await page.evaluate(() => new Promise<void>((resolve) => window.setTimeout(resolve, 400)));
+  expect(continuationRequests).toBe(1);
+  await expect(page.getByRole("alert")).toHaveCount(0);
+});
+
+test("configuration success preserves a completed rename and a newer draft", async ({ page }) => {
+  let saving = false;
+  let releaseSave: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    releaseSave = resolve;
+  });
+  let saved: { secretPatches: unknown[] } | undefined;
+  await mockApi(page, async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/v1/workspaces") return json(route, [workspace]);
+    if (path === "/api/v1/connections") return json(route, [connection]);
+    if (path.endsWith("/sources")) return json(route, []);
+    if (path.endsWith("/inspection")) return json(route, configurationInspection("v1"));
+    if (path === `/api/v1/connections/${connectionId}` && route.request().method() === "PATCH") {
+      return json(route, { ...connection, displayName: "Newer name" });
+    }
+    if (path.endsWith("/configuration")) {
+      saved = route.request().postDataJSON();
+      saving = true;
+      await gate;
+      return json(route, { ...connection, status: "unavailable" });
+    }
+    return fallback(route);
+  });
+  await page.goto("/connections");
+  await page.getByRole("button", { name: "Expand Fixture account" }).first().click();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect.poll(() => saving).toBe(true);
+  expect(saved?.secretPatches).toEqual([]);
+  await page.getByLabel("API token").fill("Newer replacement");
+  await page.getByRole("button", { name: "Rename Fixture account" }).click();
+  await page.getByLabel("Rename Fixture account").fill("Newer name");
+  await page.getByRole("button", { name: "Save connection name" }).click();
+  await expect(page.getByText("Newer name", { exact: true })).toBeVisible();
+  releaseSave();
+  await expect(page.getByText("Unavailable", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Save", exact: true })).toBeEnabled();
+  await expect(page.getByLabel("API token")).toHaveValue("Newer replacement");
+  await expect(page.getByText("Newer name", { exact: true })).toBeVisible();
+});
+
+test("out-of-order attachments preserve both sources and block scans during detach", async ({ page }) => {
+  const secondId = "44444444-4444-4444-4444-444444444445";
+  const secondSource = { ...source, id: secondId, displayName: "Second Catalog" };
+  const firstAttachment = workspace.sources[0];
+  const secondAttachment = { ...firstAttachment, sourceId: secondId };
+  let attachRequested = false;
+  let detachRequested = false;
+  let scanRequests = 0;
+  let releaseAttach: () => void = () => {};
+  let releaseDetach: () => void = () => {};
+  const attachGate = new Promise<void>((resolve) => {
+    releaseAttach = resolve;
+  });
+  const detachGate = new Promise<void>((resolve) => {
+    releaseDetach = resolve;
+  });
+  await mockApi(page, async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const method = route.request().method();
+    if (path === "/api/v1/workspaces") return json(route, [{ ...workspace, sources: [] }]);
+    if (path === "/api/v1/connections") return json(route, [connection]);
+    if (path.endsWith("/inspection")) return json(route, configurationInspection("v1"));
+    if (path === `/api/v1/connections/${connectionId}/sources`) return json(route, [source, secondSource]);
+    if (path === `/api/v1/workspaces/${workspaceId}/sources/${sourceId}` && method === "PUT") {
+      attachRequested = true;
+      await attachGate;
+      return json(route, { ...workspace, sources: [firstAttachment] });
+    }
+    if (path === `/api/v1/workspaces/${workspaceId}/sources/${secondId}` && method === "PUT") {
+      return json(route, { ...workspace, sources: [firstAttachment, secondAttachment] });
+    }
+    if (path === `/api/v1/workspaces/${workspaceId}/sources/${secondId}` && method === "DELETE") {
+      detachRequested = true;
+      await detachGate;
+      return json(route, { ...workspace, sources: [firstAttachment] });
+    }
+    if (method === "POST" && path.includes("catalog")) scanRequests += 1;
+    return fallback(route);
+  });
+  await page.goto(`/connections?workspace=${workspaceId}`);
+  await page.getByRole("button", { name: "Expand Fixture account" }).first().click();
+  const first = page.getByLabel("Attach Fixture Catalog to the workspace");
+  const second = page.getByLabel("Attach Second Catalog to the workspace");
+  await first.click();
+  await expect.poll(() => attachRequested).toBe(true);
+  await second.click();
+  await expect(second).toBeChecked();
+  releaseAttach();
+  await expect(first).toBeChecked();
+  await expect(first).toBeEnabled();
+  await expect(second).toBeChecked();
+  await second.click();
+  await expect.poll(() => detachRequested).toBe(true);
+  const secondScan = page.getByRole("button", { name: "Scan", exact: true }).nth(1);
+  await expect(secondScan).toBeDisabled();
+  await secondScan.dispatchEvent("click");
+  expect(scanRequests).toBe(0);
+  releaseDetach();
+  await expect(second).not.toBeChecked();
+  await expect(first).toBeChecked();
+});
+
+for (const failure of ["continuation", "cancellation"] as const) {
+  test(`waiting authentication resumes polling after ${failure} failure`, async ({ page }) => {
+    let continuations = 0;
+    await mockApi(page, async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === "/api/v1/workspaces") return json(route, [workspace]);
+      if (path === "/api/v1/connections") return json(route, [connection]);
+      if (path.endsWith("/inspection")) return json(route, authenticationInspection());
+      if (path.endsWith("/sources")) return json(route, []);
+      if (path.endsWith("/authentications")) return json(route, waitingAuthentication(), 201);
+      if (path.endsWith("/cancellation")) return apiError(route, 503, "retry", "Cancellation temporarily failed");
+      if (path.endsWith("/continuation")) {
+        continuations += 1;
+        if (failure === "continuation" && continuations === 1)
+          return apiError(route, 503, "retry", "Continuation temporarily failed");
+        return json(route, { ...waitingAuthentication(), status: "cancelled", prompt: null });
+      }
+      return fallback(route);
+    });
+    await page.goto("/connections");
+    await page.getByRole("button", { name: "Expand Fixture account" }).first().click();
+    await page.getByLabel("Account name").fill("Alex");
+    await page.getByRole("button", { name: "Connect", exact: true }).click();
+    if (failure === "cancellation") await page.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(page.getByRole("alert")).toContainText("temporarily failed");
+    await expect(page.getByText("Authentication cancelled.")).toBeVisible();
+    expect(continuations).toBe(failure === "continuation" ? 2 : 1);
+  });
+}
+
+test("creation success preserves edits made in the same open form", async ({ page }) => {
+  let requested = false;
+  let releaseCreate: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    releaseCreate = resolve;
+  });
+  await mockApi(page, async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/v1/workspaces") return json(route, [workspace]);
+    if (path === "/api/v1/connections" && route.request().method() === "GET") return json(route, []);
+    if (path === "/api/v1/connections" && route.request().method() === "POST") {
+      requested = true;
+      await gate;
+      return json(route, connection, 201);
+    }
+    if (path.endsWith("/sources")) return json(route, []);
+    return fallback(route);
+  });
+  await page.goto("/connections");
+  await page.getByLabel("Connection name").fill("Fixture account");
+  await page.getByRole("button", { name: "Create connection" }).click();
+  await expect.poll(() => requested).toBe(true);
+  await page.getByLabel("Connection name").fill("Next connection draft");
+  releaseCreate();
+  await expect(page.getByRole("button", { name: "Expand Fixture account" }).first()).toBeVisible();
+  await expect(page.getByLabel("Connection name")).toHaveValue("Next connection draft");
+  await expect(page.getByRole("button", { name: "Create connection" })).toBeEnabled();
+});
+
+test("fixture creation owns scenario, instance, and token inputs", async ({ page }) => {
+  let created: unknown;
+  await mockApi(page, async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/v1/workspaces") return json(route, [workspace]);
+    if (path === "/api/v1/connections" && route.request().method() === "GET") return json(route, []);
+    if (path === "/api/v1/connections" && route.request().method() === "POST") {
+      created = route.request().postDataJSON();
+      return json(route, connection, 201);
+    }
+    if (path.endsWith("/sources")) return json(route, []);
+    if (path.endsWith("/inspection")) return json(route, authenticationInspection());
+    return fallback(route);
+  });
+  await page.goto("/connections");
+  await page.getByLabel("Fixture scenario").click();
+  await page.getByRole("option", { name: "dual connection isolation", exact: true }).click();
+  await page.getByLabel("Fixture instance").click();
+  await page.getByRole("option", { name: "Instance beta", exact: true }).click();
+  await expect(page.getByLabel("Fixture token")).toHaveValue("fixture-secret-beta");
+  await page.getByLabel("Connection name").fill("Fixture account");
+  await page.getByRole("button", { name: "Create connection" }).click();
+  await expect(page.getByRole("button", { name: "Collapse Fixture account" }).first()).toBeVisible();
+  expect(created).toEqual({
+    providerId: "dev.trakkin.fixture",
+    displayName: "Fixture account",
+    settings: [
+      { key: "scenario", value: { kind: "text", value: "dual-connection-isolation-v1" } },
+      { key: "revision", value: { kind: "text", value: "v1" } },
+      { key: "fault", value: { kind: "text", value: "none" } },
+      { key: "instance", value: { kind: "text", value: "beta" } },
+    ],
+    secrets: [{ key: "fixture_token", value: bytes("fixture-secret-beta") }],
+  });
+  await expectNoHorizontalOverflow(page);
 });
 
 function deletionImpact() {

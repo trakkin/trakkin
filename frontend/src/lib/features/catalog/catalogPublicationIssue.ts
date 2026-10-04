@@ -20,6 +20,6 @@ export async function catalogPublicationIssue(
     );
     return scanActive ? "scan-active" : "unpublished";
   } catch {
-    return "unpublished";
+    return null;
   }
 }

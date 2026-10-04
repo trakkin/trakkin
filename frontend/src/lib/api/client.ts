@@ -19,16 +19,19 @@ export class ApiRequestError extends Error {
   }
 }
 
-type RequestOptions = Omit<RequestInit, "body"> & { body?: unknown };
+type RequestOptions = Omit<RequestInit, "body"> &
+  ({ body?: unknown; rawBody?: never } | { body?: never; rawBody: BodyInit });
 
 export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const { body, rawBody, headers, ...init } = options;
+  const requestHeaders = new Headers(headers);
+  if (body !== undefined && !requestHeaders.has("content-type")) {
+    requestHeaders.set("content-type", "application/json");
+  }
   const response = await fetch(path, {
-    ...options,
-    body: options.body === undefined ? undefined : JSON.stringify(options.body),
-    headers: {
-      ...(options.body === undefined ? {} : { "content-type": "application/json" }),
-      ...options.headers,
-    },
+    ...init,
+    body: rawBody ?? (body === undefined ? undefined : JSON.stringify(body)),
+    headers: requestHeaders,
   });
   const payload = await response.json().catch(() => null);
   if (!response.ok) {

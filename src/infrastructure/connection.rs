@@ -27,12 +27,13 @@ use crate::application::{
         AdapterSession, AdapterSetting, AdapterSourceAvailability, AdapterValue,
     },
     connection::{
-        BeginConnectionDeletion, ConnectionDeletionImpact, ConnectionFuture, ConnectionRepository,
-        ConnectionRetirement, ConnectionSessionRegistry, ConnectionSourceSummary, ConnectionStatus,
-        ConnectionSummary, CreateConnection, FinishConnectionDeletion, MarkAuthenticationCancelled,
-        MarkConnectionUnavailable, PublishConnectionSnapshot, ReconfigureConnection,
-        RenameConnection, SaveAuthenticationStep, StoredAuthenticationSession, StoredConnection,
-        WaitForConnectionSession,
+        BeginConnectionDeletion, ConnectionConfigurationError, ConnectionDeletionImpact,
+        ConnectionFuture, ConnectionRepository, ConnectionRetirement, ConnectionSessionRegistry,
+        ConnectionSourceSummary, ConnectionStatus, ConnectionSummary, CreateConnection,
+        FinishConnectionDeletion, MarkAuthenticationCancelled, MarkConnectionUnavailable,
+        PublishConnectionSnapshot, ReconfigureConnection, RenameConnection, SaveAuthenticationStep,
+        StoredAuthenticationSession, StoredConnection, WaitForConnectionSession,
+        validate_named_values,
     },
     error::{ApplicationError, ApplicationErrorCode, IntoApplicationError},
 };
@@ -614,17 +615,7 @@ RETURNING
         &self,
         command: ReconfigureConnection,
     ) -> Result<ConnectionSummary, ConnectionPersistenceError> {
-        validate_named_values(
-            command.settings.iter().map(|setting| setting.key.as_str()),
-            "setting",
-        )?;
-        validate_named_values(
-            command
-                .secret_patches
-                .iter()
-                .map(|patch| patch.key.as_str()),
-            "secret patch",
-        )?;
+        command.validate()?;
         let mut transaction = self.pool.begin().await?;
         let exists = sqlx::query_scalar::<_, Uuid>(
             "SELECT id
@@ -1176,20 +1167,13 @@ fn validate_snapshot(
     Ok(())
 }
 
-fn validate_named_values<'a>(
-    values: impl IntoIterator<Item = &'a str>,
-    resource: &'static str,
-) -> Result<(), ConnectionPersistenceError> {
-    let mut seen = HashSet::new();
-    for value in values {
-        if value.is_empty() {
-            return Err(ConnectionPersistenceError::EmptyKey(resource));
-        }
-        if !seen.insert(value) {
-            return Err(ConnectionPersistenceError::DuplicateKey(resource));
+impl From<ConnectionConfigurationError> for ConnectionPersistenceError {
+    fn from(error: ConnectionConfigurationError) -> Self {
+        match error {
+            ConnectionConfigurationError::EmptyKey(resource) => Self::EmptyKey(resource),
+            ConnectionConfigurationError::DuplicateKey(resource) => Self::DuplicateKey(resource),
         }
     }
-    Ok(())
 }
 
 async fn clear_connection_secrets(

@@ -9,7 +9,7 @@ use trakkin::{
         task_manager::{
             AdmitTask, CancellationDisposition, ClaimNextTask, CompleteTask, HeartbeatTask,
             RequestTaskCancellation, SourceStream, TaskCompletion, TaskDefinition, TaskFailure,
-            TaskKind, TaskManager, TaskStatus,
+            TaskKind, TaskRepository, TaskStatus,
         },
     },
     database::DatabaseRuntime,
@@ -45,7 +45,7 @@ async fn claims_are_connection_scoped_and_terminal_completion_releases_them() {
     admit_discovery(&manager, TASK_BETA, CONNECTION_BETA, timestamp(2)).await;
 
     let alpha = manager
-        .claim_next(ClaimNextTask {
+        .claim_next_task(ClaimNextTask {
             owner_id: OWNER_ONE,
             attempt_id: ATTEMPT_ONE,
             accepted_kinds: vec![TaskKind::SourceDiscovery],
@@ -59,7 +59,7 @@ async fn claims_are_connection_scoped_and_terminal_completion_releases_them() {
     assert_eq!(alpha.attempt_ordinal, 0);
 
     let beta = manager
-        .claim_next(ClaimNextTask {
+        .claim_next_task(ClaimNextTask {
             owner_id: OWNER_TWO,
             attempt_id: ATTEMPT_TWO,
             accepted_kinds: vec![TaskKind::SourceDiscovery],
@@ -71,7 +71,7 @@ async fn claims_are_connection_scoped_and_terminal_completion_releases_them() {
     assert_eq!(beta.task.id, TASK_BETA);
     assert!(
         manager
-            .claim_next(ClaimNextTask {
+            .claim_next_task(ClaimNextTask {
                 owner_id: OWNER_THREE,
                 attempt_id: ATTEMPT_THREE,
                 accepted_kinds: vec![TaskKind::SourceDiscovery],
@@ -83,7 +83,7 @@ async fn claims_are_connection_scoped_and_terminal_completion_releases_them() {
     );
 
     manager
-        .heartbeat(HeartbeatTask {
+        .heartbeat_task(HeartbeatTask {
             task_id: TASK_ALPHA_ONE,
             owner_id: OWNER_ONE,
             heartbeat_at: timestamp(6),
@@ -92,7 +92,7 @@ async fn claims_are_connection_scoped_and_terminal_completion_releases_them() {
         .expect("claim owner can heartbeat");
     assert!(matches!(
         manager
-            .heartbeat(HeartbeatTask {
+            .heartbeat_task(HeartbeatTask {
                 task_id: TASK_ALPHA_ONE,
                 owner_id: OWNER_TWO,
                 heartbeat_at: timestamp(7),
@@ -103,7 +103,7 @@ async fn claims_are_connection_scoped_and_terminal_completion_releases_them() {
 
     assert!(matches!(
         manager
-            .complete(CompleteTask {
+            .complete_task(CompleteTask {
                 task_id: TASK_ALPHA_ONE,
                 attempt_id: ATTEMPT_THREE,
                 owner_id: OWNER_ONE,
@@ -114,7 +114,7 @@ async fn claims_are_connection_scoped_and_terminal_completion_releases_them() {
         Err(TaskManagerError::InvalidCompletion)
     ));
     let completed = manager
-        .complete(CompleteTask {
+        .complete_task(CompleteTask {
             task_id: TASK_ALPHA_ONE,
             attempt_id: ATTEMPT_ONE,
             owner_id: OWNER_ONE,
@@ -125,7 +125,7 @@ async fn claims_are_connection_scoped_and_terminal_completion_releases_them() {
         .expect("claim owner completes the task");
     assert_eq!(completed.status, TaskStatus::Succeeded);
     let next_alpha = manager
-        .claim_next(ClaimNextTask {
+        .claim_next_task(ClaimNextTask {
             owner_id: OWNER_THREE,
             attempt_id: ATTEMPT_THREE,
             accepted_kinds: vec![TaskKind::SourceDiscovery],
@@ -138,7 +138,7 @@ async fn claims_are_connection_scoped_and_terminal_completion_releases_them() {
 
     let failure = TaskFailure::coded("adapter_unavailable", true);
     let failed = manager
-        .complete(CompleteTask {
+        .complete_task(CompleteTask {
             task_id: TASK_BETA,
             attempt_id: ATTEMPT_TWO,
             owner_id: OWNER_TWO,
@@ -175,7 +175,7 @@ async fn cancellation_is_idempotent_and_fenced_against_success() {
     );
     assert_eq!(
         manager
-            .get(TASK_ALPHA_ONE)
+            .get_task(TASK_ALPHA_ONE)
             .await
             .expect("cancelled task can be read")
             .expect("cancelled task exists")
@@ -185,7 +185,7 @@ async fn cancellation_is_idempotent_and_fenced_against_success() {
 
     admit_discovery(&manager, TASK_ALPHA_TWO, CONNECTION_ALPHA, timestamp(2)).await;
     manager
-        .claim_next(ClaimNextTask {
+        .claim_next_task(ClaimNextTask {
             owner_id: OWNER_ONE,
             attempt_id: ATTEMPT_ONE,
             accepted_kinds: vec![TaskKind::SourceDiscovery],
@@ -215,7 +215,7 @@ async fn cancellation_is_idempotent_and_fenced_against_success() {
         CancellationDisposition::AlreadyRequested
     );
     let cancelled = manager
-        .complete(CompleteTask {
+        .complete_task(CompleteTask {
             task_id: TASK_ALPHA_TWO,
             attempt_id: ATTEMPT_ONE,
             owner_id: OWNER_ONE,
@@ -254,7 +254,7 @@ async fn typed_source_tasks_require_workspace_attachment_and_round_trip() {
     };
 
     let admitted = manager
-        .admit(AdmitTask {
+        .admit_task(AdmitTask {
             task_id: TASK_ALPHA_ONE,
             workspace_id: Some(WORKSPACE_ID),
             definition: definition.clone(),
@@ -267,7 +267,7 @@ async fn typed_source_tasks_require_workspace_attachment_and_round_trip() {
     assert_eq!(admitted.connection_id, CONNECTION_ALPHA);
     assert!(
         manager
-            .claim_next(ClaimNextTask {
+            .claim_next_task(ClaimNextTask {
                 owner_id: OWNER_ONE,
                 attempt_id: ATTEMPT_ONE,
                 accepted_kinds: vec![TaskKind::SourceDiscovery],
@@ -278,7 +278,7 @@ async fn typed_source_tasks_require_workspace_attachment_and_round_trip() {
             .is_none()
     );
     let claimed_read = manager
-        .claim_next(ClaimNextTask {
+        .claim_next_task(ClaimNextTask {
             owner_id: OWNER_ONE,
             attempt_id: ATTEMPT_ONE,
             accepted_kinds: vec![TaskKind::CatalogRead],
@@ -289,7 +289,7 @@ async fn typed_source_tasks_require_workspace_attachment_and_round_trip() {
         .expect("catalog task is selected");
     assert_eq!(claimed_read.task.id, TASK_ALPHA_ONE);
     manager
-        .complete(CompleteTask {
+        .complete_task(CompleteTask {
             task_id: TASK_ALPHA_ONE,
             attempt_id: ATTEMPT_ONE,
             owner_id: OWNER_ONE,
@@ -299,7 +299,7 @@ async fn typed_source_tasks_require_workspace_attachment_and_round_trip() {
         .await
         .expect("filtered catalog task completes");
     let error = manager
-        .admit(AdmitTask {
+        .admit_task(AdmitTask {
             task_id: TASK_ALPHA_TWO,
             workspace_id: Some(Uuid::from_u128(99)),
             definition: TaskDefinition::Reset {
@@ -316,18 +316,192 @@ async fn typed_source_tasks_require_workspace_attachment_and_round_trip() {
     database.shutdown().await.expect("database shuts down");
 }
 
-fn manager(pool: PgPool) -> TaskManager<PostgresTaskRepository> {
-    TaskManager::new(PostgresTaskRepository::new(pool))
+#[tokio::test]
+async fn workspace_listing_batches_mixed_details_in_order_with_a_limit() {
+    let directory = tempdir().expect("temporary directory is created");
+    let database = DatabaseRuntime::start(directory.path())
+        .await
+        .expect("fresh database starts");
+    seed_workspace_source(database.pool()).await;
+    let repository = manager(database.pool());
+    assert!(
+        repository
+            .list_workspace_tasks(WORKSPACE_ID)
+            .await
+            .expect("empty listing succeeds")
+            .is_empty()
+    );
+    let definitions = [
+        TaskDefinition::SourceDiscovery {
+            connection_id: CONNECTION_ALPHA,
+        },
+        TaskDefinition::Read {
+            source_id: SOURCE_ID,
+            stream: SourceStream::Catalog,
+            mode: ReadMode::Full,
+        },
+        TaskDefinition::Read {
+            source_id: SOURCE_ID,
+            stream: SourceStream::State,
+            mode: ReadMode::Incremental,
+        },
+        TaskDefinition::Reset {
+            source_id: SOURCE_ID,
+            stream: SourceStream::Catalog,
+        },
+        TaskDefinition::Reset {
+            source_id: SOURCE_ID,
+            stream: SourceStream::State,
+        },
+    ];
+    let mut expected = Vec::new();
+    for ordinal in 0..105 {
+        expected.push(
+            repository
+                .admit_task(AdmitTask {
+                    task_id: Uuid::from_u128(1000 + ordinal as u128),
+                    workspace_id: Some(WORKSPACE_ID),
+                    definition: definitions[ordinal % definitions.len()].clone(),
+                    cancellation_supported: true,
+                    admitted_at: timestamp((ordinal / 2) as i64),
+                })
+                .await
+                .expect("mixed task is admitted"),
+        );
+    }
+    admit_discovery(&repository, TASK_BETA, CONNECTION_ALPHA, timestamp(100)).await;
+    expected.reverse();
+    expected.truncate(100);
+    assert_eq!(
+        repository
+            .list_workspace_tasks(WORKSPACE_ID)
+            .await
+            .expect("mixed listing succeeds"),
+        expected
+    );
+    assert!(
+        repository
+            .list_workspace_tasks(Uuid::from_u128(99))
+            .await
+            .expect("other workspace listing succeeds")
+            .is_empty()
+    );
+    database.shutdown().await.expect("database shuts down");
+}
+
+#[tokio::test]
+async fn malformed_details_are_rejected_by_list_get_and_claim_without_claiming() {
+    let directory = tempdir().expect("temporary directory is created");
+    let database = DatabaseRuntime::start(directory.path())
+        .await
+        .expect("fresh database starts");
+    seed_workspace_source(database.pool()).await;
+    let repository = manager(database.pool());
+    for (ordinal, definition, update_detail, delete_detail, kind) in [
+        (
+            0,
+            TaskDefinition::Read {
+                source_id: SOURCE_ID,
+                stream: SourceStream::Catalog,
+                mode: ReadMode::Full,
+            },
+            "UPDATE read_tasks SET stream_kind = 'state' WHERE task_id = $1",
+            "DELETE FROM read_tasks WHERE task_id = $1",
+            TaskKind::CatalogRead,
+        ),
+        (
+            1,
+            TaskDefinition::Reset {
+                source_id: SOURCE_ID,
+                stream: SourceStream::Catalog,
+            },
+            "UPDATE reset_tasks SET stream_kind = 'state' WHERE task_id = $1",
+            "DELETE FROM reset_tasks WHERE task_id = $1",
+            TaskKind::CatalogReset,
+        ),
+    ] {
+        let task_id = Uuid::from_u128(1000 + ordinal);
+        repository
+            .admit_task(AdmitTask {
+                task_id,
+                workspace_id: Some(WORKSPACE_ID),
+                definition,
+                cancellation_supported: true,
+                admitted_at: timestamp(ordinal as i64),
+            })
+            .await
+            .expect("task is admitted");
+        sqlx::query(update_detail)
+            .bind(task_id)
+            .execute(&database.pool())
+            .await
+            .expect("stream mismatch is seeded");
+        assert!(matches!(
+            repository.list_workspace_tasks(WORKSPACE_ID).await,
+            Err(TaskManagerError::InvalidTaskDetail)
+        ));
+        assert!(matches!(
+            repository.get_task(task_id).await,
+            Err(TaskManagerError::InvalidTaskDetail)
+        ));
+        assert!(matches!(
+            repository
+                .claim_next_task(ClaimNextTask {
+                    owner_id: OWNER_ONE,
+                    attempt_id: ATTEMPT_ONE,
+                    accepted_kinds: vec![kind],
+                    claimed_at: timestamp(5),
+                })
+                .await,
+            Err(TaskManagerError::InvalidTaskDetail)
+        ));
+        let claims =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM task_claims WHERE task_id = $1")
+                .bind(task_id)
+                .fetch_one(&database.pool())
+                .await
+                .expect("claims can be counted");
+        let attempts =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM task_attempts WHERE task_id = $1")
+                .bind(task_id)
+                .fetch_one(&database.pool())
+                .await
+                .expect("attempts can be counted");
+        assert_eq!((claims, attempts), (0, 0));
+        sqlx::query(delete_detail)
+            .bind(task_id)
+            .execute(&database.pool())
+            .await
+            .expect("missing detail is seeded");
+        assert!(matches!(
+            repository.list_workspace_tasks(WORKSPACE_ID).await,
+            Err(TaskManagerError::MissingTaskDetail)
+        ));
+        assert!(matches!(
+            repository.get_task(task_id).await,
+            Err(TaskManagerError::MissingTaskDetail)
+        ));
+        sqlx::query("DELETE FROM tasks WHERE id = $1")
+            .bind(task_id)
+            .execute(&database.pool())
+            .await
+            .expect("malformed task is removed");
+    }
+    database.shutdown().await.expect("database shuts down");
+}
+
+fn manager(pool: PgPool) -> PostgresTaskRepository {
+    PostgresTaskRepository::new(pool)
 }
 
 async fn admit_discovery(
-    manager: &TaskManager<PostgresTaskRepository>,
+    manager: &PostgresTaskRepository,
     task_id: Uuid,
     connection_id: Uuid,
     admitted_at: OffsetDateTime,
 ) {
     manager
-        .admit(AdmitTask {
+        .admit_task(AdmitTask {
             task_id,
             workspace_id: None,
             definition: TaskDefinition::SourceDiscovery { connection_id },

@@ -16,7 +16,7 @@ let loading = $state(false);
 let errorMessage = $state("");
 let cancellingIds = $state<string[]>([]);
 let now = $state(Date.now());
-let refreshingWorkspaceId = "";
+let refreshingRequest: object | null = null;
 let contextSequence = 0;
 let activeTasks = $derived(tasks.filter((task) => !task.terminal));
 let recentTasks = $derived(
@@ -40,7 +40,7 @@ $effect(() => {
   loading = Boolean(selectedWorkspaceId);
   errorMessage = "";
   cancellingIds = [];
-  refreshingWorkspaceId = "";
+  refreshingRequest = null;
   if (!selectedWorkspaceId) {
     loading = false;
     return;
@@ -63,10 +63,14 @@ $effect(() => {
   const selectedWorkspaceId = workspaceId;
   if (!selectedWorkspaceId || (!popoverOpen && activeTasks.length === 0)) return;
   const sequence = contextSequence;
+  const controller = new AbortController();
   const polling = window.setInterval(() => {
-    void refresh(selectedWorkspaceId, sequence);
+    void refresh(selectedWorkspaceId, sequence, controller.signal);
   }, 4_000);
-  return () => window.clearInterval(polling);
+  return () => {
+    window.clearInterval(polling);
+    controller.abort();
+  };
 });
 
 $effect(() => {
@@ -77,23 +81,29 @@ $effect(() => {
 
 async function refresh(selectedWorkspaceId: string, sequence: number, signal?: AbortSignal) {
   if (!ownsContext(sequence, selectedWorkspaceId)) return;
-  if (refreshingWorkspaceId === selectedWorkspaceId) return;
-  refreshingWorkspaceId = selectedWorkspaceId;
+  if (signal?.aborted || refreshingRequest) return;
+  const request = {};
+  refreshingRequest = request;
+  const release = () => {
+    if (refreshingRequest === request) {
+      refreshingRequest = null;
+      loading = false;
+    }
+  };
+  signal?.addEventListener("abort", release, { once: true });
   loading = tasks.length === 0;
   errorMessage = "";
   try {
     const result = await listTasks(selectedWorkspaceId, signal);
-    if (ownsContext(sequence, selectedWorkspaceId)) tasks = result;
+    if (!signal?.aborted && ownsContext(sequence, selectedWorkspaceId)) tasks = result;
   } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") return;
+    if (signal?.aborted || (error instanceof Error && error.name === "AbortError")) return;
     if (ownsContext(sequence, selectedWorkspaceId)) {
       errorMessage = error instanceof Error ? error.message : "Workspace activity is unavailable";
     }
   } finally {
-    if (ownsContext(sequence, selectedWorkspaceId)) {
-      refreshingWorkspaceId = "";
-      loading = false;
-    }
+    signal?.removeEventListener("abort", release);
+    release();
   }
 }
 

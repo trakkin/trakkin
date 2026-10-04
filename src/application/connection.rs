@@ -12,7 +12,8 @@ use super::adapter_runtime::{
     OpenedAdapterConnection, StartAdapterAuthentication, ValidateAdapterConnection,
 };
 use super::{
-    error::{ApplicationError, ApplicationErrorCode, IntoApplicationError},
+    error::{ApplicationError, ApplicationErrorCode, ApplicationFuture, IntoApplicationError},
+    providers::SharedProviderRegistry,
     task_dispatcher::{TaskHandler, TaskHandlerFuture, TaskHandlerOutcome},
     task_manager::{ClaimedTask, TaskCompletion, TaskDefinition, TaskFailure, TaskKind},
 };
@@ -69,6 +70,52 @@ pub struct ReconfigureConnection {
     pub settings: Vec<AdapterSetting>,
     pub secret_patches: Vec<super::adapter_runtime::AdapterSecretPatch>,
     pub reconfigured_at: OffsetDateTime,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum ConnectionConfigurationError {
+    #[error("connection {0} key is empty")]
+    EmptyKey(&'static str),
+    #[error("connection {0} key is duplicated")]
+    DuplicateKey(&'static str),
+}
+
+impl IntoApplicationError for ConnectionConfigurationError {
+    fn into_application_error(self) -> ApplicationError {
+        ApplicationError::new(
+            ApplicationErrorCode::InvalidRequest,
+            "connection configuration is invalid",
+        )
+    }
+}
+
+pub fn validate_named_values<'a>(
+    values: impl IntoIterator<Item = &'a str>,
+    resource: &'static str,
+) -> Result<(), ConnectionConfigurationError> {
+    let mut seen = std::collections::HashSet::new();
+    for value in values {
+        if value.is_empty() {
+            return Err(ConnectionConfigurationError::EmptyKey(resource));
+        }
+        if !seen.insert(value) {
+            return Err(ConnectionConfigurationError::DuplicateKey(resource));
+        }
+    }
+    Ok(())
+}
+
+impl ReconfigureConnection {
+    pub fn validate(&self) -> Result<(), ConnectionConfigurationError> {
+        validate_named_values(
+            self.settings.iter().map(|setting| setting.key.as_str()),
+            "setting",
+        )?;
+        validate_named_values(
+            self.secret_patches.iter().map(|patch| patch.key.as_str()),
+            "secret patch",
+        )
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -353,11 +400,7 @@ where
         &[TaskKind::SourceDiscovery]
     }
 
-    fn execute<'a>(
-        &'a self,
-        claimed: &'a ClaimedTask,
-        _completed_at: OffsetDateTime,
-    ) -> TaskHandlerFuture<'a, Self::Error> {
+    fn execute<'a>(&'a self, claimed: &'a ClaimedTask) -> TaskHandlerFuture<'a, Self::Error> {
         Box::pin(async move {
             let TaskDefinition::SourceDiscovery { connection_id } = claimed.task.definition else {
                 return Ok(TaskHandlerOutcome::Complete(TaskCompletion::Failed(
@@ -1056,6 +1099,205 @@ where
                 );
             }
             result.map_err(IntoApplicationError::into_application_error)
+        })
+    }
+}
+
+pub trait ConnectionApi: Send + Sync {
+    fn create_connection(
+        &self,
+        command: CreateConnection,
+    ) -> ApplicationFuture<'_, ConnectionSummary>;
+    fn list_connections(&self) -> ApplicationFuture<'_, Vec<ConnectionSummary>>;
+    fn rename_connection(
+        &self,
+        command: RenameConnection,
+    ) -> ApplicationFuture<'_, ConnectionSummary>;
+    fn reconfigure_connection(
+        &self,
+        command: ReconfigureConnection,
+    ) -> ApplicationFuture<'_, ConnectionSummary>;
+    fn list_connection_sources(
+        &self,
+        connection_id: Uuid,
+    ) -> ApplicationFuture<'_, Vec<ConnectionSourceSummary>>;
+    fn connection_deletion_impact(
+        &self,
+        connection_id: Uuid,
+    ) -> ApplicationFuture<'_, ConnectionDeletionImpact>;
+    fn delete_connection(
+        &self,
+        command: BeginConnectionDeletion,
+    ) -> ApplicationFuture<'_, ConnectionDeletionImpact>;
+}
+
+pub struct ConnectionService<R, D> {
+    connections: R,
+    connection_retirement: D,
+    providers: SharedProviderRegistry,
+}
+
+impl<R, D> ConnectionService<R, D> {
+    pub fn new(
+        connections: R,
+        connection_retirement: D,
+        providers: SharedProviderRegistry,
+    ) -> Self {
+        Self {
+            connections,
+            connection_retirement,
+            providers,
+        }
+    }
+}
+
+impl<R: ConnectionRepository, D: ConnectionRetirement> ConnectionApi for ConnectionService<R, D>
+where
+    R::Error: IntoApplicationError,
+    D::Error: IntoApplicationError,
+{
+    fn create_connection(
+        &self,
+        command: CreateConnection,
+    ) -> ApplicationFuture<'_, ConnectionSummary> {
+        Box::pin(async move {
+            let connection_id = command.connection_id;
+            let provider_id = command.provider_id.clone();
+            let setting_count = command.settings.len();
+            let secret_count = command.secrets.len();
+            self.providers
+                .ensure_provider_installed(&command.provider_id)
+                .await?;
+            self.connections
+                .store_connection(command)
+                .await
+                .map_err(IntoApplicationError::into_application_error)?;
+            let connection = self
+                .connections
+                .get_connection_summary(connection_id)
+                .await
+                .map_err(IntoApplicationError::into_application_error)?
+                .ok_or_else(|| {
+                    ApplicationError::new(
+                        ApplicationErrorCode::Internal,
+                        "stored connection could not be loaded",
+                    )
+                })?;
+            tracing::info!(
+                %connection_id,
+                %provider_id,
+                setting_count,
+                secret_count,
+                status = ?connection.status,
+                "connection created"
+            );
+            Ok(connection)
+        })
+    }
+    fn list_connections(&self) -> ApplicationFuture<'_, Vec<ConnectionSummary>> {
+        Box::pin(async move {
+            self.connections
+                .list_connections()
+                .await
+                .map_err(IntoApplicationError::into_application_error)
+        })
+    }
+    fn rename_connection(
+        &self,
+        command: RenameConnection,
+    ) -> ApplicationFuture<'_, ConnectionSummary> {
+        Box::pin(async move {
+            let connection_id = command.connection_id;
+            let connection = self
+                .connections
+                .rename_connection(command)
+                .await
+                .map_err(IntoApplicationError::into_application_error)?;
+            tracing::info!(%connection_id, "connection renamed");
+            Ok(connection)
+        })
+    }
+    fn reconfigure_connection(
+        &self,
+        command: ReconfigureConnection,
+    ) -> ApplicationFuture<'_, ConnectionSummary> {
+        Box::pin(async move {
+            let connection_id = command.connection_id;
+            let setting_count = command.settings.len();
+            let secret_patch_count = command.secret_patches.len();
+            command
+                .validate()
+                .map_err(IntoApplicationError::into_application_error)?;
+            self.connection_retirement
+                .retire_connection(connection_id)
+                .await
+                .map_err(IntoApplicationError::into_application_error)?;
+            let connection = self
+                .connections
+                .reconfigure_connection(command)
+                .await
+                .map_err(IntoApplicationError::into_application_error)?;
+            tracing::info!(
+                %connection_id,
+                setting_count,
+                secret_patch_count,
+                status = ?connection.status,
+                "connection reconfigured"
+            );
+            Ok(connection)
+        })
+    }
+    fn list_connection_sources(
+        &self,
+        connection_id: Uuid,
+    ) -> ApplicationFuture<'_, Vec<ConnectionSourceSummary>> {
+        Box::pin(async move {
+            self.connections
+                .list_connection_sources(connection_id)
+                .await
+                .map_err(IntoApplicationError::into_application_error)
+        })
+    }
+    fn connection_deletion_impact(
+        &self,
+        connection_id: Uuid,
+    ) -> ApplicationFuture<'_, ConnectionDeletionImpact> {
+        Box::pin(async move {
+            self.connections
+                .connection_deletion_impact(connection_id)
+                .await
+                .map_err(IntoApplicationError::into_application_error)
+        })
+    }
+    fn delete_connection(
+        &self,
+        command: BeginConnectionDeletion,
+    ) -> ApplicationFuture<'_, ConnectionDeletionImpact> {
+        Box::pin(async move {
+            let connection_id = command.connection_id;
+            let impact = self
+                .connections
+                .begin_connection_deletion(command)
+                .await
+                .map_err(IntoApplicationError::into_application_error)?;
+            self.connection_retirement
+                .retire_connection(connection_id)
+                .await
+                .map_err(IntoApplicationError::into_application_error)?;
+            self.connections
+                .finish_connection_deletion(FinishConnectionDeletion { connection_id })
+                .await
+                .map_err(IntoApplicationError::into_application_error)?;
+            tracing::info!(
+                %connection_id,
+                source_count = impact.source_count,
+                workspace_attachment_count = impact.workspace_attachment_count,
+                task_count = impact.task_count,
+                active_task_count = impact.active_task_count,
+                authentication_session_count = impact.authentication_session_count,
+                "connection deleted"
+            );
+            Ok(impact)
         })
     }
 }

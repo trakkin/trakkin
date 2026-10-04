@@ -90,6 +90,87 @@ async fn restart_interrupts_active_tasks_and_abandons_staging_without_replay() {
         .await
         .expect("state batch stages before restart");
 
+    sqlx::query(
+        "INSERT INTO staged_subject_unit_bindings (
+             attempt_id, unit_key, subject_kind, subject_key_namespace,
+             subject_key_value, operation, relevance_rank, batch_sequence, row_ordinal
+         ) VALUES ($1, 'fixture/unit', 'provider_item', 'fixture.item', $2,
+                   'upsert', 0, 0, 0)",
+    )
+    .bind(READ_ATTEMPT_ID)
+    .bind(b"item.new".as_slice())
+    .execute(&database.pool())
+    .await
+    .expect("subject unit binding stages before restart");
+    let bindings_before = staged_unit_bindings(&database.pool(), READ_ATTEMPT_ID).await;
+    let relations_before = staged_catalog_relations(&database.pool(), READ_ATTEMPT_ID).await;
+    let staged_items_before = staged_catalog_items(&database.pool(), READ_ATTEMPT_ID).await;
+    let staged_state_before = staged_state_rows(&database.pool(), SECOND_READ_ATTEMPT_ID).await;
+    assert_eq!(bindings_before.len(), 1);
+    assert_eq!(
+        staged_asset_count(&database.pool(), READ_ATTEMPT_ID).await,
+        2
+    );
+
+    let schema_owner = PgPool::connect_with(
+        database
+            .pool()
+            .connect_options()
+            .as_ref()
+            .clone()
+            .username("postgres"),
+    )
+    .await
+    .expect("schema owner connects for fault injection");
+    sqlx::query(
+        "ALTER TABLE tasks ADD CONSTRAINT recovery_test_failure
+         CHECK (status <> 'interrupted') NOT VALID",
+    )
+    .execute(&schema_owner)
+    .await
+    .expect("late recovery failure is injected");
+    assert!(
+        lifecycle_repository
+            .interrupt_active_tasks(InterruptActiveTasks {
+                interrupted_at: timestamp(11),
+            })
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        staged_unit_bindings(&database.pool(), READ_ATTEMPT_ID).await,
+        bindings_before
+    );
+    assert_eq!(
+        staged_catalog_relations(&database.pool(), READ_ATTEMPT_ID).await,
+        relations_before
+    );
+    assert_eq!(
+        staged_catalog_items(&database.pool(), READ_ATTEMPT_ID).await,
+        staged_items_before
+    );
+    assert_eq!(
+        staged_asset_count(&database.pool(), READ_ATTEMPT_ID).await,
+        2
+    );
+    assert_eq!(
+        staged_state_rows(&database.pool(), SECOND_READ_ATTEMPT_ID).await,
+        staged_state_before
+    );
+    assert_eq!(
+        read_attempt_status_for(&database.pool(), READ_ATTEMPT_ID).await,
+        "staging"
+    );
+    assert_eq!(
+        task_claim_owner(&database.pool(), TASK_ID).await,
+        Some(TASK_OWNER_ID)
+    );
+    sqlx::query("ALTER TABLE tasks DROP CONSTRAINT recovery_test_failure")
+        .execute(&schema_owner)
+        .await
+        .expect("late recovery failure is removed");
+    schema_owner.close().await;
+
     assert_eq!(
         staged_catalog_items(&database.pool(), READ_ATTEMPT_ID).await,
         [
@@ -135,6 +216,14 @@ async fn restart_interrupts_active_tasks_and_abandons_staging_without_replay() {
     assert_eq!(
         staged_catalog_relations(&database.pool(), READ_ATTEMPT_ID).await,
         []
+    );
+    assert_eq!(
+        staged_unit_bindings(&database.pool(), READ_ATTEMPT_ID).await,
+        []
+    );
+    assert_eq!(
+        staged_asset_count(&database.pool(), READ_ATTEMPT_ID).await,
+        0
     );
     assert_eq!(
         staged_state_rows(&database.pool(), SECOND_READ_ATTEMPT_ID).await,
@@ -1373,6 +1462,14 @@ async fn staged_unit_bindings(
     .fetch_all(pool)
     .await
     .expect("staged subject unit bindings are queryable")
+}
+
+async fn staged_asset_count(pool: &PgPool, attempt_id: Uuid) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM staged_catalog_assets WHERE attempt_id = $1")
+        .bind(attempt_id)
+        .fetch_one(pool)
+        .await
+        .expect("staged catalog assets are queryable")
 }
 
 async fn staged_state_rows(pool: &PgPool, attempt_id: Uuid) -> Vec<(String, String)> {
