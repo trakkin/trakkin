@@ -1317,9 +1317,10 @@ fn encrypt_secret(
     let mut nonce = [0_u8; 24];
     getrandom::fill(&mut nonce)?;
     let cipher = XChaCha20Poly1305::new((&master_key.0).into());
+    let nonce = XNonce::from(nonce);
     let ciphertext = cipher
         .encrypt(
-            XNonce::from_slice(&nonce),
+            &nonce,
             Payload {
                 msg: plaintext,
                 aad: &secret_associated_data(connection_id, setting_key),
@@ -1337,11 +1338,11 @@ fn decrypt_secret(
     ciphertext: &[u8],
 ) -> Result<Vec<u8>, ConnectionPersistenceError> {
     let nonce =
-        <&[u8; 24]>::try_from(nonce).map_err(|_| ConnectionPersistenceError::InvalidNonceLength)?;
+        <&XNonce>::try_from(nonce).map_err(|_| ConnectionPersistenceError::InvalidNonceLength)?;
     let cipher = XChaCha20Poly1305::new((&master_key.0).into());
     cipher
         .decrypt(
-            XNonce::from_slice(nonce),
+            nonce,
             Payload {
                 msg: ciphertext,
                 aad: &secret_associated_data(connection_id, setting_key),
