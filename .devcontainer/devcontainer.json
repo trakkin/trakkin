@@ -48,6 +48,7 @@
   "mounts": [],
   "init": true,
   "remoteUser": "vscode",
+  "onCreateCommand": "sudo mise self-update --yes --no-plugins",
   "updateContentCommand": "mise setup",
   "postCreateCommand": "mise bootstrap mise-shell-activate apply --yes && mise prepare"
 }

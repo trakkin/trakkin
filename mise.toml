@@ -7,6 +7,7 @@ minimum_release_age = "3d"
 
 [tools]
 "npm:actions-up" = "1.18.0"
+"npm:@devcontainers/cli" = "0.89.0"
 "cargo:cargo-dylint" = "6.0.3"
 "cargo:cargo-edit" = { version = "0.13.13", default-features = false, features = "upgrade" }
 "cargo:dylint-link" = "6.0.3"
@@ -262,6 +263,13 @@ description = "Update documentation dependencies"
 dir = "docs"
 run = "pnpm update --latest"
 
-[tasks."toolchain:update"]
-description = "Update mise-managed tools"
+[tasks."toolchain:update:devcontainer"]
+run = "devcontainer upgrade --workspace-folder ."
+
+[tasks."toolchain:update:mise"]
 run = "mise upgrade --bump"
+[tasks."toolchain:update"]
+description = "Update toolchain"
+run = [
+  { tasks = ["toolchain:update:devcontainer", "toolchain:update:mise"] }
+]
