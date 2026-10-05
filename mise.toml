@@ -6,22 +6,22 @@ lockfile = true
 minimum_release_age = "3d"
 
 [tools]
-"npm:actions-up" = "1.18.0"
+"npm:actions-up" = "1.21.0"
 "npm:@devcontainers/cli" = "0.89.0"
-"cargo:cargo-dylint" = "6.0.3"
+"cargo:cargo-dylint" = "6.1.0"
 "cargo:cargo-edit" = { version = "0.13.13", default-features = false, features = "upgrade" }
-"cargo:dylint-link" = "6.0.3"
+"cargo:dylint-link" = "6.1.0"
 "github:quarylabs/sqruff" = "0.40.0"
-"github:kjanat/actionlint" = "1.13.0"
+"github:kjanat/actionlint" = "1.17.0"
 act = "0.2.89"
-biome = "2.5.8"
-cargo-binstall = "1.21.1"
-node = "26.7.0"
-pnpm = "11.21.0"
+biome = "2.5.14"
+cargo-binstall = "1.24.0"
+node = "26.10.0"
+pnpm = "12.8.1"
 rg = "15.2.0"
 rust = { version = "1.97.1", components = "rust-analyzer,rust-src,rustfmt,clippy" }
-usage = "5.1.0"
-watchexec = "2.7.0"
+usage = "6.12.0"
+watchexec = "2.7.3"
 
 [tasks.build]
 description = "Build the self-contained release executable"
@@ -201,7 +201,10 @@ run = "actionlint"
 
 [tasks."server:check"]
 description = "Check server lints"
-run = ["cargo fmt --all -- --check", "cargo clippy --workspace --all-targets --all-features -- -D warnings"]
+run = [
+  "cargo fmt --all -- --check",
+  "cargo clippy --workspace --all-targets --all-features -- -D warnings",
+]
 
 [tasks."web:check"]
 description = "Check web lints and types"
@@ -270,6 +273,4 @@ run = "devcontainer upgrade --workspace-folder ."
 run = "mise upgrade --bump"
 [tasks."toolchain:update"]
 description = "Update toolchain"
-run = [
-  { tasks = ["toolchain:update:devcontainer", "toolchain:update:mise"] }
-]
+run = [{ tasks = ["toolchain:update:devcontainer", "toolchain:update:mise"] }]
