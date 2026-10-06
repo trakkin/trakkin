@@ -173,15 +173,15 @@ run = "cargo fetch --locked"
 description = "Install web dependencies and Chromium"
 dir = "frontend"
 run = [
-  "pnpm install",
+  "pnpm install --force",
   "pnpm exec playwright install-deps chromium",
-  "pnpm setup",
+  "pnpm run setup",
 ]
 
 [tasks."docs:setup"]
 description = "Install and prepare documentation dependencies"
 dir = "docs"
-run = ["pnpm install", "pnpm setup"]
+run = ["pnpm install --force", "pnpm run setup"]
 
 [tasks.check]
 description = "Check workflows, server, web, documentation, and SQL sources"
