@@ -5,114 +5,21 @@ use std::{
     sync::Arc,
 };
 
-use time::OffsetDateTime;
-use tokio::io::AsyncRead;
-use uuid::Uuid;
-
 use super::error::ApplicationError;
 
 pub type MappingFuture<'a, T> =
     Pin<Box<dyn Future<Output = Result<T, ApplicationError>> + Send + 'a>>;
-pub type MappingContentReader = Pin<Box<dyn AsyncRead + Send>>;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MappingSourceKind {
-    Local,
-    Upload,
-    Remote,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MappingSourceSnapshot {
-    pub id: Uuid,
-    pub source_key: String,
-    pub display_name: String,
-    pub kind: MappingSourceKind,
-    pub remote_url: Option<String>,
-    pub priority: i64,
-    pub enabled: bool,
-    pub content_hash: String,
-    pub byte_length: i64,
-    pub last_checked_at: Option<OffsetDateTime>,
-    pub last_refresh_error: Option<String>,
-    pub created_at: OffsetDateTime,
-    pub updated_at: OffsetDateTime,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MappingStateSnapshot {
-    pub active_chain_fingerprint: Option<String>,
-    pub sources: Vec<MappingSourceSnapshot>,
-}
-
-pub struct MappingSourceContent {
-    pub content_hash: String,
-    pub byte_length: u64,
-    pub reader: MappingContentReader,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CreateUploadedMappingSource {
-    pub source_id: Uuid,
-    pub source_key: String,
-    pub display_name: String,
-    pub enabled: bool,
-    pub created_at: OffsetDateTime,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CreateRemoteMappingSource {
-    pub source_id: Uuid,
-    pub source_key: String,
-    pub display_name: String,
-    pub remote_url: String,
-    pub enabled: bool,
-    pub created_at: OffsetDateTime,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct UpdateMappingSource {
-    pub source_id: Uuid,
-    pub display_name: String,
-    pub enabled: bool,
-    pub updated_at: OffsetDateTime,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CreateLocalMapping {
-    pub record: String,
-    pub created_at: OffsetDateTime,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct UpdateLocalMapping {
-    pub statement_id: String,
-    pub record: String,
-    pub updated_at: OffsetDateTime,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RemoveLocalMapping {
-    pub statement_id: String,
-    pub removed_at: OffsetDateTime,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ReorderMappingSources {
-    pub source_ids: Vec<Uuid>,
-    pub updated_at: OffsetDateTime,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RemoveMappingSource {
-    pub source_id: Uuid,
-    pub removed_at: OffsetDateTime,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RefreshRemoteMappingSource {
-    pub source_id: Uuid,
-    pub refreshed_at: OffsetDateTime,
+    pub fingerprint: String,
+    pub records: u64,
+    pub active: u64,
+    pub rejected: u64,
+    pub resolved: u64,
+    pub unresolved: u64,
+    pub conflicting: u64,
+    pub units: u64,
+    pub metadata_snapshot: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -124,48 +31,118 @@ pub enum MappingOperator {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct QueryMappings {
-    pub expected_chain_fingerprint: Option<String>,
+    pub expected_fingerprint: Option<String>,
     pub search: Option<String>,
     pub canonical_statement: Option<String>,
-    pub statement_id: Option<String>,
-    pub relation_key: Option<String>,
+    pub claim_id: Option<String>,
     pub operator: Option<MappingOperator>,
-    pub source_key: Option<String>,
     pub endpoint: Option<String>,
     pub annotation_name: Option<String>,
     pub annotation_value: Option<String>,
-    pub include_shadowed: bool,
     pub limit: u32,
     pub cursor: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MappingResult {
-    pub relation_key: String,
-    pub statement_id: String,
+    pub claim_id: String,
     pub canonical_statement: String,
     pub canonical_record: String,
     pub operator: String,
-    pub source_key: String,
-    pub source_content_hash: String,
-    pub layer_position: u64,
-    pub record_ordinal: u64,
-    pub active: bool,
-    pub occurrence_count: u64,
-    pub evidence_fingerprint: String,
     pub metadata: Vec<String>,
+    pub rejected: bool,
+    pub sources: Vec<String>,
+    pub status: MappingRecordStatus,
+    pub diagnostics: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MappingRecordStatus {
+    Resolved,
+    Unresolved,
+    Invalid,
+    Conflicting,
+    Rejected,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SaveMapping {
+    pub expected_fingerprint: String,
+    pub record: String,
+    pub replaces: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DecideMapping {
+    pub expected_fingerprint: String,
+    pub claim_id: String,
+    pub rejected: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeleteMapping {
+    pub expected_fingerprint: String,
+    pub claim_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MappingSourceKind {
+    Local,
+    Upstream,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MappingSource {
+    pub id: String,
+    pub display_name: String,
+    pub kind: MappingSourceKind,
+    pub enabled: bool,
+    pub url: Option<String>,
+    pub branch: Option<String>,
+    pub repository_path: Option<String>,
+    pub poll_interval_seconds: Option<u64>,
+    pub cached_records: u64,
+    pub revision: Option<String>,
+    pub last_checked_at: Option<time::OffsetDateTime>,
+    pub last_updated_at: Option<time::OffsetDateTime>,
+    pub next_check_at: Option<time::OffsetDateTime>,
+    pub consecutive_failures: u32,
+    pub last_error: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MappingSourcesSnapshot {
+    pub fingerprint: String,
+    pub sources: Vec<MappingSource>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SaveMappingSource {
+    pub expected_fingerprint: String,
+    pub id: Option<String>,
+    pub display_name: String,
+    pub url: String,
+    pub branch: String,
+    pub poll_interval_seconds: u64,
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ChangeMappingSource {
+    pub expected_fingerprint: String,
+    pub id: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MappingPageSnapshot {
-    pub chain_fingerprint: String,
+    pub fingerprint: String,
     pub items: Vec<MappingResult>,
     pub next_cursor: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResolveMappingUnits {
-    pub expected_chain_fingerprint: Option<String>,
+    pub expected_fingerprint: Option<String>,
     pub unit_keys: Vec<String>,
 }
 
@@ -202,19 +179,13 @@ pub struct MappingAlignmentSegmentSnapshot {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MappingUnitMatchSnapshot {
-    pub relation_key: String,
-    pub statement_id: String,
+    pub claim_id: String,
     pub operator: String,
     pub matched_side: MappingUnitSide,
     pub member_ordinal: u64,
     pub left: MappingRelationSideSnapshot,
     pub right: MappingRelationSideSnapshot,
     pub alignments: Vec<MappingAlignmentSegmentSnapshot>,
-    pub evidence_fingerprint: String,
-    pub source_key: String,
-    pub source_content_hash: String,
-    pub layer_position: u64,
-    pub record_ordinal: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -225,7 +196,7 @@ pub struct MappingUnitResolutionSnapshot {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MappingUnitResolutionBatchSnapshot {
-    pub chain_fingerprint: String,
+    pub fingerprint: String,
     pub units: Vec<MappingUnitResolutionSnapshot>,
 }
 
@@ -240,19 +211,19 @@ pub enum RankedMappingUnitSelection {
     Unresolved,
     Resolved {
         relevance_rank: u32,
-        relation_key: String,
+        claim_id: String,
         resolutions: Vec<MappingUnitResolutionSnapshot>,
     },
     Ambiguous {
         relevance_rank: u32,
-        relation_keys: Vec<String>,
+        claim_ids: Vec<String>,
         resolutions: Vec<MappingUnitResolutionSnapshot>,
     },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RankedMappingUnitSelectionSnapshot {
-    pub chain_fingerprint: String,
+    pub fingerprint: String,
     pub selection: RankedMappingUnitSelection,
 }
 
@@ -284,23 +255,23 @@ pub fn select_ranked_mapping_units(
     let selection = successful_ranks.into_iter().next().map_or(
         RankedMappingUnitSelection::Unresolved,
         |(relevance_rank, resolutions)| {
-            let relation_keys = resolutions
+            let claim_ids = resolutions
                 .iter()
                 .flat_map(|resolution| resolution.matches.iter())
-                .map(|matched| matched.relation_key.clone())
+                .map(|matched| matched.claim_id.clone())
                 .collect::<BTreeSet<_>>()
                 .into_iter()
                 .collect::<Vec<_>>();
-            if relation_keys.len() == 1 {
+            if claim_ids.len() == 1 {
                 RankedMappingUnitSelection::Resolved {
                     relevance_rank,
-                    relation_key: relation_keys.into_iter().next().expect("one relation key"),
+                    claim_id: claim_ids.into_iter().next().expect("one relation key"),
                     resolutions,
                 }
             } else {
                 RankedMappingUnitSelection::Ambiguous {
                     relevance_rank,
-                    relation_keys,
+                    claim_ids,
                     resolutions,
                 }
             }
@@ -308,52 +279,29 @@ pub fn select_ranked_mapping_units(
     );
 
     RankedMappingUnitSelectionSnapshot {
-        chain_fingerprint: batch.chain_fingerprint,
+        fingerprint: batch.fingerprint,
         selection,
     }
 }
 
 pub trait MappingApi: Send + Sync {
     fn state(&self) -> MappingFuture<'_, MappingStateSnapshot>;
-    fn create_uploaded_source(
-        &self,
-        command: CreateUploadedMappingSource,
-        content: MappingContentReader,
-    ) -> MappingFuture<'_, MappingStateSnapshot>;
-    fn create_remote_source(
-        &self,
-        command: CreateRemoteMappingSource,
-    ) -> MappingFuture<'_, MappingStateSnapshot>;
-    fn update_source(
-        &self,
-        command: UpdateMappingSource,
-    ) -> MappingFuture<'_, MappingStateSnapshot>;
-    fn create_local_mapping(
-        &self,
-        command: CreateLocalMapping,
-    ) -> MappingFuture<'_, MappingStateSnapshot>;
-    fn update_local_mapping(
-        &self,
-        command: UpdateLocalMapping,
-    ) -> MappingFuture<'_, MappingStateSnapshot>;
-    fn remove_local_mapping(
-        &self,
-        command: RemoveLocalMapping,
-    ) -> MappingFuture<'_, MappingStateSnapshot>;
-    fn reorder_sources(
-        &self,
-        command: ReorderMappingSources,
-    ) -> MappingFuture<'_, MappingStateSnapshot>;
-    fn remove_source(
-        &self,
-        command: RemoveMappingSource,
-    ) -> MappingFuture<'_, MappingStateSnapshot>;
-    fn refresh_remote_source(
-        &self,
-        command: RefreshRemoteMappingSource,
-    ) -> MappingFuture<'_, MappingStateSnapshot>;
-    fn read_source_content(&self, source_id: Uuid) -> MappingFuture<'_, MappingSourceContent>;
     fn query(&self, query: QueryMappings) -> MappingFuture<'_, MappingPageSnapshot>;
+    fn preview(&self, record: String) -> MappingFuture<'_, MappingResult>;
+    fn save(&self, command: SaveMapping) -> MappingFuture<'_, MappingStateSnapshot>;
+    fn decide(&self, command: DecideMapping) -> MappingFuture<'_, MappingStateSnapshot>;
+    fn delete(&self, command: DeleteMapping) -> MappingFuture<'_, MappingStateSnapshot>;
+    fn sources(&self) -> MappingFuture<'_, MappingSourcesSnapshot>;
+    fn save_source(&self, command: SaveMappingSource) -> MappingFuture<'_, MappingStateSnapshot>;
+    fn delete_source(
+        &self,
+        command: ChangeMappingSource,
+    ) -> MappingFuture<'_, MappingStateSnapshot>;
+    fn refresh_source(
+        &self,
+        command: ChangeMappingSource,
+    ) -> MappingFuture<'_, MappingStateSnapshot>;
+    fn revert(&self, command: DeleteMapping) -> MappingFuture<'_, MappingStateSnapshot>;
     fn resolve_units(
         &self,
         command: ResolveMappingUnits,
@@ -381,15 +329,15 @@ mod tests {
 
         let RankedMappingUnitSelection::Resolved {
             relevance_rank,
-            relation_key,
+            claim_id,
             resolutions,
         } = selected.selection
         else {
             panic!("fallback rank should resolve");
         };
-        assert_eq!(selected.chain_fingerprint, "generation-1");
+        assert_eq!(selected.fingerprint, "generation-1");
         assert_eq!(relevance_rank, 2);
-        assert_eq!(relation_key, "relation-a");
+        assert_eq!(claim_id, "relation-a");
         assert_eq!(resolutions.len(), 1);
         assert_eq!(resolutions[0].unit_key, "mapped://fallback");
     }
@@ -420,7 +368,7 @@ mod tests {
             ]),
         );
 
-        assert_eq!(selected.chain_fingerprint, "generation-1");
+        assert_eq!(selected.fingerprint, "generation-1");
         assert_eq!(selected.selection, RankedMappingUnitSelection::Unresolved);
     }
 
@@ -439,14 +387,14 @@ mod tests {
 
         let RankedMappingUnitSelection::Resolved {
             relevance_rank,
-            relation_key,
+            claim_id,
             resolutions,
         } = selected.selection
         else {
             panic!("equivalent tied units should resolve");
         };
         assert_eq!(relevance_rank, 0);
-        assert_eq!(relation_key, "relation-a");
+        assert_eq!(claim_id, "relation-a");
         assert_eq!(resolutions.len(), 2);
     }
 
@@ -467,14 +415,14 @@ mod tests {
 
         let RankedMappingUnitSelection::Ambiguous {
             relevance_rank,
-            relation_keys,
+            claim_ids,
             resolutions,
         } = selected.selection
         else {
             panic!("conflicting tied units should be ambiguous");
         };
         assert_eq!(relevance_rank, 0);
-        assert_eq!(relation_keys, ["relation-a", "relation-b"]);
+        assert_eq!(claim_ids, ["relation-a", "relation-b"]);
         assert_eq!(resolutions.len(), 2);
         assert!(
             resolutions
@@ -492,25 +440,21 @@ mod tests {
 
     fn batch(units: Vec<MappingUnitResolutionSnapshot>) -> MappingUnitResolutionBatchSnapshot {
         MappingUnitResolutionBatchSnapshot {
-            chain_fingerprint: "generation-1".to_owned(),
+            fingerprint: "generation-1".to_owned(),
             units,
         }
     }
 
-    fn resolution(unit_key: &str, relation_keys: &[&str]) -> MappingUnitResolutionSnapshot {
+    fn resolution(unit_key: &str, claim_ids: &[&str]) -> MappingUnitResolutionSnapshot {
         MappingUnitResolutionSnapshot {
             unit_key: unit_key.to_owned(),
-            matches: relation_keys
-                .iter()
-                .map(|relation_key| matched(relation_key))
-                .collect(),
+            matches: claim_ids.iter().map(|claim_id| matched(claim_id)).collect(),
         }
     }
 
-    fn matched(relation_key: &str) -> MappingUnitMatchSnapshot {
+    fn matched(claim_id: &str) -> MappingUnitMatchSnapshot {
         MappingUnitMatchSnapshot {
-            relation_key: relation_key.to_owned(),
-            statement_id: format!("statement-{relation_key}"),
+            claim_id: claim_id.to_owned(),
             operator: "<=>".to_owned(),
             matched_side: MappingUnitSide::Left,
             member_ordinal: 0,
@@ -523,11 +467,6 @@ mod tests {
                 right_offset: 0,
                 extent: 1,
             }],
-            evidence_fingerprint: format!("evidence-{relation_key}"),
-            source_key: "test".to_owned(),
-            source_content_hash: "content-hash".to_owned(),
-            layer_position: 0,
-            record_ordinal: 0,
         }
     }
 

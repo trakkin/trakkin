@@ -15,10 +15,9 @@ use super::{
     },
     error::ApplicationFuture,
     mappings::{
-        CreateLocalMapping, CreateRemoteMappingSource, CreateUploadedMappingSource,
-        MappingContentReader, MappingPageSnapshot, MappingSourceContent, MappingStateSnapshot,
-        QueryMappings, RefreshRemoteMappingSource, RemoveLocalMapping, RemoveMappingSource,
-        ReorderMappingSources, SharedMappingApi, UpdateLocalMapping, UpdateMappingSource,
+        ChangeMappingSource, DecideMapping, DeleteMapping, MappingPageSnapshot, MappingResult,
+        MappingSourcesSnapshot, MappingStateSnapshot, QueryMappings, SaveMapping,
+        SaveMappingSource, SharedMappingApi,
     },
     providers::{
         ChangeProviderUpdatePolicy, InspectProviderRelease, InstallProvider,
@@ -132,48 +131,28 @@ pub trait ApplicationApi: Send + Sync {
     ) -> ApplicationFuture<'_, ProviderSnapshot>;
     fn remove_provider(&self, command: RemoveProvider) -> ApplicationFuture<'_, ()>;
     fn mapping_state(&self) -> ApplicationFuture<'_, MappingStateSnapshot>;
-    fn create_uploaded_mapping_source(
-        &self,
-        command: CreateUploadedMappingSource,
-        content: MappingContentReader,
-    ) -> ApplicationFuture<'_, MappingStateSnapshot>;
-    fn create_remote_mapping_source(
-        &self,
-        command: CreateRemoteMappingSource,
-    ) -> ApplicationFuture<'_, MappingStateSnapshot>;
-    fn update_mapping_source(
-        &self,
-        command: UpdateMappingSource,
-    ) -> ApplicationFuture<'_, MappingStateSnapshot>;
-    fn create_local_mapping(
-        &self,
-        command: CreateLocalMapping,
-    ) -> ApplicationFuture<'_, MappingStateSnapshot>;
-    fn update_local_mapping(
-        &self,
-        command: UpdateLocalMapping,
-    ) -> ApplicationFuture<'_, MappingStateSnapshot>;
-    fn remove_local_mapping(
-        &self,
-        command: RemoveLocalMapping,
-    ) -> ApplicationFuture<'_, MappingStateSnapshot>;
-    fn reorder_mapping_sources(
-        &self,
-        command: ReorderMappingSources,
-    ) -> ApplicationFuture<'_, MappingStateSnapshot>;
-    fn remove_mapping_source(
-        &self,
-        command: RemoveMappingSource,
-    ) -> ApplicationFuture<'_, MappingStateSnapshot>;
-    fn refresh_remote_mapping_source(
-        &self,
-        command: RefreshRemoteMappingSource,
-    ) -> ApplicationFuture<'_, MappingStateSnapshot>;
-    fn read_mapping_source_content(
-        &self,
-        source_id: Uuid,
-    ) -> ApplicationFuture<'_, MappingSourceContent>;
     fn query_mappings(&self, query: QueryMappings) -> ApplicationFuture<'_, MappingPageSnapshot>;
+    fn preview_mapping(&self, record: String) -> ApplicationFuture<'_, MappingResult>;
+    fn save_mapping(&self, command: SaveMapping) -> ApplicationFuture<'_, MappingStateSnapshot>;
+    fn decide_mapping(&self, command: DecideMapping)
+    -> ApplicationFuture<'_, MappingStateSnapshot>;
+    fn delete_mapping(&self, command: DeleteMapping)
+    -> ApplicationFuture<'_, MappingStateSnapshot>;
+    fn mapping_sources(&self) -> ApplicationFuture<'_, MappingSourcesSnapshot>;
+    fn save_mapping_source(
+        &self,
+        command: SaveMappingSource,
+    ) -> ApplicationFuture<'_, MappingStateSnapshot>;
+    fn delete_mapping_source(
+        &self,
+        command: ChangeMappingSource,
+    ) -> ApplicationFuture<'_, MappingStateSnapshot>;
+    fn refresh_mapping_source(
+        &self,
+        command: ChangeMappingSource,
+    ) -> ApplicationFuture<'_, MappingStateSnapshot>;
+    fn revert_mapping(&self, command: DeleteMapping)
+    -> ApplicationFuture<'_, MappingStateSnapshot>;
 }
 
 #[derive(Clone)]
@@ -405,78 +384,57 @@ impl ApplicationApi for ApplicationFacade {
         self.mappings.state()
     }
 
-    fn create_uploaded_mapping_source(
-        &self,
-        command: CreateUploadedMappingSource,
-        content: MappingContentReader,
-    ) -> ApplicationFuture<'_, MappingStateSnapshot> {
-        self.mappings.create_uploaded_source(command, content)
-    }
-
-    fn create_remote_mapping_source(
-        &self,
-        command: CreateRemoteMappingSource,
-    ) -> ApplicationFuture<'_, MappingStateSnapshot> {
-        self.mappings.create_remote_source(command)
-    }
-
-    fn update_mapping_source(
-        &self,
-        command: UpdateMappingSource,
-    ) -> ApplicationFuture<'_, MappingStateSnapshot> {
-        self.mappings.update_source(command)
-    }
-
-    fn create_local_mapping(
-        &self,
-        command: CreateLocalMapping,
-    ) -> ApplicationFuture<'_, MappingStateSnapshot> {
-        self.mappings.create_local_mapping(command)
-    }
-
-    fn update_local_mapping(
-        &self,
-        command: UpdateLocalMapping,
-    ) -> ApplicationFuture<'_, MappingStateSnapshot> {
-        self.mappings.update_local_mapping(command)
-    }
-
-    fn remove_local_mapping(
-        &self,
-        command: RemoveLocalMapping,
-    ) -> ApplicationFuture<'_, MappingStateSnapshot> {
-        self.mappings.remove_local_mapping(command)
-    }
-
-    fn reorder_mapping_sources(
-        &self,
-        command: ReorderMappingSources,
-    ) -> ApplicationFuture<'_, MappingStateSnapshot> {
-        self.mappings.reorder_sources(command)
-    }
-
-    fn remove_mapping_source(
-        &self,
-        command: RemoveMappingSource,
-    ) -> ApplicationFuture<'_, MappingStateSnapshot> {
-        self.mappings.remove_source(command)
-    }
-
-    fn refresh_remote_mapping_source(
-        &self,
-        command: RefreshRemoteMappingSource,
-    ) -> ApplicationFuture<'_, MappingStateSnapshot> {
-        self.mappings.refresh_remote_source(command)
-    }
-
-    fn read_mapping_source_content(
-        &self,
-        source_id: Uuid,
-    ) -> ApplicationFuture<'_, MappingSourceContent> {
-        self.mappings.read_source_content(source_id)
-    }
-
     fn query_mappings(&self, query: QueryMappings) -> ApplicationFuture<'_, MappingPageSnapshot> {
         self.mappings.query(query)
+    }
+
+    fn preview_mapping(&self, record: String) -> ApplicationFuture<'_, MappingResult> {
+        self.mappings.preview(record)
+    }
+
+    fn save_mapping(&self, command: SaveMapping) -> ApplicationFuture<'_, MappingStateSnapshot> {
+        self.mappings.save(command)
+    }
+
+    fn decide_mapping(
+        &self,
+        command: DecideMapping,
+    ) -> ApplicationFuture<'_, MappingStateSnapshot> {
+        self.mappings.decide(command)
+    }
+
+    fn delete_mapping(
+        &self,
+        command: DeleteMapping,
+    ) -> ApplicationFuture<'_, MappingStateSnapshot> {
+        self.mappings.delete(command)
+    }
+
+    fn mapping_sources(&self) -> ApplicationFuture<'_, MappingSourcesSnapshot> {
+        self.mappings.sources()
+    }
+    fn save_mapping_source(
+        &self,
+        command: SaveMappingSource,
+    ) -> ApplicationFuture<'_, MappingStateSnapshot> {
+        self.mappings.save_source(command)
+    }
+    fn delete_mapping_source(
+        &self,
+        command: ChangeMappingSource,
+    ) -> ApplicationFuture<'_, MappingStateSnapshot> {
+        self.mappings.delete_source(command)
+    }
+    fn refresh_mapping_source(
+        &self,
+        command: ChangeMappingSource,
+    ) -> ApplicationFuture<'_, MappingStateSnapshot> {
+        self.mappings.refresh_source(command)
+    }
+    fn revert_mapping(
+        &self,
+        command: DeleteMapping,
+    ) -> ApplicationFuture<'_, MappingStateSnapshot> {
+        self.mappings.revert(command)
     }
 }

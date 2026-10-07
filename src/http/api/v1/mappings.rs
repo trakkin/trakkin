@@ -1,285 +1,176 @@
-use axum::{
-    Json, Router,
-    body::Body,
-    extract::{
-        Path, Query, State,
-        rejection::{JsonRejection, QueryRejection},
-    },
-    http::{
-        HeaderMap, HeaderValue, StatusCode,
-        header::{CONTENT_LENGTH, CONTENT_TYPE, ETAG},
-    },
-    response::{IntoResponse, Response},
-    routing::{get, put},
-};
-use futures_util::TryStreamExt;
-use time::OffsetDateTime;
-use tokio_util::io::{ReaderStream, StreamReader};
-use uuid::Uuid;
-
+use super::support::HttpState;
 use crate::{
+    application::error::ApplicationError,
     application::mappings::{
-        CreateLocalMapping, CreateRemoteMappingSource, CreateUploadedMappingSource,
-        MappingContentReader, QueryMappings, RefreshRemoteMappingSource, RemoveLocalMapping,
-        RemoveMappingSource, ReorderMappingSources, UpdateLocalMapping, UpdateMappingSource,
+        ChangeMappingSource, DecideMapping, DeleteMapping, QueryMappings, SaveMapping,
+        SaveMappingSource,
     },
     http::{
         dto::mappings::{
-            CreateRemoteMappingSourceRequest, CreateUploadedMappingSourceParameters,
-            MappingPageResponse, MappingQueryParameters, MappingStateResponse,
-            ReorderMappingSourcesRequest, UpdateMappingSourceRequest, WriteLocalMappingRequest,
+            DecideMappingRequest, DeleteMappingRequest, MappingPageResponse,
+            MappingQueryParameters, MappingResultResponse, MappingSourceResponse,
+            MappingSourcesResponse, MappingStateResponse, PreviewMappingRequest,
+            SaveMappingRequest, SaveMappingSourceRequest,
         },
         error::{ErrorResponse, HttpError},
     },
 };
-
-use super::support::{HttpState, generate_uuid};
+use axum::{
+    Json, Router,
+    extract::{
+        DefaultBodyLimit, Path, Query, State,
+        rejection::{JsonRejection, QueryRejection},
+    },
+    routing::{delete, get, post},
+};
 
 pub(super) fn router() -> Router<HttpState> {
     Router::new()
-        .route("/api/v1/mapping-sources", get(mapping_state))
+        .route("/api/v1/mappings/state", get(mapping_state))
         .route(
-            "/api/v1/mapping-sources/uploads",
-            axum::routing::post(create_uploaded_mapping_source),
+            "/api/v1/mappings/sources",
+            get(mapping_sources).post(create_mapping_source),
         )
         .route(
-            "/api/v1/mapping-sources/remotes",
-            axum::routing::post(create_remote_mapping_source),
+            "/api/v1/mappings/sources/{source_id}",
+            axum::routing::put(update_mapping_source).delete(delete_mapping_source),
         )
         .route(
-            "/api/v1/mapping-sources/order",
-            put(reorder_mapping_sources),
+            "/api/v1/mappings/sources/{source_id}/refresh",
+            post(refresh_mapping_source),
         )
-        .route(
-            "/api/v1/mapping-sources/{source_id}",
-            axum::routing::patch(update_mapping_source).delete(remove_mapping_source),
-        )
-        .route(
-            "/api/v1/mapping-sources/{source_id}/content",
-            get(read_mapping_source_content),
-        )
-        .route(
-            "/api/v1/mapping-sources/{source_id}/refresh",
-            axum::routing::post(refresh_remote_mapping_source),
-        )
-        .route(
-            "/api/v1/mappings/local",
-            axum::routing::post(create_local_mapping),
-        )
-        .route(
-            "/api/v1/mappings/local/{statement_id}",
-            put(update_local_mapping).delete(remove_local_mapping),
-        )
-        .route("/api/v1/mappings", get(query_mappings))
+        .route("/api/v1/mappings", get(query_mappings).post(save_mapping))
+        .route("/api/v1/mappings/preview", post(preview_mapping))
+        .route("/api/v1/mappings/{claim_id}/decision", post(decide_mapping))
+        .route("/api/v1/mappings/{claim_id}/revert", post(revert_mapping))
+        .route("/api/v1/mappings/{claim_id}", delete(delete_mapping))
+        .layer(DefaultBodyLimit::max(3 * 1024 * 1024))
 }
 
-#[utoipa::path(get, path = "/api/v1/mapping-sources", responses((status = 200, body = MappingStateResponse), (status = 500, body = ErrorResponse)), tag = "mappings")]
+#[utoipa::path(get, path = "/api/v1/mappings/state", responses((status = 200, body = MappingStateResponse), (status = 500, body = ErrorResponse)), tag = "mappings")]
 pub(super) async fn mapping_state(
     State(state): State<HttpState>,
 ) -> Result<Json<MappingStateResponse>, HttpError> {
-    Ok(Json(MappingStateResponse::from_snapshot(
+    Ok(Json(MappingStateResponse::from(
         state.application.mapping_state().await?,
-    )?))
+    )))
 }
 
-#[utoipa::path(post, path = "/api/v1/mapping-sources/uploads", params(CreateUploadedMappingSourceParameters), request_body(content = String, content_type = "text/plain"), responses((status = 201, body = MappingStateResponse), (status = 400, body = ErrorResponse), (status = 409, body = ErrorResponse), (status = 422, body = ErrorResponse), (status = 500, body = ErrorResponse)), tag = "mappings")]
-pub(super) async fn create_uploaded_mapping_source(
+#[utoipa::path(get, path = "/api/v1/mappings/sources", responses((status = 200, body = MappingSourcesResponse), (status = 500, body = ErrorResponse)), tag = "mappings")]
+pub(super) async fn mapping_sources(
     State(state): State<HttpState>,
-    parameters: Result<Query<CreateUploadedMappingSourceParameters>, QueryRejection>,
-    headers: HeaderMap,
-    body: Body,
-) -> Result<(StatusCode, Json<MappingStateResponse>), HttpError> {
-    let Query(parameters) =
-        parameters.map_err(|_| HttpError::invalid_request("query parameters are invalid"))?;
-    let snapshot = state
-        .application
-        .create_uploaded_mapping_source(
-            CreateUploadedMappingSource {
-                source_id: generate_uuid()?,
-                source_key: parameters.source_key,
-                display_name: parameters.display_name,
-                enabled: parameters.enabled,
-                created_at: OffsetDateTime::now_utc(),
-            },
-            mapping_content_reader(&headers, body)?,
-        )
-        .await?;
-    Ok((
-        StatusCode::CREATED,
-        Json(MappingStateResponse::from_snapshot(snapshot)?),
+) -> Result<Json<MappingSourcesResponse>, HttpError> {
+    let snapshot = state.application.mapping_sources().await?;
+    let sources = snapshot
+        .sources
+        .into_iter()
+        .map(MappingSourceResponse::try_from)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| ApplicationError::internal("mapping source timestamp is invalid"))?;
+    Ok(Json(MappingSourcesResponse {
+        fingerprint: snapshot.fingerprint,
+        sources,
+    }))
+}
+
+fn source_command(id: Option<String>, body: SaveMappingSourceRequest) -> SaveMappingSource {
+    SaveMappingSource {
+        id,
+        expected_fingerprint: body.expected_fingerprint,
+        display_name: body.display_name,
+        url: body.url,
+        branch: body.branch,
+        poll_interval_seconds: body.poll_interval_seconds,
+        enabled: body.enabled,
+    }
+}
+
+#[utoipa::path(post, path = "/api/v1/mappings/sources", request_body = SaveMappingSourceRequest, responses((status = 200, body = MappingStateResponse), (status = 400, body = ErrorResponse), (status = 409, body = ErrorResponse)), tag = "mappings")]
+pub(super) async fn create_mapping_source(
+    State(state): State<HttpState>,
+    body: Result<Json<SaveMappingSourceRequest>, JsonRejection>,
+) -> Result<Json<MappingStateResponse>, HttpError> {
+    let Json(body) = body.map_err(invalid_body)?;
+    Ok(Json(
+        state
+            .application
+            .save_mapping_source(source_command(None, body))
+            .await?
+            .into(),
     ))
 }
 
-#[utoipa::path(post, path = "/api/v1/mapping-sources/remotes", request_body = CreateRemoteMappingSourceRequest, responses((status = 201, body = MappingStateResponse), (status = 400, body = ErrorResponse), (status = 409, body = ErrorResponse), (status = 422, body = ErrorResponse), (status = 502, body = ErrorResponse), (status = 500, body = ErrorResponse)), tag = "mappings")]
-pub(super) async fn create_remote_mapping_source(
-    State(state): State<HttpState>,
-    payload: Result<Json<CreateRemoteMappingSourceRequest>, JsonRejection>,
-) -> Result<(StatusCode, Json<MappingStateResponse>), HttpError> {
-    let Json(payload) =
-        payload.map_err(|_| HttpError::invalid_request("request body is invalid"))?;
-    let snapshot = state
-        .application
-        .create_remote_mapping_source(CreateRemoteMappingSource {
-            source_id: generate_uuid()?,
-            source_key: payload.source_key,
-            display_name: payload.display_name,
-            remote_url: payload.remote_url,
-            enabled: payload.enabled,
-            created_at: OffsetDateTime::now_utc(),
-        })
-        .await?;
-    Ok((
-        StatusCode::CREATED,
-        Json(MappingStateResponse::from_snapshot(snapshot)?),
-    ))
-}
-
-#[utoipa::path(patch, path = "/api/v1/mapping-sources/{source_id}", params(("source_id" = Uuid, Path)), request_body = UpdateMappingSourceRequest, responses((status = 200, body = MappingStateResponse), (status = 400, body = ErrorResponse), (status = 404, body = ErrorResponse), (status = 409, body = ErrorResponse), (status = 422, body = ErrorResponse), (status = 500, body = ErrorResponse)), tag = "mappings")]
+#[utoipa::path(put, path = "/api/v1/mappings/sources/{source_id}", params(("source_id" = String, Path)), request_body = SaveMappingSourceRequest, responses((status = 200, body = MappingStateResponse), (status = 400, body = ErrorResponse), (status = 409, body = ErrorResponse)), tag = "mappings")]
 pub(super) async fn update_mapping_source(
     State(state): State<HttpState>,
-    Path(source_id): Path<Uuid>,
-    payload: Result<Json<UpdateMappingSourceRequest>, JsonRejection>,
+    Path(source_id): Path<String>,
+    body: Result<Json<SaveMappingSourceRequest>, JsonRejection>,
 ) -> Result<Json<MappingStateResponse>, HttpError> {
-    let Json(payload) =
-        payload.map_err(|_| HttpError::invalid_request("request body is invalid"))?;
-    let snapshot = state
-        .application
-        .update_mapping_source(UpdateMappingSource {
-            source_id,
-            display_name: payload.display_name,
-            enabled: payload.enabled,
-            updated_at: OffsetDateTime::now_utc(),
-        })
-        .await?;
-    Ok(Json(MappingStateResponse::from_snapshot(snapshot)?))
-}
-
-#[utoipa::path(post, path = "/api/v1/mappings/local", request_body = WriteLocalMappingRequest, responses((status = 201, body = MappingStateResponse), (status = 400, body = ErrorResponse), (status = 422, body = ErrorResponse), (status = 500, body = ErrorResponse)), tag = "mappings")]
-pub(super) async fn create_local_mapping(
-    State(state): State<HttpState>,
-    payload: Result<Json<WriteLocalMappingRequest>, JsonRejection>,
-) -> Result<(StatusCode, Json<MappingStateResponse>), HttpError> {
-    let Json(payload) =
-        payload.map_err(|_| HttpError::invalid_request("request body is invalid"))?;
-    let snapshot = state
-        .application
-        .create_local_mapping(CreateLocalMapping {
-            record: payload.record,
-            created_at: OffsetDateTime::now_utc(),
-        })
-        .await?;
-    Ok((
-        StatusCode::CREATED,
-        Json(MappingStateResponse::from_snapshot(snapshot)?),
+    let Json(body) = body.map_err(invalid_body)?;
+    Ok(Json(
+        state
+            .application
+            .save_mapping_source(source_command(Some(source_id), body))
+            .await?
+            .into(),
     ))
 }
 
-#[utoipa::path(put, path = "/api/v1/mappings/local/{statement_id}", params(("statement_id" = String, Path)), request_body = WriteLocalMappingRequest, responses((status = 200, body = MappingStateResponse), (status = 400, body = ErrorResponse), (status = 404, body = ErrorResponse), (status = 422, body = ErrorResponse), (status = 500, body = ErrorResponse)), tag = "mappings")]
-pub(super) async fn update_local_mapping(
+#[utoipa::path(delete, path = "/api/v1/mappings/sources/{source_id}", params(("source_id" = String, Path)), request_body = DeleteMappingRequest, responses((status = 200, body = MappingStateResponse), (status = 400, body = ErrorResponse), (status = 409, body = ErrorResponse)), tag = "mappings")]
+pub(super) async fn delete_mapping_source(
     State(state): State<HttpState>,
-    Path(statement_id): Path<String>,
-    payload: Result<Json<WriteLocalMappingRequest>, JsonRejection>,
+    Path(source_id): Path<String>,
+    body: Result<Json<DeleteMappingRequest>, JsonRejection>,
 ) -> Result<Json<MappingStateResponse>, HttpError> {
-    let Json(payload) =
-        payload.map_err(|_| HttpError::invalid_request("request body is invalid"))?;
-    let snapshot = state
-        .application
-        .update_local_mapping(UpdateLocalMapping {
-            statement_id,
-            record: payload.record,
-            updated_at: OffsetDateTime::now_utc(),
-        })
-        .await?;
-    Ok(Json(MappingStateResponse::from_snapshot(snapshot)?))
+    let Json(body) = body.map_err(invalid_body)?;
+    Ok(Json(
+        state
+            .application
+            .delete_mapping_source(ChangeMappingSource {
+                id: source_id,
+                expected_fingerprint: body.expected_fingerprint,
+            })
+            .await?
+            .into(),
+    ))
 }
 
-#[utoipa::path(delete, path = "/api/v1/mappings/local/{statement_id}", params(("statement_id" = String, Path)), responses((status = 200, body = MappingStateResponse), (status = 404, body = ErrorResponse), (status = 500, body = ErrorResponse)), tag = "mappings")]
-pub(super) async fn remove_local_mapping(
+#[utoipa::path(post, path = "/api/v1/mappings/sources/{source_id}/refresh", params(("source_id" = String, Path)), request_body = DeleteMappingRequest, responses((status = 200, body = MappingStateResponse), (status = 400, body = ErrorResponse), (status = 409, body = ErrorResponse)), tag = "mappings")]
+pub(super) async fn refresh_mapping_source(
     State(state): State<HttpState>,
-    Path(statement_id): Path<String>,
+    Path(source_id): Path<String>,
+    body: Result<Json<DeleteMappingRequest>, JsonRejection>,
 ) -> Result<Json<MappingStateResponse>, HttpError> {
-    let snapshot = state
-        .application
-        .remove_local_mapping(RemoveLocalMapping {
-            statement_id,
-            removed_at: OffsetDateTime::now_utc(),
-        })
-        .await?;
-    Ok(Json(MappingStateResponse::from_snapshot(snapshot)?))
+    let Json(body) = body.map_err(invalid_body)?;
+    Ok(Json(
+        state
+            .application
+            .refresh_mapping_source(ChangeMappingSource {
+                id: source_id,
+                expected_fingerprint: body.expected_fingerprint,
+            })
+            .await?
+            .into(),
+    ))
 }
 
-#[utoipa::path(put, path = "/api/v1/mapping-sources/order", request_body = ReorderMappingSourcesRequest, responses((status = 200, body = MappingStateResponse), (status = 400, body = ErrorResponse), (status = 409, body = ErrorResponse), (status = 422, body = ErrorResponse), (status = 500, body = ErrorResponse)), tag = "mappings")]
-pub(super) async fn reorder_mapping_sources(
+#[utoipa::path(post, path = "/api/v1/mappings/{claim_id}/revert", params(("claim_id" = String, Path)), request_body = DeleteMappingRequest, responses((status = 200, body = MappingStateResponse), (status = 400, body = ErrorResponse), (status = 409, body = ErrorResponse)), tag = "mappings")]
+pub(super) async fn revert_mapping(
     State(state): State<HttpState>,
-    payload: Result<Json<ReorderMappingSourcesRequest>, JsonRejection>,
+    Path(claim_id): Path<String>,
+    body: Result<Json<DeleteMappingRequest>, JsonRejection>,
 ) -> Result<Json<MappingStateResponse>, HttpError> {
-    let Json(payload) =
-        payload.map_err(|_| HttpError::invalid_request("request body is invalid"))?;
-    let snapshot = state
-        .application
-        .reorder_mapping_sources(ReorderMappingSources {
-            source_ids: payload.source_ids,
-            updated_at: OffsetDateTime::now_utc(),
-        })
-        .await?;
-    Ok(Json(MappingStateResponse::from_snapshot(snapshot)?))
-}
-
-#[utoipa::path(delete, path = "/api/v1/mapping-sources/{source_id}", params(("source_id" = Uuid, Path)), responses((status = 200, body = MappingStateResponse), (status = 404, body = ErrorResponse), (status = 422, body = ErrorResponse), (status = 500, body = ErrorResponse)), tag = "mappings")]
-pub(super) async fn remove_mapping_source(
-    State(state): State<HttpState>,
-    Path(source_id): Path<Uuid>,
-) -> Result<Json<MappingStateResponse>, HttpError> {
-    let snapshot = state
-        .application
-        .remove_mapping_source(RemoveMappingSource {
-            source_id,
-            removed_at: OffsetDateTime::now_utc(),
-        })
-        .await?;
-    Ok(Json(MappingStateResponse::from_snapshot(snapshot)?))
-}
-
-#[utoipa::path(post, path = "/api/v1/mapping-sources/{source_id}/refresh", params(("source_id" = Uuid, Path)), responses((status = 200, body = MappingStateResponse), (status = 404, body = ErrorResponse), (status = 422, body = ErrorResponse), (status = 502, body = ErrorResponse), (status = 500, body = ErrorResponse)), tag = "mappings")]
-pub(super) async fn refresh_remote_mapping_source(
-    State(state): State<HttpState>,
-    Path(source_id): Path<Uuid>,
-) -> Result<Json<MappingStateResponse>, HttpError> {
-    let snapshot = state
-        .application
-        .refresh_remote_mapping_source(RefreshRemoteMappingSource {
-            source_id,
-            refreshed_at: OffsetDateTime::now_utc(),
-        })
-        .await?;
-    Ok(Json(MappingStateResponse::from_snapshot(snapshot)?))
-}
-
-#[utoipa::path(get, path = "/api/v1/mapping-sources/{source_id}/content", params(("source_id" = Uuid, Path)), responses((status = 200, content_type = "text/plain", body = String), (status = 404, body = ErrorResponse), (status = 500, body = ErrorResponse)), tag = "mappings")]
-pub(super) async fn read_mapping_source_content(
-    State(state): State<HttpState>,
-    Path(source_id): Path<Uuid>,
-) -> Result<Response, HttpError> {
-    let content = state
-        .application
-        .read_mapping_source_content(source_id)
-        .await?;
-    let mut response = Body::from_stream(ReaderStream::new(content.reader)).into_response();
-    response.headers_mut().insert(
-        CONTENT_TYPE,
-        HeaderValue::from_static("text/plain; charset=utf-8"),
-    );
-    response.headers_mut().insert(
-        CONTENT_LENGTH,
-        HeaderValue::from_str(&content.byte_length.to_string())
-            .map_err(|_| HttpError::invalid_request("mapping content length is invalid"))?,
-    );
-    response.headers_mut().insert(
-        ETAG,
-        HeaderValue::from_str(&format!("\"{}\"", content.content_hash))
-            .map_err(|_| HttpError::invalid_request("mapping content hash is invalid"))?,
-    );
-    Ok(response)
+    let Json(body) = body.map_err(invalid_body)?;
+    Ok(Json(
+        state
+            .application
+            .revert_mapping(DeleteMapping {
+                claim_id,
+                expected_fingerprint: body.expected_fingerprint,
+            })
+            .await?
+            .into(),
+    ))
 }
 
 #[utoipa::path(get, path = "/api/v1/mappings", params(MappingQueryParameters), responses((status = 200, body = MappingPageResponse), (status = 400, body = ErrorResponse), (status = 409, body = ErrorResponse), (status = 500, body = ErrorResponse)), tag = "mappings")]
@@ -292,17 +183,14 @@ pub(super) async fn query_mappings(
     let page = state
         .application
         .query_mappings(QueryMappings {
-            expected_chain_fingerprint: parameters.expected_chain_fingerprint,
+            expected_fingerprint: parameters.expected_fingerprint,
             search: parameters.search,
             canonical_statement: parameters.canonical_statement,
-            statement_id: parameters.statement_id,
-            relation_key: parameters.relation_key,
+            claim_id: parameters.claim_id,
             operator: parameters.operator.map(Into::into),
-            source_key: parameters.source_key,
             endpoint: parameters.endpoint,
             annotation_name: parameters.annotation_name,
             annotation_value: parameters.annotation_value,
-            include_shadowed: parameters.include_shadowed,
             limit: parameters.limit.unwrap_or(50),
             cursor: parameters.cursor,
         })
@@ -310,23 +198,75 @@ pub(super) async fn query_mappings(
     Ok(Json(MappingPageResponse::from(page)))
 }
 
-fn mapping_content_reader(
-    headers: &HeaderMap,
-    body: Body,
-) -> Result<MappingContentReader, HttpError> {
-    let content_type = headers
-        .get(CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or_default();
-    if !content_type.eq_ignore_ascii_case("text/plain")
-        && !content_type.to_ascii_lowercase().starts_with("text/plain;")
-    {
-        return Err(HttpError::invalid_field(
-            "contentType",
-            "unsupported_content_type",
-            "mapping content must use text/plain",
-        ));
-    }
-    let stream = body.into_data_stream().map_err(std::io::Error::other);
-    Ok(Box::pin(StreamReader::new(stream)))
+#[utoipa::path(post, path = "/api/v1/mappings/preview", request_body = PreviewMappingRequest, responses((status = 200, body = MappingResultResponse), (status = 400, body = ErrorResponse)), tag = "mappings")]
+pub(super) async fn preview_mapping(
+    State(state): State<HttpState>,
+    body: Result<Json<PreviewMappingRequest>, JsonRejection>,
+) -> Result<Json<MappingResultResponse>, HttpError> {
+    let Json(body) = body.map_err(invalid_body)?;
+    Ok(Json(
+        state.application.preview_mapping(body.record).await?.into(),
+    ))
+}
+
+#[utoipa::path(post, path = "/api/v1/mappings", request_body = SaveMappingRequest, responses((status = 200, body = MappingStateResponse), (status = 400, body = ErrorResponse), (status = 409, body = ErrorResponse)), tag = "mappings")]
+pub(super) async fn save_mapping(
+    State(state): State<HttpState>,
+    body: Result<Json<SaveMappingRequest>, JsonRejection>,
+) -> Result<Json<MappingStateResponse>, HttpError> {
+    let Json(body) = body.map_err(invalid_body)?;
+    Ok(Json(
+        state
+            .application
+            .save_mapping(SaveMapping {
+                expected_fingerprint: body.expected_fingerprint,
+                record: body.record,
+                replaces: body.replaces,
+            })
+            .await?
+            .into(),
+    ))
+}
+
+#[utoipa::path(post, path = "/api/v1/mappings/{claim_id}/decision", params(("claim_id" = String, Path)), request_body = DecideMappingRequest, responses((status = 200, body = MappingStateResponse), (status = 400, body = ErrorResponse), (status = 409, body = ErrorResponse)), tag = "mappings")]
+pub(super) async fn decide_mapping(
+    State(state): State<HttpState>,
+    Path(claim_id): Path<String>,
+    body: Result<Json<DecideMappingRequest>, JsonRejection>,
+) -> Result<Json<MappingStateResponse>, HttpError> {
+    let Json(body) = body.map_err(invalid_body)?;
+    Ok(Json(
+        state
+            .application
+            .decide_mapping(DecideMapping {
+                expected_fingerprint: body.expected_fingerprint,
+                claim_id,
+                rejected: body.rejected,
+            })
+            .await?
+            .into(),
+    ))
+}
+
+#[utoipa::path(delete, path = "/api/v1/mappings/{claim_id}", params(("claim_id" = String, Path)), request_body = DeleteMappingRequest, responses((status = 200, body = MappingStateResponse), (status = 400, body = ErrorResponse), (status = 409, body = ErrorResponse)), tag = "mappings")]
+pub(super) async fn delete_mapping(
+    State(state): State<HttpState>,
+    Path(claim_id): Path<String>,
+    body: Result<Json<DeleteMappingRequest>, JsonRejection>,
+) -> Result<Json<MappingStateResponse>, HttpError> {
+    let Json(body) = body.map_err(invalid_body)?;
+    Ok(Json(
+        state
+            .application
+            .delete_mapping(DeleteMapping {
+                expected_fingerprint: body.expected_fingerprint,
+                claim_id,
+            })
+            .await?
+            .into(),
+    ))
+}
+
+fn invalid_body(_: JsonRejection) -> HttpError {
+    HttpError::invalid_request("mapping request body is invalid")
 }

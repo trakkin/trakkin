@@ -125,6 +125,10 @@ async fn run_configured(configuration: Configuration) -> Result<(), MainError> {
         Some(database_url) => Host::connect(database_url, started_at).await?,
         None => start_embedded_host(&configuration.data_directory, started_at).await?,
     };
+    let host_result = match configuration.mapping_metadata {
+        Some(path) => host_result.with_mapping_metadata(path),
+        None => host_result,
+    };
     let runtime = host_result
         .into_runtime(
             &configuration.data_directory,
@@ -241,6 +245,7 @@ struct Configuration {
     database_url: Option<String>,
     provider_runtime_directory: PathBuf,
     connection_master_key: ConnectionMasterKey,
+    mapping_metadata: Option<PathBuf>,
 }
 
 impl Configuration {
@@ -257,6 +262,9 @@ impl Configuration {
         let database_url = env::var("TRAKKIN_DATABASE_URL")
             .ok()
             .filter(|value| !value.trim().is_empty());
+        let mapping_metadata = env::var_os("TRAKKIN_MAPPINGS_METADATA")
+            .map(|path| absolute_path(PathBuf::from(path)))
+            .transpose()?;
         let provider_runtime_directory = match env::var_os("TRAKKIN_PROVIDER_RUNTIME_DIR") {
             Some(path) => absolute_path(PathBuf::from(path))?,
             None => create_default_provider_runtime_directory()?,
@@ -274,6 +282,7 @@ impl Configuration {
             database_url,
             provider_runtime_directory,
             connection_master_key,
+            mapping_metadata,
         })
     }
 }

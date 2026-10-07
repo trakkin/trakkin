@@ -16,10 +16,11 @@ use crate::http::{
         },
         logs::{LogEntryResponse, LogPageResponse},
         mappings::{
-            CreateRemoteMappingSourceRequest, MappingOperatorParameter, MappingPageResponse,
-            MappingResultResponse, MappingSourceKindValue, MappingSourceResponse,
-            MappingStateResponse, ReorderMappingSourcesRequest, UpdateMappingSourceRequest,
-            WriteLocalMappingRequest,
+            DecideMappingRequest, DeleteMappingRequest, MappingOperatorParameter,
+            MappingPageResponse, MappingResultResponse, MappingSourceKindResponse,
+            MappingSourceResponse, MappingSourcesResponse, MappingStateResponse,
+            MappingStatusResponse, PreviewMappingRequest, SaveMappingRequest,
+            SaveMappingSourceRequest,
         },
         providers::{
             AvailableProviderResponse, ChangeProviderUpdatePolicyRequest, InstallProviderRequest,
@@ -62,17 +63,17 @@ use super::{connections, logs, mappings, providers, workspaces};
         logs::list_logs,
         logs::stream_logs,
         mappings::mapping_state,
-        mappings::create_uploaded_mapping_source,
-        mappings::create_remote_mapping_source,
+        mappings::mapping_sources,
+        mappings::create_mapping_source,
         mappings::update_mapping_source,
-        mappings::create_local_mapping,
-        mappings::update_local_mapping,
-        mappings::remove_local_mapping,
-        mappings::reorder_mapping_sources,
-        mappings::remove_mapping_source,
-        mappings::refresh_remote_mapping_source,
-        mappings::read_mapping_source_content,
+        mappings::delete_mapping_source,
+        mappings::refresh_mapping_source,
+        mappings::revert_mapping,
         mappings::query_mappings,
+        mappings::preview_mapping,
+        mappings::save_mapping,
+        mappings::decide_mapping,
+        mappings::delete_mapping,
         providers::list_provider_sources,
         providers::trust_provider_source,
         providers::refresh_provider_source,
@@ -126,13 +127,16 @@ use super::{connections, logs, mappings, providers, workspaces};
         RetryAfterResponse,
         LogPageResponse,
         LogEntryResponse,
-        UpdateMappingSourceRequest,
-        CreateRemoteMappingSourceRequest,
-        ReorderMappingSourcesRequest,
-        WriteLocalMappingRequest,
-        MappingSourceKindValue,
-        MappingSourceResponse,
+        PreviewMappingRequest,
+        SaveMappingRequest,
+        DecideMappingRequest,
+        DeleteMappingRequest,
+        MappingStatusResponse,
         MappingStateResponse,
+        MappingSourceResponse,
+        MappingSourcesResponse,
+        MappingSourceKindResponse,
+        SaveMappingSourceRequest,
         MappingResultResponse,
         MappingPageResponse,
         MappingOperatorParameter,
@@ -212,6 +216,21 @@ mod tests {
     fn document_resolves_every_local_reference() {
         let document = serde_json::to_value(super::openapi()).expect("OpenAPI serializes");
         assert_references(&document, &document);
+        assert!(
+            document["paths"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .filter(|path| path.starts_with("/api/v1/mappings"))
+                .all(|path| !path.contains("/export")
+                    && !path.contains("/archive")
+                    && !path.contains("/import"))
+        );
+        assert!(
+            document["components"]["schemas"]
+                .get("MappingExportResponse")
+                .is_none()
+        );
     }
 
     fn assert_references(value: &Value, document: &Value) {

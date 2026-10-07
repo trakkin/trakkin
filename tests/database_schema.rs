@@ -1,7 +1,25 @@
 #![cfg(feature = "embedded-database")]
 
+use serde_json::json;
+use std::sync::Arc;
 use tempfile::tempdir;
-use trakkin::database::DatabaseRuntime;
+use tokio::process::Command;
+use trakkin::{
+    application::{
+        acquisition::{BeginRead, PublicationRepository},
+        mappings::{
+            ChangeMappingSource, DecideMapping, DeleteMapping, MappingApi, ResolveMappingUnits,
+            SaveMapping, SaveMappingSource,
+        },
+    },
+    database::DatabaseRuntime,
+    infrastructure::{
+        catalog_publication::PostgresPublicationRepository, mapping_updates::MappingUpdates,
+        mappings::MappingStore,
+    },
+};
+use trakkin_mappings_corpus::git::RepositoryStore;
+use trakkin_mappings_language::{Decisions, parse_record};
 
 #[path = "support/catalog_publication.rs"]
 #[expect(
@@ -9,16 +27,16 @@ use trakkin::database::DatabaseRuntime;
     reason = "Shared fixture IDs are used by other integration tests"
 )]
 mod catalog_publication_support;
-
 use catalog_publication_support::{
     READ_ATTEMPT_ID, TASK_ATTEMPT_ID, TASK_ID, TASK_OWNER_ID, seed_catalog_read, timestamp,
 };
-use serde_json::json;
-use trakkin::{
-    application::acquisition::{BeginRead, PublicationRepository},
-    infrastructure::catalog_publication::PostgresPublicationRepository,
-};
-use uuid::Uuid;
+
+const ORIGINAL: &str = "com.imdb://title/tt0133093 <=> org.themoviedb://movie/603";
+const CORRECTION: &str = "com.imdb://title/tt0133093 <=> org.themoviedb://movie/604";
+
+#[path = "support/mapping_git.rs"]
+mod mapping_git;
+use mapping_git::GitServer;
 
 #[tokio::test]
 async fn fresh_database_starts() {
@@ -26,11 +44,366 @@ async fn fresh_database_starts() {
     let database = DatabaseRuntime::start(directory.path())
         .await
         .expect("fresh database starts");
-
     database
         .shutdown()
         .await
         .expect("fresh database shuts down");
+}
+
+#[tokio::test]
+async fn git_sources_fetch_exact_commits_and_preserve_last_good_and_local_decisions() {
+    let directory = tempdir().unwrap();
+    let remote_directory = tempdir().unwrap();
+    let server = GitServer::open(remote_directory.path()).await;
+    let first = server.commit(ORIGINAL).await;
+    let database = DatabaseRuntime::start(directory.path()).await.unwrap();
+    let root = directory.path().join("mapping-repositories");
+    let store = Arc::new(
+        MappingStore::open(database.pool(), &root, None)
+            .await
+            .unwrap(),
+    );
+    let initial = store.sources().await.unwrap();
+    assert_eq!(initial.sources.len(), 1);
+    assert_eq!(initial.sources[0].id, "local");
+    assert_eq!(
+        initial.sources[0].repository_path.as_deref(),
+        root.join("local").to_str()
+    );
+    let command = SaveMappingSource {
+        expected_fingerprint: initial.fingerprint,
+        id: None,
+        display_name: "Community".into(),
+        url: server.remote.clone(),
+        branch: "main".into(),
+        poll_interval_seconds: 60,
+        enabled: true,
+    };
+    store.save_source(command.clone()).await.unwrap();
+    let source_id = store.sources().await.unwrap().sources[1].id.clone();
+    let updates = Arc::new(MappingUpdates::new(store.clone()));
+    let now = time::OffsetDateTime::now_utc();
+    updates.poll_due(now).await.unwrap();
+    assert_eq!(
+        store.sources().await.unwrap().sources[1]
+            .revision
+            .as_deref(),
+        Some(first.as_str())
+    );
+    let imported = store.state().await.unwrap();
+    assert_eq!(imported.records, 1);
+    let original_id = parse_record(ORIGINAL)
+        .unwrap()
+        .statement
+        .claim_id()
+        .to_string();
+    let suppressed = store
+        .decide(DecideMapping {
+            expected_fingerprint: imported.fingerprint,
+            claim_id: original_id.clone(),
+            rejected: true,
+        })
+        .await
+        .unwrap();
+    let local_claim = "com.imdb://title/tt2 <=> org.themoviedb://movie/2";
+    let saved = store
+        .save(SaveMapping {
+            expected_fingerprint: suppressed.fingerprint,
+            record: local_claim.into(),
+            replaces: None,
+        })
+        .await
+        .unwrap();
+    updates
+        .poll_due(now + time::Duration::seconds(61))
+        .await
+        .unwrap();
+    assert_eq!(store.state().await.unwrap(), saved);
+    let second = server.commit(&format!("{ORIGINAL}\n{CORRECTION}")).await;
+    updates
+        .poll_due(now + time::Duration::seconds(122))
+        .await
+        .unwrap();
+    let refreshed = store.state().await.unwrap();
+    assert_eq!(
+        (refreshed.records, refreshed.rejected, refreshed.resolved),
+        (3, 1, 2)
+    );
+    let repositories = RepositoryStore::open(&root).unwrap();
+    let local = repositories.local().await.unwrap().current().await.unwrap();
+    assert_eq!(local.corpus.entries().count(), 2);
+    assert!(
+        local
+            .corpus
+            .decisions()
+            .unwrap()
+            .documents()
+            .1
+            .contains("#@note Explicitly suppressed")
+    );
+    let reopened = Arc::new(
+        MappingStore::open(database.pool(), &root, None)
+            .await
+            .unwrap(),
+    );
+    assert_eq!(reopened.state().await.unwrap(), refreshed);
+    std::fs::write(
+        server.source.path().join("mappings/v1/invalid.trk"),
+        "not a canonical corpus",
+    )
+    .unwrap();
+    for arguments in [
+        vec!["add", "mappings"],
+        vec!["commit", "-m", "Invalid corpus"],
+    ] {
+        let output = Command::new("git")
+            .current_dir(server.source.path())
+            .args([
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@localhost",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(arguments)
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success());
+    }
+    updates
+        .poll_due(now + time::Duration::seconds(183))
+        .await
+        .unwrap();
+    let failed = store.sources().await.unwrap().sources.remove(1);
+    assert_eq!(failed.revision.as_deref(), Some(second.as_str()));
+    assert_eq!(failed.consecutive_failures, 1);
+    assert!(failed.last_error.is_some());
+    assert_eq!(store.state().await.unwrap(), refreshed);
+    assert_eq!(
+        repositories
+            .upstream(&source_id)
+            .unwrap()
+            .read(&first)
+            .await
+            .unwrap()
+            .corpus
+            .entries()
+            .count(),
+        1
+    );
+    Command::new("git")
+        .current_dir(server.source.path())
+        .args(["reset", "--soft", &second])
+        .output()
+        .await
+        .unwrap();
+    Command::new("git")
+        .current_dir(server.source.path())
+        .args(["restore", "--staged", ":/"])
+        .output()
+        .await
+        .unwrap();
+    std::fs::remove_file(server.source.path().join("mappings/v1/invalid.trk")).unwrap();
+    let disabled = store
+        .save_source(SaveMappingSource {
+            expected_fingerprint: refreshed.fingerprint,
+            id: Some(source_id.clone()),
+            enabled: false,
+            ..command.clone()
+        })
+        .await
+        .unwrap();
+    assert_eq!((disabled.records, disabled.rejected), (2, 1));
+    updates
+        .poll_due(now + time::Duration::days(8))
+        .await
+        .unwrap();
+    assert!(repositories.upstream(&source_id).unwrap().path().exists());
+    let enabled = store
+        .save_source(SaveMappingSource {
+            expected_fingerprint: disabled.fingerprint,
+            id: Some(source_id.clone()),
+            ..command.clone()
+        })
+        .await
+        .unwrap();
+    server.service.pause.send_replace(true);
+    let pending = {
+        let updates = updates.clone();
+        tokio::spawn(async move { updates.poll_due(time::OffsetDateTime::now_utc()).await })
+    };
+    server.wait_for_fetch().await;
+    let removed = store
+        .delete_source(ChangeMappingSource {
+            id: source_id.clone(),
+            expected_fingerprint: enabled.fingerprint,
+        })
+        .await
+        .unwrap();
+    server.service.pause.send_replace(false);
+    pending.await.unwrap().unwrap();
+    assert_eq!(store.state().await.unwrap(), removed);
+    assert_eq!(store.sources().await.unwrap().sources.len(), 1);
+    assert!(!repositories.upstream(&source_id).unwrap().path().exists());
+    assert!(repositories.local_path().exists());
+    assert!(
+        store
+            .delete_source(ChangeMappingSource {
+                id: "local".into(),
+                expected_fingerprint: removed.fingerprint.clone()
+            })
+            .await
+            .is_err()
+    );
+    let reverted = store
+        .revert(DeleteMapping {
+            claim_id: original_id,
+            expected_fingerprint: removed.fingerprint,
+        })
+        .await
+        .unwrap();
+    assert_eq!(reverted.records, 1);
+    database.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn local_git_recovery_rebuilds_status_and_rejects_external_dirty_writes() {
+    let directory = tempdir().unwrap();
+    let database = DatabaseRuntime::start(directory.path()).await.unwrap();
+    let root = directory.path().join("mapping-repositories");
+    let store = MappingStore::open(database.pool(), &root, None)
+        .await
+        .unwrap();
+    let original_id = parse_record(ORIGINAL)
+        .unwrap()
+        .statement
+        .claim_id()
+        .to_string();
+    let saved = store
+        .save(SaveMapping {
+            expected_fingerprint: store.state().await.unwrap().fingerprint,
+            record: ORIGINAL.into(),
+            replaces: None,
+        })
+        .await
+        .unwrap();
+    let corrected = store
+        .save(SaveMapping {
+            expected_fingerprint: saved.fingerprint.clone(),
+            record: CORRECTION.into(),
+            replaces: Some(original_id.clone()),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        (corrected.records, corrected.active, corrected.rejected),
+        (2, 1, 1)
+    );
+    assert!(
+        store
+            .save(SaveMapping {
+                expected_fingerprint: saved.fingerprint,
+                record: ORIGINAL.into(),
+                replaces: None
+            })
+            .await
+            .is_err()
+    );
+    let repository = RepositoryStore::open(&root).unwrap().local().await.unwrap();
+    let committed = repository.current().await.unwrap();
+    assert_eq!(committed.corpus.entries().count(), 2);
+    assert_eq!(
+        MappingStore::open(database.pool(), &root, None)
+            .await
+            .unwrap()
+            .state()
+            .await
+            .unwrap(),
+        corrected
+    );
+    let matches = store
+        .resolve_units(ResolveMappingUnits {
+            expected_fingerprint: Some(corrected.fingerprint.clone()),
+            unit_keys: vec!["com.imdb://title/tt0133093".into()],
+        })
+        .await
+        .unwrap();
+    assert_eq!(matches.units[0].matches.len(), 1);
+    assert!(
+        matches.units[0].matches[0].right.members[0]
+            .unit_key
+            .ends_with("/604")
+    );
+    std::fs::write(repository.path().join("external.trk"), "do not overwrite").unwrap();
+    assert!(
+        store
+            .save(SaveMapping {
+                expected_fingerprint: corrected.fingerprint.clone(),
+                record: "a://9 <=> b://9".into(),
+                replaces: None
+            })
+            .await
+            .is_err()
+    );
+    assert_eq!(repository.current().await.unwrap().commit, committed.commit);
+    assert_eq!(
+        std::fs::read_to_string(repository.path().join("external.trk")).unwrap(),
+        "do not overwrite"
+    );
+    std::fs::remove_file(repository.path().join("external.trk")).unwrap();
+    let documents = committed.corpus.decisions().unwrap().documents();
+    let interrupted = repository
+        .commit(
+            &committed.commit,
+            Decisions::parse(&format!("{}a://9 <=> b://9\n", documents.0), &documents.1).unwrap(),
+            "Commit before interrupted activation",
+        )
+        .await
+        .unwrap();
+    assert_ne!(interrupted.commit, committed.commit);
+    assert_eq!(interrupted.corpus.entries().count(), 3);
+    let applied: String =
+        sqlx::query_scalar("SELECT revision FROM mapping_sources WHERE id = 'local'")
+            .fetch_one(&database.pool())
+            .await
+            .unwrap();
+    assert_eq!(applied, committed.commit);
+    let recovered = store
+        .refresh_source(ChangeMappingSource {
+            id: "local".into(),
+            expected_fingerprint: corrected.fingerprint,
+        })
+        .await
+        .unwrap();
+    assert_eq!(store.state().await.unwrap(), recovered);
+    assert_eq!(recovered.records, 3);
+    assert_eq!(
+        store.sources().await.unwrap().sources[0]
+            .revision
+            .as_deref(),
+        Some(interrupted.commit.as_str())
+    );
+    assert_eq!(
+        MappingStore::open(database.pool(), &root, None)
+            .await
+            .unwrap()
+            .state()
+            .await
+            .unwrap(),
+        recovered
+    );
+    let conflicting = store
+        .decide(DecideMapping {
+            expected_fingerprint: recovered.fingerprint,
+            claim_id: original_id,
+            rejected: false,
+        })
+        .await
+        .unwrap();
+    assert_eq!(conflicting.conflicting, 2);
+    database.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -50,15 +423,8 @@ async fn staged_catalog_checks_reject_missing_required_upsert_fields() {
         })
         .await
         .expect("catalog read begins");
-
-    let item = json!({
-        "attempt_id": READ_ATTEMPT_ID,
-        "key_namespace": "fixture.item", "key_value": "\\x01",
-        "operation": "upsert", "kind_namespace": "fixture", "kind_name": "episode",
-        "display_name": "Item", "attributes": {}, "batch_sequence": 0, "row_ordinal": 0,
-    });
-    let item_insert = "INSERT INTO staged_catalog_items
-        SELECT * FROM jsonb_populate_record(NULL::staged_catalog_items, $1)";
+    let item = json!({"attempt_id": READ_ATTEMPT_ID,"key_namespace": "fixture.item", "key_value": "\\x01","operation": "upsert", "kind_namespace": "fixture", "kind_name": "episode","display_name": "Item", "attributes": {}, "batch_sequence": 0, "row_ordinal": 0});
+    let item_insert = "INSERT INTO staged_catalog_items SELECT * FROM jsonb_populate_record(NULL::staged_catalog_items, $1)";
     for field in ["kind_namespace", "kind_name", "display_name", "attributes"] {
         let mut invalid = item.clone();
         invalid[field] = serde_json::Value::Null;
@@ -84,24 +450,9 @@ async fn staged_catalog_checks_reject_missing_required_upsert_fields() {
         .execute(&database.pool())
         .await
         .expect("complete item upsert is accepted");
-    sqlx::query(item_insert)
-        .bind(json!({
-            "attempt_id": READ_ATTEMPT_ID,
-            "key_namespace": "fixture.item", "key_value": "\\x02",
-            "operation": "delete", "batch_sequence": 0, "row_ordinal": 1,
-        }))
-        .execute(&database.pool())
-        .await
-        .expect("item delete with no payload is accepted");
-
-    let relation = json!({
-        "attempt_id": READ_ATTEMPT_ID,
-        "key_namespace": "fixture.relation", "key_value": "\\x01",
-        "operation": "upsert", "kind_namespace": "fixture", "kind_name": "group",
-        "order_parts": [], "attributes": {}, "batch_sequence": 0, "row_ordinal": 0,
-    });
-    let relation_insert = "INSERT INTO staged_catalog_relations
-        SELECT * FROM jsonb_populate_record(NULL::staged_catalog_relations, $1)";
+    sqlx::query(item_insert).bind(json!({"attempt_id": READ_ATTEMPT_ID,"key_namespace": "fixture.item", "key_value": "\\x02","operation": "delete", "batch_sequence": 0, "row_ordinal": 1})).execute(&database.pool()).await.expect("item delete with no payload is accepted");
+    let relation = json!({"attempt_id": READ_ATTEMPT_ID,"key_namespace": "fixture.relation", "key_value": "\\x01","operation": "upsert", "kind_namespace": "fixture", "kind_name": "group","order_parts": [], "attributes": {}, "batch_sequence": 0, "row_ordinal": 0});
+    let relation_insert = "INSERT INTO staged_catalog_relations SELECT * FROM jsonb_populate_record(NULL::staged_catalog_relations, $1)";
     for field in ["kind_namespace", "kind_name", "order_parts", "attributes"] {
         let mut invalid = relation.clone();
         invalid[field] = serde_json::Value::Null;
@@ -127,61 +478,37 @@ async fn staged_catalog_checks_reject_missing_required_upsert_fields() {
         .execute(&database.pool())
         .await
         .expect("virtual root with no parent or item is accepted");
-    sqlx::query(relation_insert)
-        .bind(json!({
-            "attempt_id": READ_ATTEMPT_ID,
-            "key_namespace": "fixture.relation", "key_value": "\\x02",
-            "operation": "delete", "batch_sequence": 0, "row_ordinal": 1,
-        }))
-        .execute(&database.pool())
-        .await
-        .expect("relation delete with no payload is accepted");
-
+    sqlx::query(relation_insert).bind(json!({"attempt_id": READ_ATTEMPT_ID,"key_namespace": "fixture.relation", "key_value": "\\x02","operation": "delete", "batch_sequence": 0, "row_ordinal": 1})).execute(&database.pool()).await.expect("relation delete with no payload is accepted");
     database.shutdown().await.expect("database shuts down");
 }
 
 #[tokio::test]
-async fn mapping_source_checks_require_remote_url_only_for_remote_sources() {
-    let directory = tempdir().expect("temporary directory is created");
-    let database = DatabaseRuntime::start(directory.path())
-        .await
-        .expect("fresh database starts");
-    for (kind, priority, url, valid) in [
-        ("remote", 1_i64, None, false),
-        ("remote", 1, Some(""), false),
-        ("remote", 1, Some("   "), false),
-        ("remote", 1, Some("https://example.test/mappings"), true),
-        ("local", 0, None, true),
-        ("upload", 1, None, true),
-        ("local", 0, Some("https://example.test/mappings"), false),
-        ("upload", 1, Some("https://example.test/mappings"), false),
-    ] {
-        let mut transaction = database.pool().begin().await.expect("transaction begins");
-        let result = sqlx::query(
-            "INSERT INTO mapping_sources (
-                 id, source_key, source_kind, display_name, remote_url, priority,
-                 enabled, current_version_id, created_at, updated_at
-             ) VALUES ($1, 'fixture', $2, 'Fixture', $3, $4, TRUE, $5, $6, $6)",
-        )
-        .bind(Uuid::from_u128(100))
-        .bind(kind)
-        .bind(url)
-        .bind(priority)
-        .bind(Uuid::from_u128(101))
-        .bind(timestamp(0))
-        .execute(&mut *transaction)
-        .await;
-        if valid {
-            result.expect("valid source shape is accepted before deferred version FK");
-        } else {
-            assert_check_violation(result);
-        }
-        transaction
-            .rollback()
+async fn mappings_store_configuration_without_mapping_content_tables() {
+    let directory = tempdir().unwrap();
+    let database = DatabaseRuntime::start(directory.path()).await.unwrap();
+    let local: (String, bool, Option<String>) =
+        sqlx::query_as("SELECT kind, enabled, branch FROM mapping_sources WHERE id = 'local'")
+            .fetch_one(&database.pool())
             .await
-            .expect("fixture transaction rolls back");
+            .unwrap();
+    assert_eq!(local, ("local".into(), true, None));
+    for table in [
+        "mapping_records",
+        "mapping_source_objects",
+        "mapping_subscriptions",
+        "mapping_source_versions",
+        "mapping_generations",
+        "mapping_generation_sources",
+        "mapping_chain_state",
+    ] {
+        let present: bool = sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL")
+            .bind(table)
+            .fetch_one(&database.pool())
+            .await
+            .unwrap();
+        assert!(!present, "unnecessary mapping table {table} remains");
     }
-    database.shutdown().await.expect("database shuts down");
+    database.shutdown().await.unwrap();
 }
 
 fn assert_check_violation(result: Result<sqlx::postgres::PgQueryResult, sqlx::Error>) {

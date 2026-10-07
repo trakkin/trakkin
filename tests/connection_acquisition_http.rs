@@ -27,7 +27,7 @@ use trakkin::{
         adapter_process::AdapterProcess,
         catalog_queries::PostgresCatalogQueryRepository,
         connection::{ConnectionMasterKey, PostgresConnectionRepository, ProcessSessionRegistry},
-        mappings::PostgresMappingManager,
+        mappings::MappingStore,
         task_manager::PostgresTaskRepository,
         workspaces::PostgresWorkspaceRepository,
     },
@@ -154,9 +154,13 @@ async fn connection_and_acquisition_routes_are_closed_bounded_and_secret_safe() 
         .expect("fresh database starts");
     seed_source(&database.pool()).await;
     let mappings = Arc::new(
-        PostgresMappingManager::start(database.pool(), directory.path(), timestamp(0))
-            .await
-            .expect("mapping manager starts"),
+        MappingStore::open(
+            database.pool(),
+            &directory.path().join("mapping-repositories"),
+            None,
+        )
+        .await
+        .unwrap(),
     );
     let workspaces = Arc::new(WorkspaceService::new(PostgresWorkspaceRepository::new(
         database.pool(),

@@ -1,7 +1,7 @@
 use serde_json::Value;
 use thiserror::Error;
 use time::OffsetDateTime;
-use trakkin_mappings_language::parse_unit_key;
+use trakkin_provider_sdk::validation::mapping_unit_key;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct ProviderItemKey {
@@ -304,7 +304,7 @@ impl SubjectUnitBindingKey {
         subject: StateSubject,
     ) -> Result<Self, AcquisitionValueError> {
         let unit_key = unit_key.into();
-        parse_unit_key(&unit_key).map_err(|_| AcquisitionValueError::InvalidMappingUnit)?;
+        mapping_unit_key(&unit_key).map_err(|_| AcquisitionValueError::InvalidMappingUnit)?;
         Ok(Self { unit_key, subject })
     }
 
@@ -550,4 +550,28 @@ pub enum AcquisitionValueError {
     EmptyProviderRevision,
     #[error("mapping unit must be a canonical concrete unit key")]
     InvalidMappingUnit,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn acquisition_uses_the_provider_mapping_key_contract() {
+        let subject =
+            StateSubject::ProviderItem(ProviderItemKey::new("fixture", b"item".to_vec()).unwrap());
+        SubjectUnitBindingKey::new("example://foo::bar", subject.clone()).unwrap();
+        for invalid in [
+            "example://key :: episode=1".to_owned(),
+            format!(
+                "example://{}",
+                "x".repeat(trakkin_provider_sdk::v1::MAXIMUM_MAPPING_UNIT_KEY_BYTES)
+            ),
+        ] {
+            assert_eq!(
+                SubjectUnitBindingKey::new(invalid, subject.clone()).unwrap_err(),
+                AcquisitionValueError::InvalidMappingUnit
+            );
+        }
+    }
 }
