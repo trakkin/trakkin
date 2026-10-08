@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, path::Path, process::Stdio, time::Duration};
+use std::{path::Path, process::Stdio, time::Duration};
 
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader},
@@ -8,8 +8,8 @@ use tokio::{
 };
 use tonic::{Request, Response, Status, transport::Channel};
 use trakkin_provider_sdk::{
-    BOOTSTRAP_VERSION, LaunchRequest, LaunchToken, ReadyMessage, current_protocol_version,
-    supported_protocol_range,
+    BOOTSTRAP_VERSION, LaunchRequest, LaunchToken, MAXIMUM_BOOTSTRAP_MESSAGE_BYTES,
+    current_protocol_version, parse_ready_message, supported_protocol_range,
     v1::{HandshakeRequest, HandshakeResponse, ProtocolVersion, ShutdownRequest},
 };
 
@@ -21,7 +21,6 @@ use crate::application::{
 use super::AdapterProcessError;
 use trakkin_provider_sdk::v1::adapter_service_client::AdapterServiceClient;
 
-const MAXIMUM_READY_MESSAGE_BYTES: u64 = 16 * 1024;
 const MAXIMUM_PROVIDER_LOG_LINE_BYTES: usize = 64 * 1024;
 
 pub(super) struct ProviderProcess {
@@ -297,7 +296,7 @@ async fn initialize_child(
         .stdout
         .take()
         .ok_or(AdapterProcessError::MissingChildPipe("stdout"))?;
-    let mut reader = BufReader::new(stdout).take(MAXIMUM_READY_MESSAGE_BYTES);
+    let mut reader = BufReader::new(stdout).take(MAXIMUM_BOOTSTRAP_MESSAGE_BYTES + 1);
     let mut line = String::new();
     let bytes = timeout(ready_timeout, reader.read_line(&mut line))
         .await
@@ -305,11 +304,11 @@ async fn initialize_child(
     if bytes == 0 {
         return Err(AdapterProcessError::MissingReadyMessage);
     }
-    if !line.ends_with('\n') {
+    if bytes as u64 > MAXIMUM_BOOTSTRAP_MESSAGE_BYTES || !line.ends_with('\n') {
         return Err(AdapterProcessError::ReadyMessageTooLarge);
     }
-    let ready = serde_json::from_str::<ReadyMessage>(&line)?;
-    let address = validate_ready_message(&ready, launch)?;
+    let (_, address) = parse_ready_message(line.as_bytes(), launch)
+        .map_err(|_| AdapterProcessError::InvalidReadyMessage)?;
     let endpoint = format!("http://{address}");
     let client = timeout(rpc_timeout, AdapterServiceClient::connect(endpoint))
         .await
@@ -497,26 +496,6 @@ fn generate_launch_token() -> Result<String, AdapterProcessError> {
     let mut bytes = [0_u8; 32];
     getrandom::fill(&mut bytes)?;
     Ok(hex::encode(bytes))
-}
-
-fn validate_ready_message(
-    ready: &ReadyMessage,
-    launch: &LaunchRequest,
-) -> Result<SocketAddr, AdapterProcessError> {
-    if ready.bootstrap_version != BOOTSTRAP_VERSION
-        || ready.process_instance_id != launch.process_instance_id
-        || ready.launch_token != launch.launch_token
-    {
-        return Err(AdapterProcessError::InvalidReadyMessage);
-    }
-    let address = ready
-        .address
-        .parse::<SocketAddr>()
-        .map_err(|_| AdapterProcessError::InvalidReadyMessage)?;
-    if !address.ip().is_loopback() {
-        return Err(AdapterProcessError::InvalidReadyMessage);
-    }
-    Ok(address)
 }
 
 fn validate_handshake(
