@@ -19,22 +19,21 @@ export class ApiRequestError extends Error {
   }
 }
 
-type RequestOptions = Omit<RequestInit, "body"> &
-  ({ body?: unknown; rawBody?: never } | { body?: never; rawBody: BodyInit });
+type RequestOptions = Omit<RequestInit, "body"> & { body?: unknown };
 
 export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { body, rawBody, headers, ...init } = options;
+  const { body, headers, ...init } = options;
   const requestHeaders = new Headers(headers);
   if (body !== undefined && !requestHeaders.has("content-type")) {
     requestHeaders.set("content-type", "application/json");
   }
   const response = await fetch(path, {
     ...init,
-    body: rawBody ?? (body === undefined ? undefined : JSON.stringify(body)),
+    body: body === undefined ? undefined : JSON.stringify(body),
     headers: requestHeaders,
   });
-  const payload = await response.json().catch(() => null);
   if (!response.ok) {
+    const payload = await response.json().catch(() => null);
     const body: ApiErrorBody =
       payload && typeof payload === "object" && "code" in payload
         ? (payload as ApiErrorBody)
@@ -45,5 +44,5 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
           };
     throw new ApiRequestError(response.status, body);
   }
-  return payload as T;
+  return (await response.json().catch(() => null)) as T;
 }

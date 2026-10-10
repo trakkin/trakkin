@@ -1,341 +1,427 @@
 import { expect, test } from "@playwright/test";
-import { expectNoHorizontalOverflow, fallback, json, mockApi, timestamp, workspace } from "./support/api.ts";
+import type { MappingResult, MappingSource } from "../src/lib/api/mappings.ts";
+import { expectNoHorizontalOverflow, fallback, json, localMappingSource, mockApi, workspace } from "./support/api.ts";
 
-const localSource = {
-  id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-  sourceKey: "local",
-  displayName: "Local mappings",
-  kind: "local",
-  remoteUrl: null,
-  priority: 0,
-  enabled: true,
-  contentHash: "a".repeat(64),
-  byteLength: 0,
-  lastCheckedAt: null,
-  lastRefreshError: null,
-  createdAt: timestamp,
-  updatedAt: timestamp,
-};
-
-const remoteSource = {
-  id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-  sourceKey: "community",
-  displayName: "Community mappings",
-  kind: "remote",
-  remoteUrl: "https://example.test/mappings.trakkin",
-  priority: 1,
-  enabled: true,
-  contentHash: "b".repeat(64),
-  byteLength: 24,
-  lastCheckedAt: timestamp,
-  lastRefreshError: null,
-  createdAt: timestamp,
-  updatedAt: timestamp,
-};
-
-const uploadedSource = {
-  id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
-  sourceKey: "imported",
-  displayName: "Imported mappings",
-  kind: "upload",
-  remoteUrl: null,
-  priority: 2,
-  enabled: true,
-  contentHash: "c".repeat(64),
-  byteLength: 28,
-  lastCheckedAt: null,
-  lastRefreshError: null,
-  createdAt: timestamp,
-  updatedAt: timestamp,
-};
-
-type MappingOccurrence = ReturnType<typeof occurrence>;
-
-function occurrence(
-  sourceKey: string,
-  statementId: string,
-  statement: string,
-  options: { active?: boolean; metadata?: string[] } = {},
-) {
-  return {
-    relationKey: `${statementId}-relation`,
-    statementId,
-    canonicalStatement: statement,
-    canonicalRecord: statement,
-    operator: "<=>",
-    sourceKey,
-    sourceContentHash: sourceKey === "local" ? localSource.contentHash : remoteSource.contentHash,
-    layerPosition: sourceKey === "local" ? 0 : 1,
-    recordOrdinal: 0,
-    active: options.active ?? true,
-    occurrenceCount: 1,
-    evidenceFingerprint: "d".repeat(64),
-    metadata: options.metadata ?? [],
-  };
-}
-
-test("uses route tabs and a compact relation list without a detail sidebar", async ({ page }) => {
-  const queryUrls: URL[] = [];
-  const imported = occurrence("community", "managed", "co.anilist://anime/1 <=> org.themoviedb://tv/2", {
-    metadata: ["#@verified community"],
-  });
-
-  await mockApi(page, async (route) => {
-    const url = new URL(route.request().url());
-    const method = route.request().method();
-    if (url.pathname === "/api/v1/workspaces" && method === "GET") return json(route, [workspace]);
-    if (url.pathname === "/api/v1/mapping-sources" && method === "GET") {
-      return json(route, {
-        activeChainFingerprint: "e".repeat(64),
-        sources: [localSource, remoteSource],
-      });
-    }
-    if (url.pathname === "/api/v1/mappings" && method === "GET") {
-      queryUrls.push(url);
-      return json(route, {
-        chainFingerprint: "e".repeat(64),
-        items: [occurrence("local", "local", "co.anilist://anime/10 <=> org.themoviedb://tv/20"), imported],
-        nextCursor: null,
-      });
-    }
-    return fallback(route);
-  });
-
-  await page.goto("/mappings");
-
-  const viewNavigation = page.getByRole("navigation", { name: "Mapping views" });
-  await expect(viewNavigation.getByRole("link", { name: "Mappings" })).toHaveAttribute("aria-current", "page");
-  await expect(viewNavigation.getByRole("link", { name: "Sources" })).not.toHaveAttribute("aria-current", "page");
-  await expect(page.getByRole("table")).toHaveCount(0);
-  await expect(page.getByRole("complementary", { name: "Mapping details" })).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "Source precedence" })).toHaveCount(0);
-
-  const overrideButton = page.getByRole("button", {
-    name: "Override co.anilist://anime/1 <=> org.themoviedb://tv/2 locally",
-  });
-  const importedRow = page.locator("li").filter({ has: overrideButton });
-  await expect(importedRow).toContainText("Community mappings");
-  const annotationButton = importedRow.locator('button[aria-controls^="mapping-annotations-"]');
-  await expect(annotationButton).toHaveAttribute("aria-expanded", "false");
-  const annotationRegionId = await annotationButton.getAttribute("aria-controls");
-  expect(annotationRegionId).toBeTruthy();
-  await annotationButton.click();
-  await expect(annotationButton).toHaveAttribute("aria-expanded", "true");
-  await expect(page.locator(`#${annotationRegionId}`)).toBeVisible();
-  await expect(importedRow.getByText("#@verified community", { exact: true })).toBeVisible();
-
-  await overrideButton.click();
-  const overrideDialog = page.getByRole("dialog", { name: "Override mapping locally" });
-  await expect(overrideDialog.getByLabel("Mapping record")).toHaveValue(
-    "co.anilist://anime/1 <=> org.themoviedb://tv/2",
-  );
-  await overrideDialog.getByRole("button", { name: "Cancel" }).click();
-
-  await page.getByRole("tab", { name: "All occurrences" }).click();
-  await expect.poll(() => queryUrls.some((url) => url.searchParams.get("includeShadowed") === "true")).toBe(true);
-  await expectNoHorizontalOverflow(page);
+const fingerprint = "e".repeat(64);
+const original = "com.imdb://title/tt0133093 <=> org.themoviedb://movie/603";
+const corrected = "com.imdb://title/tt0133093 <=> org.themoviedb://movie/604";
+const claim = (id: string, statement: string, sources = ["community"]): MappingResult => ({
+  claimId: id,
+  canonicalStatement: statement,
+  canonicalRecord: `#@note Reviewed\n${statement}\n`,
+  operator: "<=>",
+  metadata: ["#@note Reviewed"],
+  rejected: false,
+  sources,
+  status: "resolved",
+  diagnostics: [],
+});
+const state = (items: MappingResult[], revision = fingerprint) => ({
+  fingerprint: revision,
+  records: items.length,
+  active: items.filter((item) => !item.rejected).length,
+  rejected: items.filter((item) => item.rejected).length,
+  resolved: items.filter((item) => item.status === "resolved").length,
+  unresolved: 0,
+  conflicting: 0,
+  units: items.filter((item) => item.status === "resolved").length * 2,
+  metadataSnapshot: null,
 });
 
-test("creates, edits, and deletes local mappings from the relation list", async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 844 });
-  let fingerprintSequence = 1;
-  let rows: MappingOccurrence[] = [
-    occurrence("local", "local-one", "co.anilist://anime/10 <=> org.themoviedb://tv/20"),
-    occurrence("community", "managed", "co.anilist://anime/30 <=> org.themoviedb://tv/40"),
-  ];
-  const writes: Array<{ method: string; path: string; record?: string }> = [];
-  let releaseCreate = () => {};
-  const createGate = new Promise<void>((resolve) => {
-    releaseCreate = resolve;
-  });
-
-  const state = () => ({
-    activeChainFingerprint: String(fingerprintSequence).repeat(64),
-    sources: [localSource, remoteSource],
-  });
-
+test("sources are user managed and Local exists without an official placeholder", async ({ page }, testInfo) => {
+  let sources: MappingSource[] = [localMappingSource];
+  const longBranch = `review/${"changes".repeat(15)}`;
+  let revision = fingerprint;
+  let stateReads = 0;
   await mockApi(page, async (route) => {
-    const url = new URL(route.request().url());
-    const method = route.request().method();
-    if (url.pathname === "/api/v1/workspaces" && method === "GET") return json(route, [workspace]);
-    if (url.pathname === "/api/v1/mapping-sources" && method === "GET") return json(route, state());
-    if (url.pathname === "/api/v1/mappings" && method === "GET") {
-      return json(route, {
-        chainFingerprint: state().activeChainFingerprint,
-        items: rows,
-        nextCursor: null,
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path === "/api/v1/workspaces") return json(route, [workspace]);
+    if (path === "/api/v1/mappings/state") {
+      stateReads += 1;
+      return json(route, state([], revision));
+    }
+    if (path === "/api/v1/mappings/sources") {
+      if (request.method() === "GET") return json(route, { fingerprint: revision, sources });
+      const body = request.postDataJSON();
+      expect(body).toEqual({
+        expectedFingerprint: revision,
+        displayName: "My mirror",
+        url: "https://example.com/mappings.git",
+        branch: "review/community",
+        pollIntervalSeconds: 3600,
+        enabled: true,
       });
+      sources = [
+        ...sources,
+        {
+          ...localMappingSource,
+          id: "mirror",
+          displayName: body.displayName,
+          kind: "upstream",
+          url: body.url,
+          branch: body.branch,
+          repositoryPath: null,
+          pollIntervalSeconds: body.pollIntervalSeconds,
+          cachedRecords: 3,
+        },
+      ];
+      revision = "created";
+      return json(route, state([], revision));
     }
-    if (url.pathname === "/api/v1/mappings/local" && method === "POST") {
-      const body = route.request().postDataJSON() as { record: string };
-      writes.push({ method, path: url.pathname, record: body.record });
-      await createGate;
-      rows = [...rows, occurrence("local", "local-created", body.record)];
-      fingerprintSequence += 1;
-      return json(route, state(), 201);
+    if (path === "/api/v1/mappings/sources/mirror") {
+      expect(request.postDataJSON().expectedFingerprint).toBe(revision);
+      if (request.method() === "DELETE") sources = [localMappingSource];
+      else {
+        const body = request.postDataJSON();
+        expect(body.branch).toBe(body.displayName === "My mirror" ? "review/community" : longBranch);
+        sources = sources.map((source) =>
+          source.id === "mirror"
+            ? {
+                ...source,
+                displayName: body.displayName,
+                url: body.url,
+                branch: body.branch,
+                pollIntervalSeconds: body.pollIntervalSeconds,
+                enabled: body.enabled,
+              }
+            : source,
+        );
+      }
+      revision += "-updated";
+      return json(route, state([], revision));
     }
-    if (url.pathname === "/api/v1/mappings/local/local-created" && method === "PUT") {
-      const body = route.request().postDataJSON() as { record: string };
-      writes.push({ method, path: url.pathname, record: body.record });
-      rows = rows.map((row) =>
-        row.statementId === "local-created" ? occurrence("local", "local-updated", body.record) : row,
-      );
-      fingerprintSequence += 1;
-      return json(route, state());
+    if (path === "/api/v1/mappings/sources/mirror/refresh") {
+      expect(request.postDataJSON()).toEqual({ expectedFingerprint: revision });
+      revision += "-refresh";
+      return json(route, state([], revision));
     }
-    if (url.pathname === "/api/v1/mappings/local/local-updated" && method === "DELETE") {
-      writes.push({ method, path: url.pathname });
-      rows = rows.filter((row) => row.statementId !== "local-updated");
-      fingerprintSequence += 1;
-      return json(route, state());
+    if (path === "/api/v1/mappings/sources/local/refresh") {
+      expect(request.postDataJSON()).toEqual({ expectedFingerprint: revision });
+      sources = sources.map((source) => (source.id === "local" ? { ...source, revision: "d".repeat(40) } : source));
+      revision = "reloaded";
+      return json(route, state([], revision));
     }
     return fallback(route);
   });
+  await page.goto("/mappings/sources");
+  const list = page.getByRole("list", { name: "Mapping sources" });
+  await expect(list.getByRole("heading", { name: "Local", exact: true })).toBeVisible();
+  await expect(list.getByRole("listitem")).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "Remove Local", exact: true })).toHaveCount(0);
+  await expect(list).toContainText(localMappingSource.repositoryPath);
+  await expect(page.getByRole("button", { name: /Export/ })).toHaveCount(0);
+  await page.getByRole("button", { name: "Reload Local repository", exact: true }).click();
+  await expect(page.getByRole("status")).toHaveText("Local repository reloaded");
+  await expect(list).toContainText(`Commit ${"d".repeat(12)}`);
+  const add = page.getByRole("button", { name: "Add mapping source", exact: true });
+  await add.click();
+  await page.getByLabel("Name", { exact: true }).fill("My mirror");
+  await page.getByLabel("Git repository URL").fill("https://example.com/mappings.git");
+  await expect(page.getByLabel("Branch", { exact: true })).toHaveValue("main");
+  await page.getByLabel("Branch", { exact: true }).fill("review/community");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(add).toBeFocused();
+  const enabled = page.getByRole("switch", { name: "Enable My mirror", exact: true });
+  await enabled.click();
+  await expect(enabled).not.toBeChecked();
+  await expect(page.getByRole("button", { name: "Refresh My mirror", exact: true })).toBeDisabled();
+  await enabled.click();
+  await expect(enabled).toBeChecked();
+  await page.getByRole("button", { name: "Edit My mirror", exact: true }).click();
+  await expect(page.getByLabel("Branch", { exact: true })).toHaveValue("review/community");
+  await page.getByLabel("Branch", { exact: true }).fill(longBranch);
+  await page.getByLabel("Name", { exact: true }).fill("Updated mirror");
+  await page.getByLabel("Update interval (minutes)").fill("15");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(list).toContainText("Every 15 min");
+  await page.getByRole("button", { name: "Refresh Updated mirror", exact: true }).click();
+  await expect(page.getByRole("status")).toHaveText("Fetch scheduled for Updated mirror");
+  await expect(list).toContainText(longBranch);
+  await expectNoHorizontalOverflow(page);
+  await page.screenshot({ path: `test-results/mapping-sources-${testInfo.project.name}.png`, fullPage: true });
+  await page.getByRole("button", { name: "Remove Updated mirror", exact: true }).click();
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.getByRole("button", { name: "Remove Updated mirror", exact: true }).click();
+  await page.getByRole("button", { name: "Remove", exact: true }).click();
+  await expect(list.getByRole("listitem")).toHaveCount(1);
+  expect(stateReads).toBe(0);
+});
 
-  await page.goto("/mappings");
-  await page.getByRole("button", { name: "Add mapping", exact: true }).click();
-  const mappingDialog = page.getByRole("dialog", { name: "Add local mapping" });
-  await mappingDialog.getByLabel("Mapping record").fill("co.anilist://anime/50 <=> org.themoviedb://tv/60");
-  const createButton = mappingDialog.getByRole("button", { name: "Add mapping", exact: true });
-  await createButton.click();
-  await expect.poll(() => writes).toHaveLength(1);
-  await page.keyboard.press("Escape");
-  await expect(mappingDialog).toBeVisible();
-  await expect(createButton).toBeDisabled();
-  releaseCreate();
-
-  await expect(
-    page.getByRole("button", { name: "Edit co.anilist://anime/50 <=> org.themoviedb://tv/60" }),
-  ).toBeVisible();
-  expect(writes[0]).toEqual({
-    method: "POST",
-    path: "/api/v1/mappings/local",
-    record: "co.anilist://anime/50 <=> org.themoviedb://tv/60",
+test("source errors keep the draft and stale source writes can be retried explicitly", async ({ page }) => {
+  let revision = fingerprint;
+  let writes = 0;
+  await mockApi(page, async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path === "/api/v1/workspaces") return json(route, [workspace]);
+    if (path === "/api/v1/mappings/state") return json(route, state([], revision));
+    if (path === "/api/v1/mappings/sources" && request.method() === "GET")
+      return json(route, { fingerprint: revision, sources: [localMappingSource] });
+    if (path === "/api/v1/mappings/sources" && request.method() === "POST") {
+      writes += 1;
+      expect(request.postDataJSON().expectedFingerprint).toBe(writes === 1 ? fingerprint : "fresh");
+      expect(request.postDataJSON().branch).toBe("review/draft");
+      if (writes === 1) {
+        revision = "fresh";
+        return json(route, { code: "mappings_changed", message: "Mapping sources changed", fieldProblems: [] }, 409);
+      }
+      return json(route, state([], revision));
+    }
+    return fallback(route);
   });
+  await page.goto("/mappings/sources");
+  await page.getByRole("button", { name: "Add mapping source", exact: true }).click();
+  await page.getByLabel("Name", { exact: true }).fill("Retained draft");
+  await page.getByLabel("Git repository URL").fill("https://example.com/mappings.git");
+  await page.getByLabel("Branch", { exact: true }).fill("review/draft");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByRole("alert")).toHaveText("Mapping sources changed");
+  await expect(page.getByLabel("Name", { exact: true })).toHaveValue("Retained draft");
+  await expect(page.getByLabel("Branch", { exact: true })).toHaveValue("review/draft");
+  await expect(page.getByRole("button", { name: "Save", exact: true })).toBeEnabled();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect(writes).toBe(2);
+});
 
-  await page.getByRole("button", { name: "Edit co.anilist://anime/50 <=> org.themoviedb://tv/60" }).click();
-  const editDialog = page.getByRole("dialog", { name: "Edit local mapping" });
-  await editDialog.getByLabel("Mapping record").fill("co.anilist://anime/70 <=> org.themoviedb://tv/80");
-  await editDialog.getByRole("button", { name: "Save mapping" }).click();
-  await expect(
-    page.getByRole("button", { name: "Delete co.anilist://anime/70 <=> org.themoviedb://tv/80" }),
-  ).toBeVisible();
+test("a failed enable change rolls back its switch and reports the error", async ({ page }) => {
+  await mockApi(page, async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path === "/api/v1/workspaces") return json(route, [workspace]);
+    if (path === "/api/v1/mappings/state") return json(route, state([]));
+    if (path === "/api/v1/mappings/sources")
+      return json(route, {
+        fingerprint,
+        sources: [
+          localMappingSource,
+          {
+            ...localMappingSource,
+            id: "mirror",
+            displayName: "My mirror",
+            kind: "upstream",
+            url: "https://example.com/mappings.git",
+            branch: "main",
+            repositoryPath: null,
+            pollIntervalSeconds: 3600,
+          },
+        ],
+      });
+    if (path === "/api/v1/mappings/sources/mirror")
+      return json(route, { code: "internal_error", message: "Source change failed", fieldProblems: [] }, 500);
+    return fallback(route);
+  });
+  await page.goto("/mappings/sources");
+  const enabled = page.getByRole("switch", { name: "Enable My mirror", exact: true });
+  await enabled.click();
+  await expect(page.getByRole("alert")).toHaveText("Source change failed");
+  await expect(enabled).toBeChecked();
+  await expect(enabled).toBeEnabled();
+});
 
-  await page.getByRole("button", { name: "Delete co.anilist://anime/70 <=> org.themoviedb://tv/80" }).click();
-  const removalDialog = page.getByRole("alertdialog", { name: "Delete local mapping?" });
-  await removalDialog.getByRole("button", { name: "Delete" }).click();
-  await expect(
-    page.getByRole("button", { name: "Delete co.anilist://anime/70 <=> org.themoviedb://tv/80" }),
-  ).toHaveCount(0);
+test("a local decision can be explicitly reverted to its upstream record", async ({ page }) => {
+  let items = [claim("original", original, ["local", "mirror"])];
+  let revision = fingerprint;
+  await mockApi(page, async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/v1/workspaces") return json(route, [workspace]);
+    if (path === "/api/v1/mappings/state") return json(route, state(items, revision));
+    if (path === "/api/v1/mappings") return json(route, { fingerprint: revision, items, nextCursor: null });
+    if (path === "/api/v1/mappings/original/revert") {
+      expect(route.request().postDataJSON()).toEqual({ expectedFingerprint: fingerprint });
+      items = [claim("original", original, ["mirror"])];
+      revision = "reverted";
+      return json(route, state(items, revision));
+    }
+    return fallback(route);
+  });
+  await page.goto("/mappings");
+  await page.getByRole("button", { name: "Revert to upstream", exact: true }).click();
+  await page.getByRole("button", { name: "Revert", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Revert to upstream", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Delete mapping", exact: true })).toBeDisabled();
+});
 
-  expect(writes.map(({ method, path }) => ({ method, path }))).toEqual([
-    { method: "POST", path: "/api/v1/mappings/local" },
-    { method: "PUT", path: "/api/v1/mappings/local/local-created" },
-    { method: "DELETE", path: "/api/v1/mappings/local/local-updated" },
+test("claims remain searchable and paginated with visible decisions", async ({ page }, testInfo) => {
+  const queries: URL[] = [];
+  await mockApi(page, async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname === "/api/v1/workspaces") return json(route, [workspace]);
+    if (url.pathname === "/api/v1/mappings/state") return json(route, state([claim("first", original)]));
+    if (url.pathname === "/api/v1/mappings") {
+      queries.push(url);
+      const second = url.searchParams.has("cursor");
+      return json(route, {
+        fingerprint,
+        items: [claim(second ? "second" : "first", second ? corrected : original)],
+        nextCursor: second ? null : "next",
+      });
+    }
+    return fallback(route);
+  });
+  await page.goto("/mappings");
+  const list = page.getByRole("list", { name: "Mapping claims" });
+  await expect(list).toContainText("movie/603");
+  await expect(page.getByRole("button", { name: "Create mapping" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Delete mapping" })).toBeDisabled();
+  await page.getByText("Annotations (1)").click();
+  await expect(page.getByText("#@note Reviewed", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Next page" }).click();
+  await expect(list).toContainText("movie/604");
+  expect(queries.at(-1)?.searchParams.get("expectedFingerprint")).toBe(fingerprint);
+  await page.getByRole("button", { name: "Previous page" }).click();
+  await page.getByRole("textbox", { name: "Search mappings" }).fill("Matrix");
+  await expect.poll(() => queries.at(-1)?.searchParams.get("search")).toBe("Matrix");
+  expect(queries.at(-1)?.searchParams.has("cursor")).toBe(false);
+  await expectNoHorizontalOverflow(page);
+  await page.screenshot({ path: `test-results/mappings-${testInfo.project.name}.png`, fullPage: true });
+});
+
+test("an empty store supports preview, creation, editing and local deletion", async ({ page }) => {
+  let items: MappingResult[] = [];
+  let revision = fingerprint;
+  const writes: unknown[] = [];
+  await mockApi(page, async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path === "/api/v1/workspaces") return json(route, [workspace]);
+    if (path === "/api/v1/mappings/state") return json(route, state(items, revision));
+    if (path === "/api/v1/mappings/preview")
+      return json(route, claim("local", request.postDataJSON().record, ["local"]));
+    if (path === "/api/v1/mappings/local" && request.method() === "DELETE") {
+      expect(request.postDataJSON().expectedFingerprint).toBe(revision);
+      items = [];
+      return json(route, state(items, "deleted"));
+    }
+    if (path === "/api/v1/mappings") {
+      if (request.method() === "GET") return json(route, { fingerprint: revision, items, nextCursor: null });
+      const body = request.postDataJSON();
+      expect(body.expectedFingerprint).toBe(revision);
+      writes.push(body);
+      items = [claim("local", body.record, ["local"])];
+      revision = `saved-${writes.length}`;
+      return json(route, state(items, revision));
+    }
+    return fallback(route);
+  });
+  await page.goto("/mappings");
+  await expect(page.getByText("No mappings found", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Import mappings|Export .*mappings/ })).toHaveCount(0);
+  const create = page.getByRole("button", { name: "Create mapping" });
+  await create.click();
+  await page.getByRole("textbox", { name: "Mapping record", exact: true }).fill(original);
+  await expect(page.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
+  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(create).toBeFocused();
+  await page.getByRole("button", { name: "Edit mapping" }).click();
+  await page.getByRole("textbox", { name: "Mapping record", exact: true }).fill(corrected);
+  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  expect(writes).toEqual([
+    { expectedFingerprint: fingerprint, record: original },
+    { expectedFingerprint: "saved-1", record: corrected, replaces: "local" },
   ]);
-  await expect(
-    page.getByRole("button", {
-      name: "Override co.anilist://anime/30 <=> org.themoviedb://tv/40 locally",
-    }),
-  ).toBeVisible();
+  await expect(page.getByRole("list", { name: "Mapping claims" })).toContainText("movie/604");
+  await page.getByRole("button", { name: "Delete mapping" }).click();
+  await page.getByRole("button", { name: "Delete", exact: true }).click();
+  await expect(page.getByText("No mappings found", { exact: true })).toBeVisible();
   await expectNoHorizontalOverflow(page);
 });
 
-test("keeps source precedence and lifecycle controls in the Sources tab", async ({ page }) => {
-  let fingerprintSequence = 1;
-  let sources = [localSource, remoteSource, uploadedSource];
-  let refreshCount = 0;
-  const enabledRequests: boolean[] = [];
-  const reorderRequests: string[][] = [];
-  let removalRequests = 0;
-  let releaseToggle = () => {};
-  let releaseRemoval = () => {};
-  const toggleGate = new Promise<void>((resolve) => {
-    releaseToggle = resolve;
-  });
-  const removalGate = new Promise<void>((resolve) => {
-    releaseRemoval = resolve;
-  });
-
-  const state = () => ({
-    activeChainFingerprint: String(fingerprintSequence).repeat(64),
-    sources,
-  });
-
+test("replacing an upstream claim is explicit and its suppression can be restored", async ({ page }) => {
+  let items = [claim("original", original)];
+  let revision = fingerprint;
   await mockApi(page, async (route) => {
-    const url = new URL(route.request().url());
-    const method = route.request().method();
-    if (url.pathname === "/api/v1/workspaces" && method === "GET") return json(route, [workspace]);
-    if (url.pathname === "/api/v1/mapping-sources" && method === "GET") return json(route, state());
-    if (url.pathname === `/api/v1/mapping-sources/${remoteSource.id}` && method === "PATCH") {
-      const body = route.request().postDataJSON() as { enabled: boolean };
-      enabledRequests.push(body.enabled);
-      await toggleGate;
-      sources = sources.map((source) =>
-        source.id === remoteSource.id ? { ...source, enabled: body.enabled } : source,
-      );
-      fingerprintSequence += 1;
-      return json(route, state());
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path === "/api/v1/workspaces") return json(route, [workspace]);
+    if (path === "/api/v1/mappings/state") return json(route, state(items, revision));
+    if (path === "/api/v1/mappings/preview") return json(route, claim("corrected", corrected, ["local"]));
+    if (path === "/api/v1/mappings/original/decision") {
+      expect(request.postDataJSON()).toEqual({ expectedFingerprint: revision, rejected: false });
+      items = items.map((item) => ({ ...item, rejected: false, status: "conflicting" }));
+      revision = "restored";
+      return json(route, state(items, revision));
     }
-    if (url.pathname === `/api/v1/mapping-sources/${uploadedSource.id}` && method === "DELETE") {
-      removalRequests += 1;
-      await removalGate;
-      sources = sources.filter((source) => source.id !== uploadedSource.id);
-      return json(route, state());
-    }
-    if (url.pathname.endsWith(`/${remoteSource.id}/refresh`) && method === "POST") {
-      refreshCount += 1;
-      return json(route, state());
-    }
-    if (url.pathname === "/api/v1/mapping-sources/order" && method === "PUT") {
-      const body = route.request().postDataJSON() as { sourceIds: string[] };
-      reorderRequests.push(body.sourceIds);
-      const byId = new Map(sources.map((source) => [source.id, source]));
-      sources = [localSource, ...body.sourceIds.map((sourceId) => byId.get(sourceId) ?? uploadedSource)];
-      fingerprintSequence += 1;
-      return json(route, state());
+    if (path === "/api/v1/mappings") {
+      if (request.method() === "GET") return json(route, { fingerprint: revision, items, nextCursor: null });
+      expect(request.postDataJSON()).toEqual({
+        expectedFingerprint: fingerprint,
+        record: corrected,
+        replaces: "original",
+      });
+      items = [{ ...items[0], rejected: true, status: "rejected" }, claim("corrected", corrected, ["local"])];
+      revision = "replaced";
+      return json(route, state(items, revision));
     }
     return fallback(route);
   });
-
   await page.goto("/mappings");
-  await page.getByRole("navigation", { name: "Mapping views" }).getByRole("link", { name: "Sources" }).click();
-  await expect(page).toHaveURL(/\/mappings\/sources$/);
-  await expect(page.getByRole("link", { name: "Sources" })).toHaveAttribute("aria-current", "page");
+  await page.getByRole("button", { name: "Replace mapping" }).click();
+  await page.getByRole("textbox", { name: "Mapping record", exact: true }).fill(corrected);
+  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  await page.getByRole("button", { name: "Replace", exact: true }).click();
+  await expect(page.getByRole("list", { name: "Mapping claims" })).toContainText("Suppressed");
+  await page.getByRole("button", { name: "Restore mapping" }).click();
+  await expect(page.getByRole("list", { name: "Mapping claims" })).toContainText("Conflicting");
+});
 
-  const sourceChain = page.getByRole("region", { name: "Source precedence" });
-  await expect(sourceChain.getByRole("listitem").nth(0)).toContainText("Local mappings");
-  await expect(sourceChain.getByRole("listitem").nth(1)).toContainText("Community mappings");
-  await expect(sourceChain.getByRole("listitem").nth(2)).toContainText("Imported mappings");
-  await expect(page.getByRole("table")).toHaveCount(0);
+test("record changes discard stale queries and reload status", async ({ page }) => {
+  let statusReads = 0;
+  await mockApi(page, async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname === "/api/v1/workspaces") return json(route, [workspace]);
+    if (url.pathname === "/api/v1/mappings/state")
+      return json(route, state([claim("new", corrected)], ++statusReads === 1 ? fingerprint : "new"));
+    if (url.pathname === "/api/v1/mappings") {
+      if (url.searchParams.get("expectedFingerprint") === fingerprint)
+        return json(route, { code: "mappings_changed", message: "Mappings changed", fieldProblems: [] }, 409);
+      return json(route, { fingerprint: "new", items: [claim("new", corrected)], nextCursor: null });
+    }
+    return fallback(route);
+  });
+  await page.goto("/mappings");
+  await expect(page.getByRole("list", { name: "Mapping claims" })).toContainText("movie/604");
+  expect(statusReads).toBe(2);
+});
 
-  await page.getByRole("button", { name: "Refresh Community mappings" }).click();
-  await expect.poll(() => refreshCount).toBe(1);
-
-  const enableSwitch = page.getByRole("switch", { name: "Enable Community mappings" });
-  await expect(enableSwitch).toBeChecked();
-  await enableSwitch.click();
-  await expect.poll(() => enabledRequests).toEqual([false]);
-  await expect(page.getByRole("button", { name: "Add source" })).toBeDisabled();
-  await expect(page.getByRole("button", { name: "Refresh Community mappings" })).toBeDisabled();
-  releaseToggle();
-  await expect(enableSwitch).not.toBeChecked();
-
-  await page.getByRole("button", { name: "Manage Community mappings" }).click();
-  await page.getByRole("menuitem", { name: "Move down" }).click();
-  await expect.poll(() => reorderRequests).toEqual([[uploadedSource.id, remoteSource.id]]);
-  await expect(sourceChain.getByRole("listitem").nth(1)).toContainText("Imported mappings");
-  await expect(sourceChain.getByRole("listitem").nth(2)).toContainText("Community mappings");
-
-  await page.getByRole("button", { name: "Manage Imported mappings" }).click();
-  await page.getByRole("menuitem", { name: "Remove source" }).click();
-  const removalDialog = page.getByRole("alertdialog", { name: "Remove mapping source?" });
-  await removalDialog.getByRole("button", { name: "Remove" }).click();
-  await expect.poll(() => removalRequests).toBe(1);
-  await page.keyboard.press("Escape");
-  await expect(removalDialog).toBeVisible();
-  releaseRemoval();
-  await expect(removalDialog).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Add source" })).toBeVisible();
-  await expectNoHorizontalOverflow(page);
+test("a stale write preserves the record and requires a new preview before retrying", async ({ page }) => {
+  let statusReads = 0;
+  let writes = 0;
+  await mockApi(page, async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path === "/api/v1/workspaces") return json(route, [workspace]);
+    if (path === "/api/v1/mappings/state") return json(route, state([], ++statusReads === 1 ? fingerprint : "new"));
+    if (path === "/api/v1/mappings/preview") return json(route, claim("local", original, ["local"]));
+    if (path === "/api/v1/mappings") {
+      if (request.method() === "GET") return json(route, { fingerprint: "new", items: [], nextCursor: null });
+      writes += 1;
+      if (writes === 2) {
+        expect(request.postDataJSON().expectedFingerprint).toBe("new");
+        return json(route, state([claim("local", original, ["local"])], "saved"));
+      }
+      return json(route, { code: "mappings_changed", message: "Mappings changed", fieldProblems: [] }, 409);
+    }
+    return fallback(route);
+  });
+  await page.goto("/mappings");
+  await page.getByRole("button", { name: "Create mapping" }).click();
+  await page.getByRole("textbox", { name: "Mapping record", exact: true }).fill(original);
+  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByRole("alert")).toHaveText("Mappings changed");
+  await expect(page.getByRole("textbox", { name: "Mapping record", exact: true })).toHaveValue(original);
+  await expect.poll(() => statusReads).toBe(2);
+  expect(writes).toBe(1);
+  await expect(page.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
+  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect(writes).toBe(2);
+  await expect(page.getByRole("button", { name: "Create mapping" })).toBeFocused();
 });

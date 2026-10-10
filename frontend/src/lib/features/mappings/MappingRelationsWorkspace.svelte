@@ -2,784 +2,630 @@
 import {
   ArrowLeft,
   ArrowRight,
-  Braces,
-  ChevronDown,
-  ChevronRight,
-  CopyPlus,
+  Ban,
+  Database,
   Pencil,
   Plus,
   RefreshCw,
+  RotateCcw,
   Search,
   Trash2,
+  Undo2,
   X,
 } from "@lucide/svelte";
 import { onDestroy, onMount } from "svelte";
-import {
-  AlertDialog,
-  Button,
-  Dialog,
-  EmptyState,
-  IconButton,
-  PageToolbar,
-  Panel,
-  Select,
-  Spinner,
-  Tabs,
-  Textarea,
-  TextInput,
-} from "$lib";
+import { AlertDialog, Button, Dialog, IconButton, PageHeader, PageToolbar, Spinner, Textarea, TextInput } from "$lib";
 import { ApiRequestError } from "$lib/api/client";
 import {
-  createLocalMapping,
+  decideMapping,
+  deleteMapping,
+  getMappingSources,
   getMappingState,
   MAPPING_PAGE_LIMIT,
   type MappingPage,
   type MappingResult,
+  type MappingSource,
   type MappingState,
+  previewMapping,
   queryMappings,
-  removeLocalMapping,
-  updateLocalMapping,
+  revertMapping,
+  saveMapping,
 } from "$lib/api/mappings";
-import MappingsHeader from "./MappingsHeader.svelte";
 
 let mappingState = $state<MappingState>();
+let mappingSources = $state<MappingSource[]>([]);
 let loading = $state(true);
-let reloading = $state(false);
 let errorMessage = $state("");
 let queryText = $state("");
-let normalizedSearch = $state("");
-let sourceFilter = $state("all");
-let occurrenceScope = $state<"active" | "all">("active");
+let search = $state("");
 let pages = $state<MappingPage[]>([]);
 let pageIndex = $state(0);
 let queryLoading = $state(false);
 let queryError = $state("");
-let expandedResultKey = $state("");
+let busy = $state(false);
 let editorOpen = $state(false);
-let editorResult = $state<MappingResult>();
-let editorMode = $state<"create" | "edit" | "override">("create");
-let mappingRecord = $state("");
-let editorSaving = $state(false);
+let editing = $state<MappingResult>();
+let editorText = $state("");
+let editorFingerprint = $state("");
 let editorError = $state("");
+let editorPreview = $state<MappingResult>();
+let previewText = $state("");
+let previewLoading = $state(false);
+let previewSequence = 0;
 let removeOpen = $state(false);
-let removalMapping = $state<MappingResult>();
-let removalError = $state("");
-let removalPending = $state(false);
+let removeTarget = $state<MappingResult>();
+let removeAction = $state<"delete" | "revert">("delete");
+let returnFocus: HTMLElement | undefined;
 let loadSequence = 0;
 let querySequence = 0;
-const lifecycleController = new AbortController();
-
-let sourceItems = $derived([
-  { value: "all", label: "All sources" },
-  ...(mappingState?.sources.map((source) => ({ value: source.sourceKey, label: source.displayName })) ?? []),
-]);
-let sourceNames = $derived(
-  new Map(mappingState?.sources.map((source) => [source.sourceKey, source.displayName]) ?? []),
-);
+const lifecycle = new AbortController();
 let currentPage = $derived(pages[pageIndex]);
-let changesPending = $derived(editorSaving || removalPending);
+let canSave = $derived(
+  !!editorPreview && previewText === editorText.trim() && editorPreview.status !== "invalid" && !previewLoading,
+);
 
 onMount(() => {
-  void loadState(lifecycleController.signal);
+  void loadState();
 });
-
 onDestroy(() => {
   loadSequence += 1;
   querySequence += 1;
-  lifecycleController.abort();
+  lifecycle.abort();
 });
 
 $effect(() => {
-  const normalized = queryText.trim().split(/\s+/).join(" ");
-  const timeout = setTimeout(() => {
-    if (normalizedSearch !== normalized) normalizedSearch = normalized;
+  const text = queryText.trim();
+  const timer = setTimeout(() => {
+    search = text;
   }, 250);
-  return () => clearTimeout(timeout);
+  return () => clearTimeout(timer);
 });
 
 $effect(() => {
-  const fingerprint = mappingState?.activeChainFingerprint;
-  const search = normalizedSearch;
-  const activeSource = sourceFilter;
-  const scope = occurrenceScope;
+  const fingerprint = mappingState?.fingerprint;
+  const filter = search;
+  querySequence += 1;
+  pages = [];
+  pageIndex = 0;
+  queryError = "";
   if (!fingerprint) {
-    pages = [];
-    pageIndex = 0;
     queryLoading = false;
     return;
   }
   const controller = new AbortController();
-  void loadFirstPage(fingerprint, search, activeSource, scope === "all", controller.signal);
+  void loadFirstPage(fingerprint, filter, controller.signal);
   return () => controller.abort();
 });
 
-async function loadState(signal?: AbortSignal): Promise<void> {
+async function loadState(): Promise<void> {
   const sequence = ++loadSequence;
-  loading = !mappingState;
-  reloading = Boolean(mappingState);
+  loading = true;
   errorMessage = "";
   try {
-    const snapshot = await getMappingState(signal);
-    if (sequence !== loadSequence) return;
-    mappingState = snapshot;
-    if (sourceFilter !== "all" && !snapshot.sources.some((source) => source.sourceKey === sourceFilter)) {
-      sourceFilter = "all";
+    const [next, sources] = await Promise.all([getMappingState(lifecycle.signal), getMappingSources(lifecycle.signal)]);
+    if (sequence === loadSequence) {
+      mappingState = next;
+      mappingSources = sources.sources;
     }
   } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") return;
-    if (sequence === loadSequence) errorMessage = messageFor(error, "Mappings could not be loaded");
+    if (sequence === loadSequence && !lifecycle.signal.aborted) errorMessage = message(error);
   } finally {
-    if (sequence === loadSequence) {
-      loading = false;
-      reloading = false;
-    }
+    if (sequence === loadSequence) loading = false;
   }
 }
 
-async function loadFirstPage(
-  expectedChainFingerprint: string,
-  search: string,
-  activeSource: string,
-  includeShadowed: boolean,
-  signal?: AbortSignal,
-): Promise<void> {
+async function loadFirstPage(fingerprint: string, filter: string, signal: AbortSignal): Promise<void> {
   const sequence = ++querySequence;
   queryLoading = true;
-  queryError = "";
-  expandedResultKey = "";
   try {
     const page = await queryMappings(
-      {
-        expectedChainFingerprint,
-        limit: MAPPING_PAGE_LIMIT,
-        ...(search ? { search } : {}),
-        ...(activeSource !== "all" ? { sourceKey: activeSource } : {}),
-        ...(includeShadowed ? { includeShadowed: true } : {}),
-      },
+      { expectedFingerprint: fingerprint, search: filter, limit: MAPPING_PAGE_LIMIT },
       signal,
     );
-    if (sequence !== querySequence) return;
-    pages = [page];
-    pageIndex = 0;
+    if (sequence === querySequence) pages = [page];
   } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") return;
-    if (sequence !== querySequence) return;
-    handleQueryError(error, "Mappings could not be loaded");
-    pages = [];
-    pageIndex = 0;
+    if (sequence === querySequence && !signal.aborted) handleQueryError(error);
   } finally {
     if (sequence === querySequence) queryLoading = false;
   }
 }
 
-async function showNextPage(): Promise<void> {
+async function nextPage(): Promise<void> {
   const page = currentPage;
   if (!page?.nextCursor || queryLoading) return;
-  const cached = pages[pageIndex + 1];
-  if (cached) {
+  if (pages[pageIndex + 1]) {
     pageIndex += 1;
-    expandedResultKey = "";
     return;
   }
   const sequence = querySequence;
   queryLoading = true;
   queryError = "";
   try {
-    const next = await queryMappings({
-      expectedChainFingerprint: page.chainFingerprint,
-      cursor: page.nextCursor,
-      limit: MAPPING_PAGE_LIMIT,
-      ...(normalizedSearch ? { search: normalizedSearch } : {}),
-      ...(sourceFilter !== "all" ? { sourceKey: sourceFilter } : {}),
-      ...(occurrenceScope === "all" ? { includeShadowed: true } : {}),
-    });
-    if (sequence !== querySequence) return;
-    pages = [...pages.slice(0, pageIndex + 1), next];
-    pageIndex += 1;
-    expandedResultKey = "";
+    const next = await queryMappings(
+      { expectedFingerprint: page.fingerprint, search, cursor: page.nextCursor, limit: MAPPING_PAGE_LIMIT },
+      lifecycle.signal,
+    );
+    if (sequence === querySequence) {
+      pages = [...pages, next];
+      pageIndex += 1;
+    }
   } catch (error) {
-    if (sequence === querySequence) handleQueryError(error, "The next mapping page could not be loaded");
+    if (sequence === querySequence && !lifecycle.signal.aborted) handleQueryError(error);
   } finally {
     if (sequence === querySequence) queryLoading = false;
   }
 }
 
-function showPreviousPage(): void {
-  if (queryLoading || pageIndex === 0) return;
-  pageIndex -= 1;
-  expandedResultKey = "";
-}
-
-function handleQueryError(error: unknown, fallback: string): void {
-  if (error instanceof ApiRequestError && error.code === "mapping_chain_changed") {
-    void loadState(lifecycleController.signal);
-    queryError = "The mapping chain changed. Results are being reloaded.";
+function handleQueryError(error: unknown): void {
+  if (error instanceof ApiRequestError && error.code === "mappings_changed") {
+    void loadState();
   } else {
-    queryError = messageFor(error, fallback);
+    queryError = message(error);
   }
 }
 
-function openCreateMapping(): void {
-  editorResult = undefined;
-  editorMode = "create";
-  mappingRecord = "";
+function message(error: unknown): string {
+  return error instanceof Error ? error.message : "Mappings are unavailable";
+}
+
+function rememberFocus(): void {
+  returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
+}
+
+function restoreFocus(event: Event): void {
+  event.preventDefault();
+  returnFocus?.focus();
+}
+
+function openEditor(claim?: MappingResult): void {
+  if (!mappingState || busy) return;
+  rememberFocus();
+  editing = claim;
+  editorText = claim?.canonicalRecord ?? "";
+  editorFingerprint = mappingState.fingerprint;
   editorError = "";
+  editorPreview = undefined;
+  previewText = "";
+  previewSequence += 1;
+  previewLoading = false;
   editorOpen = true;
 }
 
-function openMappingEditor(result: MappingResult): void {
-  if (result.sourceKey !== "local") return;
-  editorResult = result;
-  editorMode = "edit";
-  mappingRecord = result.canonicalRecord;
-  editorError = "";
-  editorOpen = true;
-}
-
-function openLocalOverride(result: MappingResult): void {
-  if (result.sourceKey === "local") return;
-  editorResult = undefined;
-  editorMode = "override";
-  mappingRecord = result.canonicalRecord;
-  editorError = "";
-  editorOpen = true;
-}
-
-async function saveMapping(): Promise<void> {
-  if (reloading || changesPending) return;
-  supersedeLoads();
-  editorSaving = true;
+async function previewEditor(): Promise<void> {
+  const text = editorText.trim();
+  if (!text || busy) return;
+  const sequence = ++previewSequence;
+  previewLoading = true;
   editorError = "";
   try {
-    mappingState =
-      editorMode === "edit" && editorResult
-        ? await updateLocalMapping(editorResult.statementId, { record: mappingRecord }, lifecycleController.signal)
-        : await createLocalMapping({ record: mappingRecord }, lifecycleController.signal);
-    editorOpen = false;
+    const result = await previewMapping(text, lifecycle.signal);
+    if (sequence === previewSequence && editorOpen && text === editorText.trim()) {
+      editorPreview = result;
+      previewText = text;
+    }
   } catch (error) {
-    editorError = messageFor(error, "Local mapping could not be saved");
-    await loadState(lifecycleController.signal);
+    if (sequence === previewSequence && !lifecycle.signal.aborted) editorError = message(error);
   } finally {
-    editorSaving = false;
+    if (sequence === previewSequence) previewLoading = false;
   }
 }
 
-function requestRemoval(result: MappingResult): void {
-  if (result.sourceKey !== "local") return;
-  removalMapping = result;
-  removalError = "";
+async function submitEditor(event: SubmitEvent): Promise<void> {
+  event.preventDefault();
+  if (!canSave || busy) return;
+  busy = true;
+  editorError = "";
+  try {
+    mappingState = await saveMapping(
+      { expectedFingerprint: editorFingerprint, record: editorText, replaces: editing?.claimId },
+      lifecycle.signal,
+    );
+    editorOpen = false;
+  } catch (error) {
+    editorError = message(error);
+    if (error instanceof ApiRequestError && error.code === "mappings_changed") {
+      editorPreview = undefined;
+      previewText = "";
+      await loadState();
+      editorFingerprint = mappingState?.fingerprint ?? editorFingerprint;
+    }
+  } finally {
+    busy = false;
+  }
+}
+
+async function changeDecision(claim: MappingResult): Promise<void> {
+  if (!mappingState || busy) return;
+  busy = true;
+  queryError = "";
+  try {
+    mappingState = await decideMapping(claim.claimId, mappingState.fingerprint, !claim.rejected, lifecycle.signal);
+  } catch (error) {
+    handleQueryError(error);
+  } finally {
+    busy = false;
+  }
+}
+
+function confirmRemove(claim: MappingResult, action: "delete" | "revert" = "delete"): void {
+  rememberFocus();
+  removeTarget = claim;
+  removeAction = action;
   removeOpen = true;
 }
 
-async function confirmRemoval(): Promise<void> {
-  const result = removalMapping;
-  if (!result || reloading || changesPending) return;
-  supersedeLoads();
-  removalPending = true;
-  removalError = "";
+async function removeMapping(): Promise<void> {
+  if (!mappingState || !removeTarget || busy) return;
+  busy = true;
+  queryError = "";
   try {
-    mappingState = await removeLocalMapping(result.statementId, lifecycleController.signal);
+    mappingState = await (removeAction === "revert" ? revertMapping : deleteMapping)(
+      removeTarget.claimId,
+      mappingState.fingerprint,
+      lifecycle.signal,
+    );
     removeOpen = false;
-    removalMapping = undefined;
   } catch (error) {
-    removalError = messageFor(error, "Local mapping could not be deleted");
-    await loadState(lifecycleController.signal);
+    handleQueryError(error);
   } finally {
-    removalPending = false;
+    busy = false;
   }
 }
 
-function changeEditorOpen(open: boolean): void {
-  if (editorSaving) return;
-  editorOpen = open;
-  if (!open) editorResult = undefined;
-}
-
-function changeRemoveOpen(open: boolean): void {
-  if (removalPending) return;
-  removeOpen = open;
-  if (!open) removalMapping = undefined;
-}
-
-function supersedeLoads(): void {
-  loadSequence += 1;
-  loading = false;
-  reloading = false;
-}
-
-function toggleExpanded(result: MappingResult): void {
-  const key = resultKey(result);
-  expandedResultKey = expandedResultKey === key ? "" : key;
-}
-
-function relationParts(result: MappingResult): { left: string; right: string } | undefined {
-  const marker = ` ${result.operator} `;
-  const operatorIndex = result.canonicalStatement.indexOf(marker);
-  if (operatorIndex < 0) return undefined;
-  return {
-    left: result.canonicalStatement.slice(0, operatorIndex),
-    right: result.canonicalStatement.slice(operatorIndex + marker.length),
-  };
-}
-
-function editorTitle(): string {
-  if (editorMode === "edit") return "Edit local mapping";
-  if (editorMode === "override") return "Override mapping locally";
-  return "Add local mapping";
-}
-
-function sourceName(sourceKey: string): string {
-  return sourceNames.get(sourceKey) ?? sourceKey;
-}
-
-function annotationRegionId(result: MappingResult): string {
-  return `mapping-annotations-${result.statementId}-${result.layerPosition}-${result.recordOrdinal}`;
-}
-
-function messageFor(error: unknown, fallback: string): string {
-  if (error instanceof ApiRequestError && error.code === "mapping_chain_changed") {
-    return "The mapping chain changed. The latest state has been loaded; try again.";
-  }
-  return error instanceof Error ? error.message : fallback;
-}
-
-function resultKey(result: MappingResult): string {
-  return `${result.sourceKey}:${result.statementId}:${result.layerPosition}:${result.recordOrdinal}`;
+function statusLabel(status: MappingResult["status"]): string {
+  return status === "rejected" ? "Suppressed" : status[0].toUpperCase() + status.slice(1);
 }
 </script>
 
 <svelte:head><title>Trakkin &middot; Mappings</title></svelte:head>
 
 <div class="flex h-full min-h-0 flex-col">
-  <MappingsHeader>
+  <PageHeader title="Mappings">
     {#snippet actions()}
       <IconButton
-        disabled={loading || reloading || changesPending}
+        href="/mappings/sources"
+        label="Mapping sources"
+        size="sm"
+        ><Database
+          aria-hidden="true"
+          size={14}
+        /></IconButton
+      >
+      <IconButton
+        disabled={!mappingState || busy}
+        label="Create mapping"
+        onclick={() => openEditor()}
+        size="sm"
+        ><Plus
+          aria-hidden="true"
+          size={14}
+        /></IconButton
+      >
+      <IconButton
+        disabled={loading || busy}
         label="Refresh mappings"
         onclick={() => void loadState()}
         size="sm"
-        title="Refresh mappings"
       >
-        <span class={["inline-flex", reloading && "animate-spin"]}>
-          <RefreshCw
-            aria-hidden="true"
-            size={14}
-          />
-        </span>
-      </IconButton>
-      <Button
-        disabled={loading || reloading || changesPending}
-        onclick={openCreateMapping}
-        size="sm"
-        variant="primary"
-      >
-        <Plus
+        <RefreshCw
           aria-hidden="true"
           size={14}
         />
-        Add mapping
-      </Button>
+      </IconButton>
     {/snippet}
-  </MappingsHeader>
-
+  </PageHeader>
+  {#if errorMessage}
+    <p
+      class="border-b border-danger/20 px-4 py-3 text-label text-danger"
+      role="alert"
+    >
+      {errorMessage}
+    </p>
+  {/if}
   {#if loading && !mappingState}
     <div
       class="flex min-h-48 flex-1 items-center justify-center gap-2 text-label text-text-muted"
       role="status"
     >
-      <Spinner size={16} />
-      Loading mappings...
+      <Spinner size={16} />Loading mappings...
     </div>
   {:else if !mappingState}
-    <div class="flex min-h-0 flex-1 p-4 sm:p-6">
-      <Panel
-        class="grid min-h-48 w-full place-items-center px-4 py-6 text-center text-label text-danger"
-        tone="danger"
-      >
-        <div>
-          <p>{errorMessage || "Mappings are unavailable"}</p>
-          <Button
-            class="mt-4"
-            onclick={() => void loadState()}
-            size="sm"
-          >
-            <RefreshCw
-              aria-hidden="true"
-              size={14}
-            />
-            Retry
-          </Button>
-        </div>
-      </Panel>
+    <div
+      class="grid min-h-48 flex-1 place-items-center text-label text-text-muted"
+      role="status"
+    >
+      Mappings unavailable
     </div>
   {:else}
-    <section
-      aria-label="Mappings"
-      class="flex min-h-0 flex-1 flex-col"
+    <dl
+      aria-label="Mapping records"
+      class="grid grid-cols-2 gap-3 border-b border-border-subtle px-4 py-3 text-meta sm:grid-cols-4 sm:px-6"
     >
-      <PageToolbar label="Mapping filters">
-        <div class="grid min-w-0 gap-2 sm:grid-cols-[minmax(12rem,1fr)_minmax(10rem,15rem)_auto] sm:items-center">
-          <div class="relative min-w-0">
-            <Search
-              aria-hidden="true"
-              class="pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2 text-text-faint"
-              size={14}
-            />
-            <TextInput
-              aria-label="Search mappings"
-              class="w-full pl-8"
-              placeholder="Search mappings"
-              bind:value={queryText}
-            />
-          </div>
-          <Select
-            ariaLabel="Filter by mapping source"
-            items={sourceItems}
-            onValueChange={(value) => (sourceFilter = value)}
-            triggerClass="w-full"
-            value={sourceFilter}
-          />
-          <Tabs.Root
-            variant="segmented"
-            bind:value={occurrenceScope}
-          >
-            <Tabs.List aria-label="Mapping occurrence scope">
-              <Tabs.Trigger value="active">Active</Tabs.Trigger>
-              <Tabs.Trigger value="all">All occurrences</Tabs.Trigger>
-            </Tabs.List>
-          </Tabs.Root>
-        </div>
-      </PageToolbar>
-
-      {#if queryError}
-        <div
-          class="border-b border-danger/20 bg-danger/6 px-4 py-2 text-label text-danger"
-          role="alert"
-        >
-          {queryError}
-        </div>
-      {/if}
-
-      {#if queryLoading && !currentPage}
-        <div
-          class="flex min-h-40 flex-1 items-center justify-center gap-2 text-label text-text-muted"
-          role="status"
-        >
-          <Spinner size={15} />
-          Loading mappings...
-        </div>
-      {:else if !currentPage?.items.length}
-        <EmptyState
-          class="m-4 min-h-48 flex-1"
-          description="Adjust the source filter or search terms."
-          icon={Braces}
-          title="No mappings found"
+      <div>
+        <dt class="text-text-muted">Records</dt>
+        <dd>{mappingState.records.toLocaleString()}</dd>
+      </div>
+      <div>
+        <dt class="text-text-muted">Active</dt>
+        <dd>{mappingState.active.toLocaleString()}</dd>
+      </div>
+      <div>
+        <dt class="text-text-muted">Suppressed</dt>
+        <dd>{mappingState.rejected.toLocaleString()}</dd>
+      </div>
+      <div>
+        <dt class="text-text-muted">Indexed units</dt>
+        <dd>{mappingState.units.toLocaleString()}</dd>
+      </div>
+    </dl>
+    <PageToolbar label="Mapping filters">
+      <div class="relative min-w-0">
+        <Search
+          aria-hidden="true"
+          class="pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2 text-text-faint"
+          size={14}
         />
-      {:else}
-        <div class="min-h-0 flex-1 overflow-y-auto">
-          <ul class="divide-y divide-border-subtle">
-            {#each currentPage.items as result (resultKey(result))}
-              {@const parts = relationParts(result)}
-              {@const expanded = expandedResultKey === resultKey(result)}
-              <li class="px-4 py-3 sm:px-6">
-                <div class="flex min-w-0 items-start gap-3">
-                  <div class="min-w-0 flex-1">
-                    {#if parts}
-                      <div
-                        class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 font-mono text-label text-text-primary"
-                      >
-                        <span
-                          class="min-w-0 truncate"
-                          title={parts.left}
-                          >{parts.left}</span
-                        >
-                        <span
-                          class="shrink-0 rounded-control border border-border-strong bg-white/3 px-1.5 py-0.5 text-meta text-text-muted"
-                        >
-                          {result.operator}
-                        </span>
-                        <span
-                          class="min-w-0 truncate"
-                          title={parts.right}
-                          >{parts.right}</span
-                        >
-                      </div>
-                    {:else}
-                      <p
-                        class="truncate font-mono text-label text-text-primary"
-                        title={result.canonicalStatement}
-                      >
-                        {result.canonicalStatement}
-                      </p>
-                    {/if}
-                    {#if occurrenceScope === "all" || result.occurrenceCount > 1}
-                      <div class="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-meta text-text-muted">
-                        {#if occurrenceScope === "all"}
-                          <span>{result.active ? "Active" : "Shadowed"}</span>
-                        {/if}
-                        {#if result.occurrenceCount > 1}
-                          <span>{result.occurrenceCount} occurrences</span>
-                        {/if}
-                      </div>
-                    {/if}
-                  </div>
-                  <div class="flex min-h-8 shrink-0 items-center gap-0.5">
-                    <span
-                      class={[
-                        "mr-1 max-w-36 truncate rounded-control border px-1.5 py-0.5 text-meta",
-                        result.sourceKey === "local"
-                          ? "border-accent/20 bg-accent/7 text-accent"
-                          : "border-border-subtle bg-white/3 text-text-muted",
-                      ]}
-                      title={sourceName(result.sourceKey)}
-                    >
-                      {sourceName(result.sourceKey)}
-                    </span>
-                    {#if result.metadata.length}
-                      <IconButton
-                        aria-controls={annotationRegionId(result)}
-                        aria-expanded={expanded}
-                        label={`${expanded ? "Hide" : "Show"} annotations for ${result.canonicalStatement}`}
-                        onclick={() => toggleExpanded(result)}
-                        size="sm"
-                        title={expanded ? "Hide annotations" : "Show annotations"}
-                        variant="ghost"
-                      >
-                        {#if expanded}
-                          <ChevronDown
-                            aria-hidden="true"
-                            size={13}
-                          />
-                        {:else}
-                          <ChevronRight
-                            aria-hidden="true"
-                            size={13}
-                          />
-                        {/if}
-                      </IconButton>
-                    {/if}
-                    {#if result.sourceKey === "local"}
-                      <IconButton
-                        disabled={reloading || changesPending}
-                        label={`Edit ${result.canonicalStatement}`}
-                        onclick={() => openMappingEditor(result)}
-                        size="sm"
-                        title="Edit local mapping"
-                        variant="ghost"
-                      >
-                        <Pencil
-                          aria-hidden="true"
-                          size={13}
-                        />
-                      </IconButton>
-                      <IconButton
-                        disabled={reloading || changesPending}
-                        label={`Delete ${result.canonicalStatement}`}
-                        onclick={() => requestRemoval(result)}
-                        size="sm"
-                        title="Delete local mapping"
-                        variant="danger"
-                      >
-                        <Trash2
-                          aria-hidden="true"
-                          size={13}
-                        />
-                      </IconButton>
-                    {:else}
-                      <IconButton
-                        disabled={reloading || changesPending}
-                        label={`Override ${result.canonicalStatement} locally`}
-                        onclick={() => openLocalOverride(result)}
-                        size="sm"
-                        title="Override locally"
-                        variant="ghost"
-                      >
-                        <CopyPlus
-                          aria-hidden="true"
-                          size={13}
-                        />
-                      </IconButton>
-                    {/if}
-                  </div>
-                </div>
-                {#if expanded}
-                  <div
-                    class="mt-3 border-l-2 border-border-strong pl-3"
-                    id={annotationRegionId(result)}
-                  >
-                    <p class="font-mono text-meta wrap-anywhere text-text-muted">{result.canonicalRecord}</p>
-                    <ul class="mt-2 grid gap-1 font-mono text-meta text-text-secondary">
-                      {#each result.metadata as annotation}
-                        <li class="wrap-anywhere">{annotation}</li>
-                      {/each}
-                    </ul>
-                  </div>
-                {/if}
-              </li>
-            {/each}
-          </ul>
-        </div>
-        <footer
-          class="flex shrink-0 items-center justify-between border-t border-border-strong bg-surface-raised/30 px-4 py-2.5 sm:px-6"
-        >
-          <span class="text-meta text-text-muted">Page {pageIndex + 1}</span>
-          <div class="flex items-center gap-1">
-            <IconButton
-              disabled={queryLoading || pageIndex === 0}
-              label="Previous mapping page"
-              onclick={showPreviousPage}
-              size="sm"
-              title="Previous page"
-            >
-              <ArrowLeft
-                aria-hidden="true"
-                size={14}
-              />
-            </IconButton>
-            <IconButton
-              disabled={queryLoading || !currentPage.nextCursor}
-              label="Next mapping page"
-              onclick={() => void showNextPage()}
-              size="sm"
-              title="Next page"
-            >
-              <ArrowRight
-                aria-hidden="true"
-                size={14}
-              />
-            </IconButton>
-          </div>
-        </footer>
-      {/if}
-    </section>
-  {/if}
-
-  {#if mappingState && errorMessage}
-    <div class="pointer-events-none fixed right-4 bottom-4 left-4 z-40 flex justify-center">
-      <Panel
-        class="pointer-events-auto max-w-xl px-4 py-3 text-label text-danger shadow-[0_18px_44px_rgb(0_0_0/45%)]"
+        <TextInput
+          aria-label="Search mappings"
+          class="w-full pl-8"
+          placeholder="Search mappings"
+          bind:value={queryText}
+        />
+      </div>
+    </PageToolbar>
+    {#if queryError}
+      <p
+        class="px-4 py-3 text-label text-danger"
         role="alert"
-        tone="danger"
-        >{errorMessage}</Panel
       >
+        {queryError}
+      </p>
+    {/if}
+    {#if queryLoading && !currentPage}
+      <div
+        class="flex min-h-40 flex-1 items-center justify-center gap-2 text-label text-text-muted"
+        role="status"
+      >
+        <Spinner size={16} />Loading mappings...
+      </div>
+    {:else if !currentPage?.items.length}
+      <div
+        class="grid min-h-48 flex-1 place-items-center text-label text-text-muted"
+        role="status"
+      >
+        No mappings found
+      </div>
+    {:else}
+      <div class="min-h-0 flex-1 overflow-y-auto">
+        <ul
+          aria-label="Mapping claims"
+          class="divide-y divide-border-subtle"
+        >
+          {#each currentPage.items as claim (claim.claimId)}
+            <li class="min-w-0 px-4 py-3 sm:px-6">
+              <div class="flex items-start gap-3">
+                <div class="min-w-0 flex-1">
+                  <p
+                    class="break-all font-mono text-label"
+                    class:text-text-muted={claim.rejected}
+                  >
+                    {claim.canonicalStatement}
+                  </p>
+                  <p class="mt-1 wrap-break-word text-meta text-text-muted">
+                    {statusLabel(claim.status)}
+                    |
+                    {claim.sources.map((id) => mappingSources.find((source) => source.id === id)?.displayName ?? id).join(", ")}
+                  </p>
+                </div>
+                <div class="flex shrink-0 gap-0.5">
+                  <IconButton
+                    disabled={busy}
+                    label={claim.sources.some((source) => source !== "local") ? "Replace mapping" : "Edit mapping"}
+                    onclick={() => openEditor(claim)}
+                    size="sm"
+                    ><Pencil
+                      aria-hidden="true"
+                      size={14}
+                    /></IconButton
+                  >
+                  <IconButton
+                    disabled={busy}
+                    label={claim.rejected ? "Restore mapping" : "Suppress mapping"}
+                    onclick={() => void changeDecision(claim)}
+                    size="sm"
+                  >
+                    {#if claim.rejected}
+                      <Undo2
+                        aria-hidden="true"
+                        size={14}
+                      />
+                    {:else}
+                      <Ban
+                        aria-hidden="true"
+                        size={14}
+                      />
+                    {/if}
+                  </IconButton>
+                  <IconButton
+                    disabled={busy || claim.sources.some((source) => source !== "local")}
+                    label="Delete mapping"
+                    onclick={() => confirmRemove(claim)}
+                    size="sm"
+                    ><Trash2
+                      aria-hidden="true"
+                      size={14}
+                    /></IconButton
+                  >
+                  {#if claim.sources.includes("local") && claim.sources.some((source) => source !== "local")}
+                    <IconButton
+                      disabled={busy}
+                      label="Revert to upstream"
+                      onclick={() => confirmRemove(claim, "revert")}
+                      size="sm"
+                      ><RotateCcw
+                        aria-hidden="true"
+                        size={14}
+                      /></IconButton
+                    >
+                  {/if}
+                </div>
+              </div>
+              <p class="mt-1 break-all font-mono text-meta text-text-faint">{claim.claimId}</p>
+              {#if claim.diagnostics.length}
+                <ul class="mt-2 space-y-1 wrap-break-word text-meta text-text-muted">
+                  {#each claim.diagnostics as diagnostic}
+                    <li>{diagnostic}</li>
+                  {/each}
+                </ul>
+              {/if}
+              {#if claim.metadata.length}
+                <details class="mt-2 text-meta text-text-muted">
+                  <summary class="cursor-pointer">Annotations ({claim.metadata.length})</summary>
+                  <pre class="mt-2 whitespace-pre-wrap break-all font-mono">{claim.metadata.join("\n")}</pre>
+                </details>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      </div>
+    {/if}
+    <div
+      class="flex shrink-0 items-center justify-between border-t border-border-subtle px-4 py-2 text-meta text-text-muted"
+    >
+      <span>Page {pageIndex + 1}</span>
+      <div class="flex gap-1">
+        <IconButton
+          disabled={queryLoading || pageIndex === 0}
+          label="Previous page"
+          onclick={() => {
+  pageIndex -= 1;
+}}
+          size="sm"
+          ><ArrowLeft
+            aria-hidden="true"
+            size={14}
+          /></IconButton
+        >
+        <IconButton
+          disabled={queryLoading || !currentPage?.nextCursor}
+          label="Next page"
+          onclick={() => void nextPage()}
+          size="sm"
+          ><ArrowRight
+            aria-hidden="true"
+            size={14}
+          /></IconButton
+        >
+      </div>
     </div>
   {/if}
-
-  <Dialog.Root
-    onOpenChange={changeEditorOpen}
-    bind:open={editorOpen}
-  >
-    <Dialog.Drawer
-      class="sm:max-w-lg"
-      style={editorOpen ? "translate: none" : undefined}
-    >
-      <form
-        class="flex min-h-0 flex-1 flex-col"
-        onsubmit={(event) => { event.preventDefault(); void saveMapping(); }}
-      >
-        <header class="flex shrink-0 items-start justify-between gap-4 border-b border-border-strong px-4 py-4 sm:px-5">
-          <div class="min-w-0">
-            <Dialog.Title class="text-title font-semibold text-text-primary">{editorTitle()}</Dialog.Title>
-            <Dialog.Description class="mt-1 text-label text-text-muted"
-              >The record is compiled into the local mapping source.</Dialog.Description
-            >
-          </div>
-          <IconButton
-            disabled={editorSaving}
-            label="Close mapping editor"
-            onclick={() => changeEditorOpen(false)}
-            size="sm"
-            type="button"
-          >
-            <X
-              aria-hidden="true"
-              size={15}
-            />
-          </IconButton>
-        </header>
-        <div class="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-5">
-          <label
-            class="grid gap-1.5 text-label text-text-muted"
-            for="local-mapping-record"
-          >
-            Mapping record
-            <Textarea
-              class="min-h-40 font-mono text-[0.78rem] leading-5"
-              id="local-mapping-record"
-              placeholder="co.anilist://anime/1 <=> org.themoviedb://tv/2"
-              required
-              spellcheck="false"
-              bind:value={mappingRecord}
-            />
-          </label>
-          {#if editorError}
-            <p
-              class="mt-3 text-label text-danger"
-              role="alert"
-            >
-              {editorError}
-            </p>
-          {/if}
-        </div>
-        <footer
-          class="flex shrink-0 items-center justify-end gap-2 border-t border-border-strong bg-surface-raised px-4 py-3 sm:px-5"
-        >
-          <Button
-            disabled={editorSaving}
-            onclick={() => changeEditorOpen(false)}
-            type="button"
-            variant="ghost"
-            >Cancel</Button
-          >
-          <Button
-            disabled={editorSaving}
-            type="submit"
-            variant="primary"
-          >
-            {#if editorSaving}
-              <Spinner size={14} />
-            {/if}
-            {editorMode === "edit" ? "Save mapping" : "Add mapping"}
-          </Button>
-        </footer>
-      </form>
-    </Dialog.Drawer>
-  </Dialog.Root>
-
-  <AlertDialog.Root
-    onOpenChange={changeRemoveOpen}
-    bind:open={removeOpen}
-  >
-    <AlertDialog.Content>
-      <AlertDialog.Title class="text-title font-semibold text-text-primary">Delete local mapping?</AlertDialog.Title>
-      <AlertDialog.Description class="mt-1 font-mono text-label leading-5 wrap-anywhere text-text-muted">
-        {removalMapping?.canonicalStatement ?? "This mapping"}
-      </AlertDialog.Description>
-      {#if removalError}
-        <p
-          class="mt-4 text-label text-danger"
-          role="alert"
-        >
-          {removalError}
-        </p>
-      {/if}
-      <div class="mt-5 flex justify-end gap-2">
-        <AlertDialog.Cancel
-          class="inline-flex h-8 items-center rounded-md border border-border-subtle px-3 text-label text-text-secondary hover:bg-white/4 disabled:pointer-events-none disabled:opacity-35"
-          disabled={removalPending}
-          >Cancel</AlertDialog.Cancel
-        >
-        <AlertDialog.Action
-          class="inline-flex h-8 items-center gap-1.5 rounded-md border border-danger/30 bg-danger/8 px-3 text-label text-danger hover:bg-danger/12 disabled:pointer-events-none disabled:opacity-35"
-          disabled={removalPending}
-          onclick={(event) => { event.preventDefault(); void confirmRemoval(); }}
-        >
-          {#if removalPending}
-            <Spinner size={13} />
-          {/if}
-          Delete
-        </AlertDialog.Action>
-      </div>
-    </AlertDialog.Content>
-  </AlertDialog.Root>
 </div>
+
+<Dialog.Root bind:open={editorOpen}>
+  <Dialog.Drawer
+    escapeKeydownBehavior={busy ? "ignore" : "close"}
+    interactOutsideBehavior={busy ? "ignore" : "close"}
+    onCloseAutoFocus={restoreFocus}
+  >
+    <form
+      class="flex h-full min-h-0 flex-col"
+      onsubmit={submitEditor}
+    >
+      <div class="flex shrink-0 items-center justify-between border-b border-border-subtle px-5 py-4">
+        <Dialog.Title class="text-title font-semibold">{editing ? "Edit mapping" : "New mapping"}</Dialog.Title>
+        <IconButton
+          disabled={busy}
+          label="Close mapping editor"
+          onclick={() => (editorOpen = false)}
+          size="sm"
+          ><X
+            aria-hidden="true"
+            size={16}
+          /></IconButton
+        >
+      </div>
+      <Dialog.Description class="sr-only">Canonical mapping record</Dialog.Description>
+      <div class="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
+        {#if editing}
+          <p class="break-all font-mono text-meta text-text-muted">{editing.claimId}</p>
+        {/if}
+        <div class="space-y-2">
+          <label
+            class="text-label"
+            for="mapping-record"
+            >Mapping record</label
+          >
+          <Textarea
+            class="w-full font-mono text-label"
+            id="mapping-record"
+            rows={10}
+            spellcheck={false}
+            bind:value={editorText}
+          />
+        </div>
+        {#if editorError}
+          <p
+            class="wrap-break-word text-label text-danger"
+            role="alert"
+          >
+            {editorError}
+          </p>
+        {/if}
+        {#if editorPreview && previewText === editorText.trim()}
+          <section
+            aria-label="Mapping preview"
+            class="space-y-2 border-t border-border-subtle pt-4"
+          >
+            <p class="text-label">{statusLabel(editorPreview.status)}</p>
+            <p class="break-all font-mono text-meta text-text-muted">{editorPreview.canonicalStatement}</p>
+            {#each editorPreview.diagnostics as diagnostic}
+              <p class="wrap-break-word text-meta text-text-muted">{diagnostic}</p>
+            {/each}
+          </section>
+        {/if}
+      </div>
+      <div class="flex shrink-0 justify-end gap-2 border-t border-border-subtle p-4">
+        <Button
+          disabled={busy}
+          onclick={() => (editorOpen = false)}
+          >Cancel</Button
+        >
+        <Button
+          disabled={busy || previewLoading || !editorText.trim()}
+          onclick={() => void previewEditor()}
+          >{#if previewLoading}
+            <Spinner size={14} />
+          {/if}
+          Preview</Button
+        >
+        <Button
+          disabled={busy || !canSave}
+          type="submit"
+          >{#if busy}
+            <Spinner size={14} />
+          {/if}
+          {editing && editing.claimId !== editorPreview?.claimId ? "Replace" : "Save"}</Button
+        >
+      </div>
+    </form>
+  </Dialog.Drawer>
+</Dialog.Root>
+
+<AlertDialog.Root bind:open={removeOpen}>
+  <AlertDialog.Content>
+    <AlertDialog.Title class="text-title font-semibold"
+      >{removeAction === "revert" ? "Revert local decision?" : "Delete mapping?"}</AlertDialog.Title
+    >
+    <AlertDialog.Description class="mt-3 break-all font-mono text-label text-text-muted"
+      >{removeTarget?.canonicalStatement}</AlertDialog.Description
+    >
+    <div class="mt-5 flex justify-end gap-2">
+      <AlertDialog.Cancel disabled={busy}>Cancel</AlertDialog.Cancel>
+      <AlertDialog.Action
+        disabled={busy}
+        onclick={() => void removeMapping()}
+        >{removeAction === "revert" ? "Revert" : "Delete"}</AlertDialog.Action
+      >
+    </div>
+  </AlertDialog.Content>
+</AlertDialog.Root>

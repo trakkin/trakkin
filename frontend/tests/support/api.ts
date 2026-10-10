@@ -1,4 +1,5 @@
 import { expect, type Page, type Route } from "@playwright/test";
+import type { MappingSource } from "../../src/lib/api/mappings.ts";
 import type { TaskRun } from "../../src/lib/api/operations.ts";
 
 export const workspaceId = "11111111-1111-1111-1111-111111111111";
@@ -7,6 +8,23 @@ export const sourceId = "33333333-3333-3333-3333-333333333333";
 export const taskId = "44444444-4444-4444-4444-444444444444";
 export const authenticationId = "77777777-7777-7777-7777-777777777777";
 export const timestamp = "2030-01-02T03:04:05Z";
+export const localMappingSource = {
+  id: "local",
+  displayName: "Local",
+  kind: "local" as const,
+  enabled: true,
+  url: null,
+  branch: null,
+  repositoryPath: "/var/lib/trakkin/mapping-repositories/local",
+  pollIntervalSeconds: null,
+  cachedRecords: 2,
+  revision: "a".repeat(40),
+  lastCheckedAt: null,
+  lastUpdatedAt: null,
+  nextCheckAt: null,
+  consecutiveFailures: 0,
+  lastError: null,
+} satisfies MappingSource;
 export const activeFixtureProvider = {
   providerId: "dev.trakkin.fixture",
   sourceId: "88888888-8888-4888-8888-888888888888",
@@ -60,6 +78,9 @@ export async function json(route: Route, body: unknown, status = 200) {
 
 export async function fallback(route: Route) {
   const url = new URL(route.request().url());
+  if (url.pathname === "/api/v1/mappings/sources" && route.request().method() === "GET") {
+    return json(route, { fingerprint: "e".repeat(64), sources: [localMappingSource] });
+  }
   if (url.pathname === "/api/v1/providers" && route.request().method() === "GET") {
     return json(route, [activeFixtureProvider]);
   }

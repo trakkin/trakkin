@@ -6,7 +6,7 @@ import type { HTMLAttributes } from "svelte/elements";
 type Props = Omit<HTMLAttributes<HTMLElement>, "children"> & {
   title: string;
   description?: string;
-  icon: Component<IconProps>;
+  icon: Component<Omit<IconProps, "icon" | "iconNode">>;
   actions?: Snippet;
 };
 
@@ -15,7 +15,7 @@ let { title, description, icon: Icon, actions, class: className, ...restProps }:
 
 <section
   {...restProps}
-  class={['grid min-h-48 w-full place-items-center px-4 py-8 text-center', className]}
+  class={["grid min-h-48 w-full place-items-center px-4 py-8 text-center", className]}
 >
   <div class="flex min-w-0 max-w-md flex-col items-center">
     <Icon

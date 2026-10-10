@@ -244,7 +244,87 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/mapping-sources": {
+    "/api/v1/mappings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["query_mappings"];
+        put?: never;
+        post: operations["save_mapping"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/mappings/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["preview_mapping"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/mappings/sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["mapping_sources"];
+        put?: never;
+        post: operations["create_mapping_source"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/mappings/sources/{source_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["update_mapping_source"];
+        post?: never;
+        delete: operations["delete_mapping_source"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/mappings/sources/{source_id}/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["refresh_mapping_source"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/mappings/state": {
         parameters: {
             query?: never;
             header?: never;
@@ -260,55 +340,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/mapping-sources/order": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put: operations["reorder_mapping_sources"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/mapping-sources/remotes": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["create_remote_mapping_source"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/mapping-sources/uploads": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["create_uploaded_mapping_source"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/mapping-sources/{source_id}": {
+    "/api/v1/mappings/{claim_id}": {
         parameters: {
             query?: never;
             header?: never;
@@ -318,29 +350,13 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        delete: operations["remove_mapping_source"];
-        options?: never;
-        head?: never;
-        patch: operations["update_mapping_source"];
-        trace?: never;
-    };
-    "/api/v1/mapping-sources/{source_id}/content": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["read_mapping_source_content"];
-        put?: never;
-        post?: never;
-        delete?: never;
+        delete: operations["delete_mapping"];
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/v1/mapping-sources/{source_id}/refresh": {
+    "/api/v1/mappings/{claim_id}/decision": {
         parameters: {
             query?: never;
             header?: never;
@@ -349,30 +365,14 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        post: operations["refresh_remote_mapping_source"];
+        post: operations["decide_mapping"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/v1/mappings": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["query_mappings"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/mappings/local": {
+    "/api/v1/mappings/{claim_id}/revert": {
         parameters: {
             query?: never;
             header?: never;
@@ -381,24 +381,8 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        post: operations["create_local_mapping"];
+        post: operations["revert_mapping"];
         delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/mappings/local/{statement_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put: operations["update_local_mapping"];
-        post?: never;
-        delete: operations["remove_local_mapping"];
         options?: never;
         head?: never;
         patch?: never;
@@ -729,7 +713,7 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         AdapterConfigurationFieldResponse: {
-            defaultValue?: null | components["schemas"]["AdapterValueResponse"];
+            defaultValue?: components["schemas"]["AdapterValueResponse"] | null;
             displayName: string;
             key: string;
             options: components["schemas"]["AdapterConfigurationOptionResponse"][];
@@ -835,8 +819,8 @@ export interface components {
         AuthenticationStepResponse: {
             accounts: components["schemas"]["AuthenticationAccountResponse"][];
             id: string;
-            prompt?: null | components["schemas"]["AuthenticationPromptResponse"];
-            retryAfter?: null | components["schemas"]["RetryAfterResponse"];
+            prompt?: components["schemas"]["AuthenticationPromptResponse"] | null;
+            retryAfter?: components["schemas"]["RetryAfterResponse"] | null;
             status: components["schemas"]["AuthenticationStatusResponse"];
         };
         AvailableProviderResponse: {
@@ -850,7 +834,7 @@ export interface components {
         };
         CatalogEntryResponse: {
             hasChildren: boolean;
-            item?: null | components["schemas"]["CatalogItemResponse"];
+            item?: components["schemas"]["CatalogItemResponse"] | null;
             relation: components["schemas"]["CatalogRelationResponse"];
         };
         CatalogItemResponse: {
@@ -874,8 +858,8 @@ export interface components {
             key: components["schemas"]["KeyResponse"];
             kind: components["schemas"]["TermResponse"];
             order: number[];
-            parentKey?: null | components["schemas"]["KeyResponse"];
-            providerItemKey?: null | components["schemas"]["KeyResponse"];
+            parentKey?: components["schemas"]["KeyResponse"] | null;
+            providerItemKey?: components["schemas"]["KeyResponse"] | null;
         };
         ChangeProviderUpdatePolicyRequest: {
             updatePolicy: components["schemas"]["ProviderUpdatePolicyValue"];
@@ -929,24 +913,25 @@ export interface components {
             secrets: components["schemas"]["AdapterSecretRequest"][];
             settings: components["schemas"]["AdapterSettingRequest"][];
         };
-        CreateRemoteMappingSourceRequest: {
-            displayName: string;
-            enabled: boolean;
-            remoteUrl: string;
-            sourceKey: string;
-        };
         CreateWorkspaceRequest: {
             name: string;
         };
+        DecideMappingRequest: {
+            expectedFingerprint: string;
+            rejected: boolean;
+        };
         DeleteConnectionRequest: {
             confirmed: boolean;
+        };
+        DeleteMappingRequest: {
+            expectedFingerprint: string;
         };
         ErrorResponse: {
             code: string;
             fieldProblems: components["schemas"]["FieldProblemResponse"][];
             message: string;
             providerCode?: string | null;
-            retry?: null | components["schemas"]["RetryAdviceResponse"];
+            retry?: components["schemas"]["RetryAdviceResponse"] | null;
         };
         FieldProblemResponse: {
             code: string;
@@ -988,54 +973,75 @@ export interface components {
         /** @enum {string} */
         MappingOperatorParameter: "exact" | "coverage" | "implication";
         MappingPageResponse: {
-            chainFingerprint: string;
+            fingerprint: string;
             items: components["schemas"]["MappingResultResponse"][];
             nextCursor?: string | null;
         };
         MappingResultResponse: {
-            active: boolean;
             canonicalRecord: string;
             canonicalStatement: string;
-            evidenceFingerprint: string;
-            /** Format: int64 */
-            layerPosition: number;
+            claimId: string;
+            diagnostics: string[];
             metadata: string[];
-            /** Format: int64 */
-            occurrenceCount: number;
             operator: string;
-            /** Format: int64 */
-            recordOrdinal: number;
-            relationKey: string;
-            sourceContentHash: string;
-            sourceKey: string;
-            statementId: string;
+            rejected: boolean;
+            sources: string[];
+            status: components["schemas"]["MappingStatusResponse"];
         };
         /** @enum {string} */
-        MappingSourceKindValue: "local" | "upload" | "remote";
+        MappingSourceKindResponse: "local" | "upstream";
         MappingSourceResponse: {
+            branch?: string | null;
             /** Format: int64 */
-            byteLength: number;
-            contentHash: string;
-            createdAt: string;
+            cachedRecords: number;
+            /** Format: int32 */
+            consecutiveFailures: number;
             displayName: string;
             enabled: boolean;
-            /** Format: uuid */
             id: string;
-            kind: components["schemas"]["MappingSourceKindValue"];
+            kind: components["schemas"]["MappingSourceKindResponse"];
+            /** Format: date-time */
             lastCheckedAt?: string | null;
-            lastRefreshError?: string | null;
+            lastError?: string | null;
+            /** Format: date-time */
+            lastUpdatedAt?: string | null;
+            /** Format: date-time */
+            nextCheckAt?: string | null;
             /** Format: int64 */
-            priority: number;
-            remoteUrl?: string | null;
-            sourceKey: string;
-            updatedAt: string;
+            pollIntervalSeconds?: number | null;
+            repositoryPath?: string | null;
+            revision?: string | null;
+            url?: string | null;
         };
-        MappingStateResponse: {
-            activeChainFingerprint?: string | null;
+        MappingSourcesResponse: {
+            fingerprint: string;
             sources: components["schemas"]["MappingSourceResponse"][];
         };
+        MappingStateResponse: {
+            /** Format: int64 */
+            active: number;
+            /** Format: int64 */
+            conflicting: number;
+            fingerprint: string;
+            metadataSnapshot?: string | null;
+            /** Format: int64 */
+            records: number;
+            /** Format: int64 */
+            rejected: number;
+            /** Format: int64 */
+            resolved: number;
+            /** Format: int64 */
+            units: number;
+            /** Format: int64 */
+            unresolved: number;
+        };
+        /** @enum {string} */
+        MappingStatusResponse: "resolved" | "unresolved" | "invalid" | "conflicting" | "rejected";
         OpenApiDocumentResponse: {
             [key: string]: unknown;
+        };
+        PreviewMappingRequest: {
+            record: string;
         };
         ProviderMaintainerResponse: {
             email?: string | null;
@@ -1054,7 +1060,7 @@ export interface components {
             homepageUrl?: string | null;
             indexDigest: string;
             license?: string | null;
-            maintainer?: null | components["schemas"]["ProviderMaintainerResponse"];
+            maintainer?: components["schemas"]["ProviderMaintainerResponse"] | null;
             manifestDigest?: string | null;
             metadataDigest?: string | null;
             name?: string | null;
@@ -1070,7 +1076,7 @@ export interface components {
             version: string;
         };
         ProviderResponse: {
-            availableUpdate?: null | components["schemas"]["ProviderUpdateResponse"];
+            availableUpdate?: components["schemas"]["ProviderUpdateResponse"] | null;
             binaryDigest: string;
             description?: string | null;
             indexDigest: string;
@@ -1109,11 +1115,8 @@ export interface components {
         RenameConnectionRequest: {
             displayName: string;
         };
-        ReorderMappingSourcesRequest: {
-            sourceIds: string[];
-        };
         RetryAdviceResponse: {
-            after?: null | components["schemas"]["RetryAfterResponse"];
+            after?: components["schemas"]["RetryAfterResponse"] | null;
             retryable: boolean;
         };
         RetryAfterResponse: {
@@ -1121,6 +1124,20 @@ export interface components {
             nanoseconds: number;
             /** Format: int64 */
             seconds: number;
+        };
+        SaveMappingRequest: {
+            expectedFingerprint: string;
+            record: string;
+            replaces?: string | null;
+        };
+        SaveMappingSourceRequest: {
+            branch: string;
+            displayName: string;
+            enabled: boolean;
+            expectedFingerprint: string;
+            /** Format: int64 */
+            pollIntervalSeconds: number;
+            url: string;
         };
         /** @enum {string} */
         SourceAvailabilityResponse: "available" | "unavailable" | "removed";
@@ -1143,14 +1160,14 @@ export interface components {
         };
         StateFieldResponse: {
             field: components["schemas"]["TermResponse"];
-            unit?: null | components["schemas"]["TermResponse"];
+            unit?: components["schemas"]["TermResponse"] | null;
         };
         StateObservationResponse: {
             field: components["schemas"]["StateFieldResponse"];
             observedAt: string;
             providerRevision: number[];
             subject: components["schemas"]["StateSubjectResponse"];
-            value?: null | components["schemas"]["StateValueResponse"];
+            value?: components["schemas"]["StateValueResponse"] | null;
         };
         StateSubjectResponse: {
             key: components["schemas"]["KeyResponse"];
@@ -1191,7 +1208,7 @@ export interface components {
         TaskFailureResponse: {
             code: string;
             message: string;
-            retryAfter?: null | components["schemas"]["TaskRetryAfterResponse"];
+            retryAfter?: components["schemas"]["TaskRetryAfterResponse"] | null;
             retryable: boolean;
         };
         /** @enum {string} */
@@ -1201,15 +1218,15 @@ export interface components {
             cancellationSupported: boolean;
             connectionId: string;
             createdAt: string;
-            failure?: null | components["schemas"]["TaskFailureResponse"];
+            failure?: components["schemas"]["TaskFailureResponse"] | null;
             finishedAt?: string | null;
             id: string;
             kind: components["schemas"]["TaskKindResponse"];
-            mode?: null | components["schemas"]["ReadModeResponse"];
+            mode?: components["schemas"]["ReadModeResponse"] | null;
             sourceId?: string | null;
             startedAt?: string | null;
             status: components["schemas"]["TaskStatusResponse"];
-            stream?: null | components["schemas"]["SourceStreamResponse"];
+            stream?: components["schemas"]["SourceStreamResponse"] | null;
             terminal: boolean;
             updatedAt: string;
             workspaceId?: string | null;
@@ -1229,10 +1246,6 @@ export interface components {
         TrustProviderSourceRequest: {
             repositoryUrl: string;
         };
-        UpdateMappingSourceRequest: {
-            displayName: string;
-            enabled: boolean;
-        };
         UpdateProviderRequest: {
             indexDigest: string;
             version: string;
@@ -1247,9 +1260,6 @@ export interface components {
         WorkspaceSourceResponse: {
             attachedAt: string;
             sourceId: string;
-        };
-        WriteLocalMappingRequest: {
-            record: string;
         };
     };
     responses: never;
@@ -1975,424 +1985,17 @@ export interface operations {
             };
         };
     };
-    mapping_state: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MappingStateResponse"];
-                };
-            };
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    reorder_mapping_sources: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ReorderMappingSourcesRequest"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MappingStateResponse"];
-                };
-            };
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    create_remote_mapping_source: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CreateRemoteMappingSourceRequest"];
-            };
-        };
-        responses: {
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MappingStateResponse"];
-                };
-            };
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            502: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    create_uploaded_mapping_source: {
-        parameters: {
-            query: {
-                sourceKey: string;
-                displayName: string;
-                enabled: boolean;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "text/plain": string;
-            };
-        };
-        responses: {
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MappingStateResponse"];
-                };
-            };
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    remove_mapping_source: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                source_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MappingStateResponse"];
-                };
-            };
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    update_mapping_source: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                source_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["UpdateMappingSourceRequest"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MappingStateResponse"];
-                };
-            };
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    read_mapping_source_content: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                source_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/plain": string;
-                };
-            };
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    refresh_remote_mapping_source: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                source_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MappingStateResponse"];
-                };
-            };
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            502: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
     query_mappings: {
         parameters: {
             query?: {
-                expectedChainFingerprint?: string;
+                expectedFingerprint?: string;
                 search?: string;
                 canonicalStatement?: string;
-                statementId?: string;
-                relationKey?: string;
+                claimId?: string;
                 operator?: components["schemas"]["MappingOperatorParameter"];
-                sourceKey?: string;
                 endpoint?: string;
                 annotationName?: string;
                 annotationValue?: string;
-                includeShadowed?: boolean;
                 limit?: number;
                 cursor?: string;
             };
@@ -2436,7 +2039,7 @@ export interface operations {
             };
         };
     };
-    create_local_mapping: {
+    save_mapping: {
         parameters: {
             query?: never;
             header?: never;
@@ -2445,56 +2048,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["WriteLocalMappingRequest"];
-            };
-        };
-        responses: {
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MappingStateResponse"];
-                };
-            };
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    update_local_mapping: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                statement_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["WriteLocalMappingRequest"];
+                "application/json": components["schemas"]["SaveMappingRequest"];
             };
         };
         responses: {
@@ -2514,7 +2068,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            404: {
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2522,12 +2076,54 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            422: {
+        };
+    };
+    preview_mapping: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PreviewMappingRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MappingResultResponse"];
+                };
+            };
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    mapping_sources: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MappingSourcesResponse"];
                 };
             };
             500: {
@@ -2540,13 +2136,173 @@ export interface operations {
             };
         };
     };
-    remove_local_mapping: {
+    create_mapping_source: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SaveMappingSourceRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MappingStateResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    update_mapping_source: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                statement_id: string;
+                source_id: string;
             };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SaveMappingSourceRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MappingStateResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    delete_mapping_source: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeleteMappingRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MappingStateResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    refresh_mapping_source: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeleteMappingRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MappingStateResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    mapping_state: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -2559,7 +2315,7 @@ export interface operations {
                     "application/json": components["schemas"]["MappingStateResponse"];
                 };
             };
-            404: {
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2567,7 +2323,122 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            500: {
+        };
+    };
+    delete_mapping: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                claim_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeleteMappingRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MappingStateResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    decide_mapping: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                claim_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DecideMappingRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MappingStateResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    revert_mapping: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                claim_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeleteMappingRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MappingStateResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
