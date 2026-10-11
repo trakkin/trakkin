@@ -49,7 +49,7 @@ ARG TRAKKIN_UID=65532
 ARG TRAKKIN_GID=65532
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates libgcc-s1 && \
+    apt-get install -y --no-install-recommends ca-certificates git libgcc-s1 && \
     rm -rf /var/lib/apt/lists/* && \
     groupadd --gid "${TRAKKIN_GID}" trakkin && \
     useradd --uid "${TRAKKIN_UID}" --gid "${TRAKKIN_GID}" --home-dir /config --no-create-home --no-log-init --shell /usr/sbin/nologin trakkin && \
