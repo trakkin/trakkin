@@ -510,9 +510,9 @@ function messageFor(error: unknown, fallback: string): string {
             class="grid gap-4 border-b border-border-subtle px-3 py-4 sm:px-4"
             id="provider-source-form"
             onsubmit={(event) => {
-              event.preventDefault();
-              void addSource();
-            }}
+  event.preventDefault();
+  void addSource();
+}}
           >
             <label
               class="grid gap-1.5 text-label text-text-muted"
@@ -865,9 +865,9 @@ function messageFor(error: unknown, fallback: string): string {
       <form
         class="flex min-h-0 flex-1 flex-col"
         onsubmit={(event) => {
-          event.preventDefault();
-          void installSelectedProvider();
-        }}
+  event.preventDefault();
+  void installSelectedProvider();
+}}
       >
         <header class="flex shrink-0 items-start justify-between gap-4 border-b border-border-strong px-4 py-4 sm:px-5">
           <div class="min-w-0">
@@ -909,9 +909,9 @@ function messageFor(error: unknown, fallback: string): string {
                   disabled={versionItems.length === 0}
                   items={versionItems}
                   onValueChange={(value) => {
-                    providerVersion = value;
-                    void inspectSelectedRelease();
-                  }}
+  providerVersion = value;
+  void inspectSelectedRelease();
+}}
                   triggerClass="w-full"
                   value={providerVersion}
                 />
@@ -927,8 +927,8 @@ function messageFor(error: unknown, fallback: string): string {
                   aria-label={`Install updates automatically for ${installProviderId}`}
                   checked={installPolicy === "automatic"}
                   onCheckedChange={(checked) => {
-                    installPolicy = checked ? "automatic" : "manual";
-                  }}
+  installPolicy = checked ? "automatic" : "manual";
+}}
                 />
               </div>
             </section>
@@ -1012,10 +1012,12 @@ function messageFor(error: unknown, fallback: string): string {
     bind:open={removeOpen}
   >
     <AlertDialog.Content>
-      <AlertDialog.Title class="text-title font-semibold text-text-primary">
-        {removalTitle()}
-      </AlertDialog.Title>
-      <AlertDialog.Description class="mt-1 text-label leading-5 text-text-muted">
+      {#snippet header()}
+        <AlertDialog.Title class="wrap-anywhere text-heading font-medium">
+          {removalTitle()}
+        </AlertDialog.Title>
+      {/snippet}
+      <AlertDialog.Description class="wrap-anywhere text-label leading-6 text-text-muted">
         {removalDescription()}
       </AlertDialog.Description>
       {#if removalErrorMessage}
@@ -1026,21 +1028,20 @@ function messageFor(error: unknown, fallback: string): string {
           {removalErrorMessage}
         </p>
       {/if}
-      <div class="mt-5 flex justify-end gap-2">
-        <AlertDialog.Cancel
-          class="inline-flex h-8 items-center rounded-md border border-border-subtle px-3 text-label text-text-secondary hover:bg-white/4 disabled:pointer-events-none disabled:opacity-35"
-          disabled={removalPending()}
-          >Cancel</AlertDialog.Cancel
+      {#snippet footer()}
+        <AlertDialog.Cancel disabled={removalPending()}>Cancel</AlertDialog.Cancel
         ><AlertDialog.Action
-          class="inline-flex h-8 items-center gap-1.5 rounded-md border border-danger/30 bg-danger/8 px-3 text-label text-danger hover:bg-danger/12 disabled:pointer-events-none disabled:opacity-35"
           disabled={removalPending()}
-          onclick={(event) => { event.preventDefault(); void confirmRemoval(); }}
+          onclick={(event) => {
+  event.preventDefault();
+  void confirmRemoval();
+}}
           >{#if removalPending()}
             <Spinner size={13} />
           {/if}
           Remove</AlertDialog.Action
         >
-      </div>
+      {/snippet}
     </AlertDialog.Content>
   </AlertDialog.Root>
 </div>

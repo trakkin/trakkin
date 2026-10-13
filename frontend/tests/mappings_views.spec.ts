@@ -266,7 +266,16 @@ test("claims remain searchable and paginated with visible decisions", async ({ p
   await expect(list).toContainText("movie/603");
   await expect(page.getByRole("button", { name: "Create mapping" })).toBeEnabled();
   await expect(page.getByRole("button", { name: "Delete mapping" })).toBeDisabled();
-  await page.getByText("Annotations (1)").click();
+  if (testInfo.project.name === "desktop") {
+    const height = await list
+      .getByRole("listitem")
+      .first()
+      .evaluate((row) => row.getBoundingClientRect().height);
+    expect(height).toBeLessThanOrEqual(64);
+  }
+  await expect(list.getByText("Claim ID", { exact: true })).not.toBeVisible();
+  await list.getByText("Details", { exact: true }).click();
+  await expect(list.getByText("Claim ID", { exact: true })).toBeVisible();
   await expect(page.getByText("#@note Reviewed", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Next page" }).click();
   await expect(list).toContainText("movie/604");
@@ -277,6 +286,97 @@ test("claims remain searchable and paginated with visible decisions", async ({ p
   expect(queries.at(-1)?.searchParams.has("cursor")).toBe(false);
   await expectNoHorizontalOverflow(page);
   await page.screenshot({ path: `test-results/mappings-${testInfo.project.name}.png`, fullPage: true });
+});
+
+test("mapping rows distinguish decisions and keep technical details out of the main scan", async ({
+  page,
+}, testInfo) => {
+  const items: MappingResult[] = [
+    {
+      ...claim("a".repeat(64), original, ["local", "mirror"]),
+      metadata: ["#@note Verified against both catalogs"],
+    },
+    {
+      ...claim("b".repeat(64), corrected, ["mirror"]),
+      status: "conflicting",
+      diagnostics: ["This claim overlaps another exact target and is excluded from execution."],
+      metadata: [],
+    },
+    {
+      ...claim("c".repeat(64), "co.anilist://anime/1 :: episode=1..26 <=> net.myanimelist://anime/1 :: episode=1..26", [
+        "mirror",
+      ]),
+      status: "unresolved",
+      diagnostics: ["Native catalog context is unavailable."],
+      metadata: ["#@note Episode boundaries need review"],
+    },
+    {
+      ...claim("d".repeat(64), "com.imdb://title/tt0234215 <=> org.themoviedb://movie/604", ["local"]),
+      rejected: true,
+      status: "rejected",
+      metadata: ["#@note Different editions; keep separate"],
+    },
+  ];
+  await mockApi(page, async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/v1/workspaces") return json(route, [workspace]);
+    if (path === "/api/v1/mappings/state") return json(route, state(items));
+    if (path === "/api/v1/mappings") return json(route, { fingerprint, items, nextCursor: null });
+    if (path === "/api/v1/mappings/sources") {
+      return json(route, {
+        fingerprint,
+        sources: [
+          localMappingSource,
+          {
+            ...localMappingSource,
+            id: "mirror",
+            kind: "upstream",
+            displayName: "Community review and alternate editions",
+            url: "https://example.com/mappings.git",
+            branch: "main",
+            repositoryPath: null,
+            pollIntervalSeconds: 3600,
+          },
+        ],
+      });
+    }
+    return fallback(route);
+  });
+  await page.goto("/mappings");
+  const rows = page.getByRole("list", { name: "Mapping claims" }).getByRole("listitem");
+  await expect(rows).toHaveCount(4);
+  await expect(rows.nth(0)).toContainText("Verified against both catalogs");
+  await expect(rows.nth(1)).toContainText("Conflicting");
+  await expect(rows.nth(2)).toContainText("Unresolved");
+  await expect(rows.nth(3)).toContainText("Suppressed");
+  await expect(rows.nth(0).getByText("a".repeat(64), { exact: true })).not.toBeVisible();
+  const backgrounds = await rows.evaluateAll((elements) =>
+    elements.map((element) => getComputedStyle(element).backgroundColor),
+  );
+  expect(backgrounds[0]).not.toBe(backgrounds[1]);
+  await expectNoHorizontalOverflow(page);
+  await page.screenshot({ path: `test-results/mapping-rows-${testInfo.project.name}.png`, fullPage: true });
+  await rows.nth(0).getByText("Details", { exact: true }).click();
+  await expect(rows.nth(0).getByText("a".repeat(64), { exact: true })).toBeVisible();
+  await expectNoHorizontalOverflow(page);
+  await rows.nth(0).getByText("Details", { exact: true }).click();
+  const remove = rows.nth(3).getByRole("button", { name: "Delete mapping", exact: true });
+  await remove.click();
+  const confirmation = page.getByRole("alertdialog");
+  await expect(confirmation).toBeVisible();
+  await expect(confirmation).toContainText("This mapping will be removed from your Local repository.");
+  await expect(confirmation.locator("header")).toHaveCSS("border-bottom-width", "1px");
+  await expect(confirmation.locator("footer")).toHaveCSS("border-top-width", "1px");
+  await expect(confirmation).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(confirmation.getByRole("button", { name: "Cancel", exact: true })).toBeFocused();
+  await page.screenshot({
+    path: `test-results/mapping-confirmation-${testInfo.project.name}.png`,
+    animations: "disabled",
+  });
+  await page.keyboard.press("Escape");
+  await expect(confirmation).toHaveCount(0);
+  await expect(remove).toBeFocused();
 });
 
 test("an empty store supports preview, creation, editing and local deletion", async ({ page }) => {

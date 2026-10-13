@@ -503,17 +503,21 @@ async function remove(): Promise<void> {
 
 <AlertDialog.Root bind:open={removeOpen}>
   <AlertDialog.Content>
-    <AlertDialog.Title class="text-title font-semibold">Remove {removeTarget?.displayName}?</AlertDialog.Title>
-    <AlertDialog.Description class="mt-3 text-label text-text-muted"
+    {#snippet header()}
+      <AlertDialog.Title class="wrap-anywhere text-heading font-medium"
+        >Remove {removeTarget?.displayName}?</AlertDialog.Title
+      >
+    {/snippet}
+    <AlertDialog.Description class="text-label leading-6 text-text-muted"
       >Cached records from this source will be removed. Local decisions will be kept.</AlertDialog.Description
     >
-    <div class="mt-5 flex justify-end gap-2">
+    {#snippet footer()}
       <AlertDialog.Cancel disabled={busy}>Cancel</AlertDialog.Cancel
       ><AlertDialog.Action
         disabled={busy}
         onclick={() => void remove()}
         >Remove</AlertDialog.Action
       >
-    </div>
+    {/snippet}
   </AlertDialog.Content>
 </AlertDialog.Root>

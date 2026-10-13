@@ -3,7 +3,12 @@ import {
   ArrowLeft,
   ArrowRight,
   Ban,
+  ChevronDown,
+  CircleAlert,
+  CircleCheck,
+  CloudDownload,
   Database,
+  HardDrive,
   Pencil,
   Plus,
   RefreshCw,
@@ -397,27 +402,142 @@ function statusLabel(status: MappingResult["status"]): string {
       </div>
     {:else}
       <div class="min-h-0 flex-1 overflow-y-auto">
+        <div
+          aria-hidden="true"
+          class="sticky top-0 z-10 hidden grid-cols-[minmax(0,1fr)_8rem_10rem_7rem] gap-4 border-b border-l-2 border-border-strong border-l-transparent bg-surface-panel px-6 py-2 text-meta text-text-muted lg:grid"
+        >
+          <span>Relationship</span>
+          <span>State</span>
+          <span>Sources</span>
+          <span class="text-right">Actions</span>
+        </div>
         <ul
           aria-label="Mapping claims"
-          class="divide-y divide-border-subtle"
+          class="divide-y divide-border-strong/60"
         >
           {#each currentPage.items as claim (claim.claimId)}
-            <li class="min-w-0 px-4 py-3 sm:px-6">
-              <div class="flex items-start gap-3">
-                <div class="min-w-0 flex-1">
+            {@const note = claim.metadata.find((annotation) => annotation.startsWith("#@note "))?.slice(7)}
+            <li
+              class="min-w-0 border-l-2 border-transparent px-4 py-2 even:bg-surface-raised/40 hover:bg-surface-selected/50 focus-within:bg-surface-selected/50 data-[rejected=true]:border-l-text-disabled data-[status=conflicting]:border-l-danger data-[status=invalid]:border-l-danger sm:px-6"
+              data-rejected={claim.rejected}
+              data-status={claim.status}
+            >
+              <div
+                class="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-x-4 gap-y-2 lg:grid-cols-[minmax(0,1fr)_8rem_10rem_7rem]"
+              >
+                <div class="col-span-2 min-w-0 lg:col-span-1">
                   <p
-                    class="break-all font-mono text-label"
+                    class="wrap-anywhere font-mono text-label leading-5"
                     class:text-text-muted={claim.rejected}
                   >
                     {claim.canonicalStatement}
                   </p>
-                  <p class="mt-1 wrap-break-word text-meta text-text-muted">
-                    {statusLabel(claim.status)}
-                    |
-                    {claim.sources.map((id) => mappingSources.find((source) => source.id === id)?.displayName ?? id).join(", ")}
-                  </p>
+                  {#if claim.diagnostics.length}
+                    <p class="mt-0.5 line-clamp-1 wrap-anywhere text-meta text-warning">{claim.diagnostics[0]}</p>
+                  {/if}
+                  <details class="group/details mt-0.5 text-meta text-text-muted">
+                    <summary
+                      class="flex min-w-0 cursor-pointer list-none items-center gap-1 rounded-control outline-none hover:text-text-primary focus-visible:ring-2 focus-visible:ring-accent [&::-webkit-details-marker]:hidden"
+                    >
+                      <ChevronDown
+                        aria-hidden="true"
+                        class="shrink-0 transition-transform group-open/details:rotate-180"
+                        size={12}
+                      />
+                      <span class="shrink-0">Details</span>
+                      {#if note}
+                        <span
+                          class="ml-2 truncate text-text-secondary"
+                          title={note}
+                          >{note}</span
+                        >
+                      {/if}
+                    </summary>
+                    <dl class="mt-3 space-y-3 border-l border-border-strong pl-3">
+                      <div>
+                        <dt class="mb-1 text-text-muted">Claim ID</dt>
+                        <dd class="break-all font-mono text-text-secondary">{claim.claimId}</dd>
+                      </div>
+                      {#if claim.metadata.length}
+                        <div>
+                          <dt class="mb-1 text-text-muted">Annotations ({claim.metadata.length})</dt>
+                          <dd>
+                            <pre
+                              class="wrap-anywhere whitespace-pre-wrap font-mono text-text-secondary"
+                            >{claim.metadata.join("\n")}</pre>
+                          </dd>
+                        </div>
+                      {/if}
+                      {#if claim.diagnostics.length}
+                        <div>
+                          <dt class="mb-1 text-text-muted">Diagnostics</dt>
+                          <dd>
+                            <ul class="space-y-1 wrap-anywhere text-warning">
+                              {#each claim.diagnostics as diagnostic}
+                                <li>{diagnostic}</li>
+                              {/each}
+                            </ul>
+                          </dd>
+                        </div>
+                      {/if}
+                    </dl>
+                  </details>
                 </div>
-                <div class="flex shrink-0 gap-0.5">
+                <div class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 pt-0.5 lg:contents">
+                  <span
+                    class="inline-flex items-center gap-1.5 text-meta leading-5"
+                    class:text-danger={!claim.rejected && (claim.status === "conflicting" || claim.status === "invalid")}
+                    class:text-success={!claim.rejected && claim.status === "resolved"}
+                    class:text-text-muted={claim.rejected}
+                    class:text-warning={!claim.rejected && claim.status === "unresolved"}
+                  >
+                    {#if claim.rejected}
+                      <Ban
+                        aria-hidden="true"
+                        class="shrink-0"
+                        size={13}
+                      />
+                    {:else if claim.status === "resolved"}
+                      <CircleCheck
+                        aria-hidden="true"
+                        class="shrink-0"
+                        size={13}
+                      />
+                    {:else}
+                      <CircleAlert
+                        aria-hidden="true"
+                        class="shrink-0"
+                        size={13}
+                      />
+                    {/if}
+                    {claim.rejected ? "Suppressed" : statusLabel(claim.status)}
+                  </span>
+                  <div
+                    class="flex min-w-0 flex-wrap gap-x-3 gap-y-1 text-meta leading-5 text-text-secondary lg:flex-col lg:gap-0"
+                  >
+                    {#each claim.sources as source}
+                      <span class="inline-flex min-w-0 items-start gap-1.5">
+                        {#if source === "local"}
+                          <HardDrive
+                            aria-hidden="true"
+                            class="mt-1 shrink-0 text-text-muted"
+                            size={12}
+                          />
+                        {:else}
+                          <CloudDownload
+                            aria-hidden="true"
+                            class="mt-1 shrink-0 text-text-muted"
+                            size={12}
+                          />
+                        {/if}
+                        <span class="wrap-anywhere"
+                          >{mappingSources.find((origin) => origin.id === source)?.displayName ?? source}</span
+                        >
+                      </span>
+                    {/each}
+                  </div>
+                </div>
+                <div class="flex shrink-0 justify-end gap-0.5">
                   <IconButton
                     disabled={busy}
                     label={claim.sources.some((source) => source !== "local") ? "Replace mapping" : "Edit mapping"}
@@ -470,20 +590,6 @@ function statusLabel(status: MappingResult["status"]): string {
                   {/if}
                 </div>
               </div>
-              <p class="mt-1 break-all font-mono text-meta text-text-faint">{claim.claimId}</p>
-              {#if claim.diagnostics.length}
-                <ul class="mt-2 space-y-1 wrap-break-word text-meta text-text-muted">
-                  {#each claim.diagnostics as diagnostic}
-                    <li>{diagnostic}</li>
-                  {/each}
-                </ul>
-              {/if}
-              {#if claim.metadata.length}
-                <details class="mt-2 text-meta text-text-muted">
-                  <summary class="cursor-pointer">Annotations ({claim.metadata.length})</summary>
-                  <pre class="mt-2 whitespace-pre-wrap break-all font-mono">{claim.metadata.join("\n")}</pre>
-                </details>
-              {/if}
             </li>
           {/each}
         </ul>
@@ -612,20 +718,30 @@ function statusLabel(status: MappingResult["status"]): string {
 </Dialog.Root>
 
 <AlertDialog.Root bind:open={removeOpen}>
-  <AlertDialog.Content>
-    <AlertDialog.Title class="text-title font-semibold"
-      >{removeAction === "revert" ? "Revert local decision?" : "Delete mapping?"}</AlertDialog.Title
+  <AlertDialog.Content onCloseAutoFocus={restoreFocus}>
+    {#snippet header()}
+      <AlertDialog.Title class="wrap-anywhere text-heading font-medium"
+        >{removeAction === "revert" ? "Revert local decision?" : "Delete mapping?"}</AlertDialog.Title
+      >
+    {/snippet}
+    <AlertDialog.Description class="text-label leading-6 text-text-muted">
+      {removeAction === "revert"
+  ? "Your Local decision will be removed. Enabled upstream sources will determine this mapping again."
+  : "This mapping will be removed from your Local repository."}
+    </AlertDialog.Description>
+    <p
+      class="mt-4 wrap-anywhere border-l-2 border-border-strong pl-3 font-mono text-label leading-6 text-text-secondary"
     >
-    <AlertDialog.Description class="mt-3 break-all font-mono text-label text-text-muted"
-      >{removeTarget?.canonicalStatement}</AlertDialog.Description
-    >
-    <div class="mt-5 flex justify-end gap-2">
+      {removeTarget?.canonicalStatement}
+    </p>
+    {#snippet footer()}
       <AlertDialog.Cancel disabled={busy}>Cancel</AlertDialog.Cancel>
       <AlertDialog.Action
         disabled={busy}
         onclick={() => void removeMapping()}
+        variant={removeAction === "revert" ? "primary" : "danger"}
         >{removeAction === "revert" ? "Revert" : "Delete"}</AlertDialog.Action
       >
-    </div>
+    {/snippet}
   </AlertDialog.Content>
 </AlertDialog.Root>

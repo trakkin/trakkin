@@ -481,7 +481,9 @@ function formatGenericAttributeValue(value: unknown): string {
 }
 </script>
 
-{#snippet catalogDetails(entry: CatalogEntry)}
+{#snippet catalogDetails(
+  entry: CatalogEntry,
+)}
   {@const artwork = preferredBannerArtwork(entry)}
   {@const itemAttributes = attributeRows(entry.item?.attributes ?? {})}
   {@const relationAttributes = attributeRows(entry.relation.attributes)}
@@ -708,9 +710,9 @@ function formatGenericAttributeValue(value: unknown): string {
     <div class="min-h-0 flex-1 overflow-hidden">
       <div
         class={[
-          "grid h-full min-h-0 w-full lg:grid-cols-[minmax(0,1fr)_24rem] lg:grid-rows-1 xl:grid-cols-[minmax(0,1fr)_26rem]",
-          focusedEntry ? "grid-rows-[minmax(0,1fr)_minmax(14rem,0.8fr)]" : "grid-rows-1",
-        ]}
+  "grid h-full min-h-0 w-full lg:grid-cols-[minmax(0,1fr)_24rem] lg:grid-rows-1 xl:grid-cols-[minmax(0,1fr)_26rem]",
+  focusedEntry ? "grid-rows-[minmax(0,1fr)_minmax(14rem,0.8fr)]" : "grid-rows-1",
+]}
       >
         <section class="min-h-0 min-w-0 overflow-y-auto p-4 sm:p-5 lg:p-6">
           <div
@@ -738,12 +740,15 @@ function formatGenericAttributeValue(value: unknown): string {
               <button
                 aria-current={browsePath.length === 0 ? "page" : undefined}
                 class={[
-                  "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-label font-[510] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/15",
-                  browsePath.length === 0
-                    ? "bg-white/5 text-text-secondary"
-                    : "text-text-muted hover:bg-white/3 hover:text-text-secondary",
-                ]}
-                onclick={() => { browsePath = []; focusedRelationId = ""; }}
+  "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-label font-[510] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/15",
+  browsePath.length === 0
+    ? "bg-white/5 text-text-secondary"
+    : "text-text-muted hover:bg-white/3 hover:text-text-secondary",
+]}
+                onclick={() => {
+  browsePath = [];
+  focusedRelationId = "";
+}}
                 title="Library home"
                 type="button"
               >
@@ -761,11 +766,11 @@ function formatGenericAttributeValue(value: unknown): string {
                 /><button
                   aria-current={index === browsePath.length - 1 ? "page" : undefined}
                   class={[
-                    "h-7 max-w-44 shrink-0 truncate rounded-md px-2 text-label font-[510] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/15",
-                    index === browsePath.length - 1
-                      ? "bg-white/5 text-text-secondary"
-                      : "text-text-muted hover:bg-white/3 hover:text-text-secondary",
-                  ]}
+  "h-7 max-w-44 shrink-0 truncate rounded-md px-2 text-label font-[510] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/15",
+  index === browsePath.length - 1
+    ? "bg-white/5 text-text-secondary"
+    : "text-text-muted hover:bg-white/3 hover:text-text-secondary",
+]}
                   onclick={() => setBrowseDepth(index)}
                   title={part.label}
                   type="button"
@@ -848,9 +853,9 @@ function formatGenericAttributeValue(value: unknown): string {
                         <MediaArtwork
                           alt=""
                           class={[
-                            "w-full transition duration-200 group-hover:-translate-y-0.5 group-hover:border-border-strong group-hover:shadow-[0_14px_32px_rgb(0_0_0/38%)] motion-reduce:transform-none",
-                            focusedRelationId === entryId && "border-accent/70 ring-1 ring-accent/35",
-                          ]}
+  "w-full transition duration-200 group-hover:-translate-y-0.5 group-hover:border-border-strong group-hover:shadow-[0_14px_32px_rgb(0_0_0/38%)] motion-reduce:transform-none",
+  focusedRelationId === entryId && "border-accent/70 ring-1 ring-accent/35",
+]}
                           shape="poster"
                           src={artwork?.href}
                         >
@@ -903,9 +908,9 @@ function formatGenericAttributeValue(value: unknown): string {
                         aria-label={`Inspect ${entryLabel(entry)}`}
                         aria-pressed={focusedRelationId === entryId}
                         class={[
-                          "grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-0.5 px-3 py-2.5 text-left outline-none transition-colors hover:bg-white/3 focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent sm:grid-cols-[minmax(0,1fr)_8rem_minmax(8rem,0.7fr)] sm:gap-4",
-                          focusedRelationId === entryId && "bg-accent/8",
-                        ]}
+  "grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-0.5 px-3 py-2.5 text-left outline-none transition-colors hover:bg-white/3 focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent sm:grid-cols-[minmax(0,1fr)_8rem_minmax(8rem,0.7fr)] sm:gap-4",
+  focusedRelationId === entryId && "bg-accent/8",
+]}
                         onclick={() => (focusedRelationId = entryId)}
                         title={providerKey}
                         type="button"
@@ -1000,19 +1005,18 @@ function formatGenericAttributeValue(value: unknown): string {
 
 <AlertDialog.Root bind:open={resetOpen}>
   <AlertDialog.Content>
-    <AlertDialog.Title class="text-title font-semibold text-text-primary"
-      >Reset and refetch this catalog?</AlertDialog.Title
-    >
-    <AlertDialog.Description class="mt-1 text-label leading-5 text-text-muted"
+    {#snippet header()}
+      <AlertDialog.Title class="wrap-anywhere text-heading font-medium"
+        >Reset and refetch this catalog?</AlertDialog.Title
+      >
+    {/snippet}
+    <AlertDialog.Description class="wrap-anywhere text-label leading-6 text-text-muted"
       >The current published catalog for {selectedSource?.source.displayName ?? "this source"} will be cleared, then
       rebuilt with a full provider read.</AlertDialog.Description
     >
-    <div class="mt-5 flex justify-end gap-2">
-      <AlertDialog.Cancel
-        class="inline-flex h-8 items-center rounded-md border border-border-subtle px-3 text-label text-text-secondary hover:bg-white/4"
-        >Cancel</AlertDialog.Cancel
-      ><AlertDialog.Action
-        class="inline-flex h-8 items-center gap-1.5 rounded-md border border-danger/30 bg-danger/8 px-3 text-label text-danger hover:bg-danger/12 disabled:pointer-events-none disabled:opacity-35"
+    {#snippet footer()}
+      <AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
+      <AlertDialog.Action
         disabled={operationBusy}
         onclick={confirmReset}
         >{#if operationBusy}
@@ -1020,6 +1024,6 @@ function formatGenericAttributeValue(value: unknown): string {
         {/if}
         Reset and refetch</AlertDialog.Action
       >
-    </div>
+    {/snippet}
   </AlertDialog.Content>
 </AlertDialog.Root>

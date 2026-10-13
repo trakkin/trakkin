@@ -75,14 +75,23 @@ async function confirm() {
 </script>
 
 <AlertDialog.Root
-  onOpenChange={(value) => { if (!value) onclose(); }}
+  onOpenChange={(value) => {
+  if (!value) onclose();
+}}
   bind:open
 >
-  <AlertDialog.Content onCloseAutoFocus={(event) => { event.preventDefault(); onrestorefocus(); }}>
-    <AlertDialog.Title class="text-title font-semibold text-text-primary"
-      >Delete connection permanently?</AlertDialog.Title
-    >
-    <AlertDialog.Description class="mt-1 text-label leading-5 text-text-muted">
+  <AlertDialog.Content
+    onCloseAutoFocus={(event) => {
+  event.preventDefault();
+  onrestorefocus();
+}}
+  >
+    {#snippet header()}
+      <AlertDialog.Title class="wrap-anywhere text-heading font-medium"
+        >Delete connection permanently?</AlertDialog.Title
+      >
+    {/snippet}
+    <AlertDialog.Description class="wrap-anywhere text-label leading-6 text-text-muted">
       {connection?.displayName ?? "This connection"}
       and its stored authentication data will be permanently removed.
     </AlertDialog.Description>
@@ -111,21 +120,20 @@ async function confirm() {
         {error}
       </p>
     {/if}
-    <div class="mt-5 flex justify-end gap-2">
-      <AlertDialog.Cancel
-        class="inline-flex h-8 items-center rounded-md border border-border-subtle px-3 text-label text-text-secondary hover:bg-white/4"
-        >Cancel</AlertDialog.Cancel
-      >
+    {#snippet footer()}
+      <AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
       <AlertDialog.Action
-        class="inline-flex h-8 items-center gap-1.5 rounded-md border border-danger/30 bg-danger/8 px-3 text-label text-danger hover:bg-danger/12 disabled:pointer-events-none disabled:opacity-35"
         disabled={!impact || impact.activeTaskCount > 0 || deleting}
-        onclick={(event) => { event.preventDefault(); void confirm(); }}
+        onclick={(event) => {
+  event.preventDefault();
+  void confirm();
+}}
       >
         {#if deleting}
           <Spinner size={13} />
         {/if}
         Delete permanently
       </AlertDialog.Action>
-    </div>
+    {/snippet}
   </AlertDialog.Content>
 </AlertDialog.Root>
