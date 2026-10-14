@@ -26,7 +26,6 @@ fn host_command(directory: &std::path::Path, address: &str) -> Command {
             directory.join("provider-runtime"),
         )
         .env_remove("TRAKKIN_DATABASE_URL")
-        .env_remove("TRAKKIN_MAPPINGS_METADATA")
         .env_remove("TRAKKIN_MASTER_KEY")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -116,10 +115,7 @@ async fn external_host_starts_with_user_controlled_provider_registry_and_stops_c
         .local()
         .await
         .unwrap();
-    assert_eq!(
-        repository.current().await.unwrap().corpus.entries().count(),
-        1
-    );
+    assert_eq!(mapping_git::artifacts(&repository).await.len(), 1);
     let unavailable = request(&address, "POST", "/api/v1/connections", Some(json!({"providerId": "dev.trakkin.fixture", "displayName": "Unavailable fixture", "settings": [], "secrets": []}))).await;
     assert_eq!(unavailable.0, 404);
     stop_host(child).await;
@@ -213,10 +209,10 @@ async fn user_managed_git_sources_fetch_without_a_browser_and_control_activation
         .local()
         .await
         .unwrap();
-    let local = repository.current().await.unwrap();
-    assert_eq!(local.corpus.entries().count(), 1);
+    let local = repository.head().await.unwrap();
+    assert_eq!(mapping_git::artifacts(&repository).await.len(), 1);
     let sources = request(&address, "GET", "/api/v1/mappings/sources", None).await;
-    assert_eq!(sources.1["sources"][0]["revision"], local.commit);
+    assert_eq!(sources.1["sources"][0]["revision"], local);
     let refreshed = request(
         &address,
         "POST",

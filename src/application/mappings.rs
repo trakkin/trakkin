@@ -19,7 +19,6 @@ pub struct MappingStateSnapshot {
     pub unresolved: u64,
     pub conflicting: u64,
     pub units: u64,
-    pub metadata_snapshot: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

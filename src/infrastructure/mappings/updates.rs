@@ -4,25 +4,24 @@ use futures_util::StreamExt;
 use sqlx::FromRow;
 use time::OffsetDateTime;
 use tokio::sync::watch;
-use trakkin_mappings_corpus::git::Revision;
 
-use super::mappings::MappingStore;
+use super::MappingStore;
 use crate::application::error::ApplicationError;
 
-#[derive(Clone, FromRow)]
+#[derive(FromRow)]
 pub(super) struct DueSource {
-    pub id: String,
-    pub generation: i64,
-    pub url: String,
-    pub branch: String,
-    pub poll_interval_seconds: i64,
-    pub revision: Option<String>,
-    pub consecutive_failures: i32,
+    pub(super) id: String,
+    pub(super) generation: i64,
+    pub(super) url: String,
+    pub(super) branch: String,
+    pub(super) poll_interval_seconds: i64,
+    pub(super) revision: Option<String>,
+    pub(super) consecutive_failures: i32,
 }
 
 pub(super) enum CheckResult {
     Unchanged,
-    Updated(Revision),
+    Updated(String),
     Failed(String),
 }
 
@@ -46,7 +45,7 @@ impl MappingUpdates {
         let mut checks = futures_util::stream::iter(sources.into_iter().map(|source| async move {
             let response = match self.store.repositories.upstream(&source.id) {
                 Ok(repository) => match repository.fetch(&source.url, &source.branch).await {
-                    Ok(revision) if source.revision.as_deref() == Some(&revision.commit) => {
+                    Ok(revision) if source.revision.as_deref() == Some(revision.as_str()) => {
                         CheckResult::Unchanged
                     }
                     Ok(revision) => CheckResult::Updated(revision),

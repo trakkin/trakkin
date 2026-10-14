@@ -1,375 +1,315 @@
-use super::records::OriginRecord;
 use super::*;
-use trakkin_mappings_language::parse_record;
+use trakkin_mappings_corpus::{ExclusiveSourcePair, Resolution};
 
-#[test]
-fn source_urls_are_bounded_and_canonical() {
-    assert_eq!(
-        trakkin_mappings_corpus::git::validate_remote("HTTP://EXAMPLE.COM:80/repository.git")
-            .unwrap(),
-        "http://example.com/repository.git"
-    );
-    for value in [
-        "https://example.com/feed\n.json".to_owned(),
-        format!("https://example.com/{}", "x".repeat(2048)),
-        "https://user:password@example.com/feed.json".to_owned(),
-        "https://example.com/feed.json?token=secret".to_owned(),
-        "file:///tmp/feed.json".to_owned(),
-    ] {
-        assert!(trakkin_mappings_corpus::git::validate_remote(&value).is_err());
+fn stored(text: &str, source: &str) -> StoredRecord {
+    let record = read_record(text).unwrap();
+    StoredRecord {
+        claim_id: record.statement.claim_id().to_string(),
+        origins: BTreeMap::from([(
+            source.into(),
+            OriginRecord {
+                record,
+                rejected: false,
+            },
+        )]),
+    }
+}
+fn policy() -> ConflictPolicy {
+    ConflictPolicy {
+        format_version: 1,
+        exclusive_source_pairs: vec![ExclusiveSourcePair {
+            origin_source: "a".into(),
+            target_source: "b".into(),
+        }],
     }
 }
 
 #[test]
-fn local_decisions_do_not_hide_inconsistent_origin_ids() {
-    let mut records = imported();
-    let stored = records.values_mut().next().unwrap();
-    let local = stored.origins.values().next().unwrap().clone();
-    stored.origins.insert("local".into(), local);
-    stored.origins.insert(
-        "inconsistent".into(),
+fn large_dynamic_bindings_index_only_members_with_shared_extent() {
+    let mut record = stored(
+        "a://show :: episode=* <~> b://show :: episode=*",
+        "community",
+    );
+    let origin = &mut record.origins.get_mut("community").unwrap().record;
+    let bindings = origin
+        .statement
+        .left
+        .selections()
+        .into_iter()
+        .chain(origin.statement.right.selections())
+        .map(|selection| {
+            let count = if selection.source() == "a" {
+                5000
+            } else {
+                4500
+            };
+            (
+                selection.selection_key(),
+                Resolution {
+                    units: (1..=count)
+                        .map(|ordinal| format!("{}://episode/{ordinal}", selection.source()))
+                        .collect(),
+                    ordered: true,
+                    coordinates: None,
+                    error: None,
+                },
+            )
+        })
+        .collect();
+    Bindings(bindings).write(origin).unwrap();
+    let index = MappingIndex::build(
+        BTreeMap::from([(record.claim_id.clone(), record)]),
+        &BTreeSet::new(),
+    )
+    .unwrap();
+    assert_eq!(index.state().units, 9000);
+    assert!(index.units.contains_key("a://episode/4500"));
+    assert!(!index.units.contains_key("a://episode/4501"));
+    assert!(index.units.contains_key("b://episode/4500"));
+}
+
+#[test]
+fn source_urls_are_bounded_and_do_not_embed_credentials() {
+    assert_eq!(
+        trakkin_mappings_corpus::git::validate_remote("HTTP://EXAMPLE.COM:80/repo.git").unwrap(),
+        "http://example.com/repo.git"
+    );
+    for value in [
+        "https://example.com/feed\n.json",
+        "https://user:password@example.com/repo.git",
+        "https://example.com/repo.git?token=secret",
+        "file:///private",
+    ] {
+        assert!(trakkin_mappings_corpus::git::validate_remote(value).is_err());
+    }
+}
+
+#[test]
+fn changing_one_claim_updates_conflict_status_without_affecting_other_claims() {
+    let first = stored("a://1 <=> b://1\n", "community");
+    let second = stored("a://2 <=> b://2\n", "community");
+    let first_id = first.claim_id.clone();
+    let second_id = second.claim_id.clone();
+    let mut index = MappingIndex::build(
+        BTreeMap::from([(first_id.clone(), first), (second_id.clone(), second)]),
+        &BTreeSet::new(),
+    )
+    .unwrap();
+    index
+        .apply(BTreeMap::new(), &BTreeSet::new(), policy())
+        .unwrap();
+    let alternative = stored("a://1 <=> b://3\n", "other");
+    let alternative_id = alternative.claim_id.clone();
+    index
+        .apply(
+            BTreeMap::from([(alternative_id.clone(), Some(alternative))]),
+            &BTreeSet::new(),
+            policy(),
+        )
+        .unwrap();
+    assert_eq!(index.state().conflicting, 2);
+    assert_eq!(index.state().resolved, 1);
+    assert_eq!(
+        index.claims[&second_id].row.status,
+        MappingRecordStatus::Resolved
+    );
+    assert_eq!(
+        index.claims[&first_id].row.status,
+        MappingRecordStatus::Conflicting
+    );
+    index
+        .apply(
+            BTreeMap::from([(alternative_id, None)]),
+            &BTreeSet::new(),
+            policy(),
+        )
+        .unwrap();
+    assert_eq!(index.state().conflicting, 0);
+    assert_eq!(index.state().resolved, 2);
+    assert_eq!(index.state().units, 4);
+    assert_eq!(
+        index.claims[&first_id].row.status,
+        MappingRecordStatus::Resolved
+    );
+}
+
+#[test]
+fn exclusivity_is_explicit_and_directional() {
+    let records = [
+        stored("a://1 <=> b://1\n", "one"),
+        stored("a://1 <=> b://2\n", "two"),
+        stored("a://2 <=> b://1\n", "three"),
+    ]
+    .into_iter()
+    .map(|record| (record.claim_id.clone(), record))
+    .collect();
+    let mut index = MappingIndex::build(records, &BTreeSet::new()).unwrap();
+    assert_eq!(index.state().resolved, 3);
+    index
+        .apply(BTreeMap::new(), &BTreeSet::new(), policy())
+        .unwrap();
+    assert_eq!(index.state().conflicting, 2);
+    assert_eq!(index.state().resolved, 1);
+}
+
+#[test]
+fn published_bindings_preserve_n_to_m_coverage_and_missing_bindings_are_unresolved() {
+    let mut record =
+        read_record("a://show :: episode=1..2 @2 <~> [b://1,b://2,b://3,b://4]\n").unwrap();
+    assert_eq!(
+        compile(&record, false, vec!["community".into()]).row.status,
+        MappingRecordStatus::Unresolved
+    );
+    let selection = record
+        .statement
+        .left
+        .selections()
+        .into_iter()
+        .chain(record.statement.right.selections())
+        .find(|selection| selection.selector.is_some())
+        .unwrap();
+    let bindings = Bindings(BTreeMap::from([(
+        selection.selection_key(),
+        Resolution {
+            units: vec!["a://episode/1".into(), "a://episode/2".into()],
+            ordered: true,
+            coordinates: None,
+            error: None,
+        },
+    )]));
+    bindings.write(&mut record).unwrap();
+    let claim = compile(&record, false, vec!["community".into()]);
+    assert_eq!(claim.row.status, MappingRecordStatus::Resolved);
+    assert_eq!(claim.evaluation.unwrap().alignments.len(), 4);
+}
+
+#[test]
+fn local_decisions_override_upstream_but_do_not_hide_invalid_origin_ids() {
+    let mut record = stored("a://1 <=> b://1\n", "community");
+    record.decide(true, &BTreeSet::new()).unwrap();
+    assert!(
+        record
+            .effective(&BTreeSet::new())
+            .unwrap()
+            .unwrap()
+            .rejected
+    );
+    record.origins.insert(
+        "invalid".into(),
         OriginRecord {
-            canonical_record: CORRECTION.into(),
+            record: read_record("a://2 <=> b://2\n").unwrap(),
             rejected: false,
         },
     );
-    assert!(stored.effective(&BTreeSet::new()).is_err());
+    assert!(record.effective(&BTreeSet::new()).is_err());
 }
 
 #[test]
-fn local_suppressions_are_valid_committed_corpus_decisions() {
-    let mut records = imported();
-    let claim_id = records.keys().next().unwrap().clone();
-    records.get_mut(&claim_id).unwrap().decide(true).unwrap();
-    let decisions = super::records::local_decisions(&mut records).unwrap();
-    let corpus = trakkin_mappings_corpus::Corpus::default()
-        .with_decisions(decisions)
+fn upstream_binding_conflicts_are_explicit_and_local_decisions_ignore_disabled_origins() {
+    let mut record = stored("a://show :: episode=* <~> b://1", "first");
+    let key = record.origins["first"]
+        .record
+        .statement
+        .left
+        .selections()
+        .into_iter()
+        .chain(record.origins["first"].record.statement.right.selections())
+        .find(|selection| selection.selector.is_some())
+        .unwrap()
+        .selection_key();
+    let mut second = record.origins["first"].clone();
+    for (origin, count) in [
+        (&mut record.origins.get_mut("first").unwrap().record, 1),
+        (&mut second.record, 2),
+    ] {
+        Bindings(BTreeMap::from([(
+            key.clone(),
+            Resolution {
+                units: (1..=count)
+                    .map(|ordinal| format!("a://episode/{ordinal}"))
+                    .collect(),
+                ordered: true,
+                coordinates: None,
+                error: None,
+            },
+        )]))
+        .write(origin)
         .unwrap();
-    let entry = corpus.get(&claim_id.parse().unwrap()).unwrap();
-    assert_eq!(entry.status, trakkin_mappings_corpus::Status::Rejected);
-    assert!(
-        entry
-            .record
-            .metadata
-            .contains(&"#@note Explicitly suppressed in Trakkin".into())
-    );
-    assert_eq!(
-        entry.record.canonical(),
-        records[&claim_id].origins["local"].canonical_record
-    );
-    assert_eq!(records[&claim_id].origins.len(), 2);
-}
-
-#[test]
-fn local_acceptance_overrides_upstream_rejection_but_preserves_local_suppression() {
-    let mut records = BTreeMap::new();
-    let record = parse_record("com.imdb://title/tt0133093 <=> org.themoviedb://movie/603").unwrap();
-    let id = record.statement.claim_id().to_string();
-    import_records(&mut records, "upstream", vec![], vec![record.clone()]).unwrap();
-    save_record(&mut records, record.clone(), None).unwrap();
-    assert!(!is_rejected(&records[&id]));
-    let stored = records.get_mut(&id).unwrap();
-    stored.decide(true).unwrap();
-    save_record(&mut records, record, None).unwrap();
-    assert!(is_rejected(&records[&id]));
-}
-
-#[test]
-fn disabled_origins_do_not_execute_and_local_decisions_remain_active() {
-    let mut records = BTreeMap::new();
-    let record = parse_record("com.imdb://title/tt0133093 <=> org.themoviedb://movie/603").unwrap();
-    let claim_id = record.statement.claim_id().to_string();
-    import_records(
-        &mut records,
-        "import:upstream",
-        vec![record.clone()],
-        vec![],
-    )
-    .unwrap();
-    let resolver = MappingResolver { snapshots: None };
-    let enabled = MappingIndex::build(records.clone(), &resolver, &BTreeSet::new()).unwrap();
-    let disabled = BTreeSet::from(["import:upstream".into()]);
-    let hidden = MappingIndex::build(records.clone(), &resolver, &disabled).unwrap();
-    assert_eq!(hidden.state().records, 0);
-    assert!(hidden.units.is_empty());
-    assert_eq!(hidden.records.len(), 1);
-    assert_ne!(hidden.fingerprint, enabled.fingerprint);
-    save_record(&mut records, record, None).unwrap();
-    let local = MappingIndex::build(records, &resolver, &disabled).unwrap();
-    assert_eq!(local.claims[0].row.claim_id, claim_id);
-    assert_eq!(local.claims[0].row.sources, ["import:upstream", "local"]);
-    assert_eq!(local.state().resolved, 1);
-}
-
-const ORIGINAL: &str = "com.imdb://title/tt0133093 <=> org.themoviedb://movie/603";
-const CORRECTION: &str = "com.imdb://title/tt0133093 <=> org.themoviedb://movie/604";
-
-fn is_rejected(record: &StoredRecord) -> bool {
-    record.effective(&BTreeSet::new()).unwrap().unwrap().1
-}
-
-fn index(records: BTreeMap<String, StoredRecord>) -> MappingIndex {
-    MappingIndex::build(
-        records,
-        &MappingResolver { snapshots: None },
+    }
+    record.origins.insert("second".into(), second);
+    let id = record.claim_id.clone();
+    let mut index = MappingIndex::build(
+        BTreeMap::from([(id.clone(), record.clone())]),
         &BTreeSet::new(),
     )
-    .unwrap()
-}
-
-fn imported() -> BTreeMap<String, StoredRecord> {
-    let mut records = BTreeMap::new();
-    import_records(
-        &mut records,
-        "import:community",
-        vec![parse_record(ORIGINAL).unwrap()],
-        Vec::new(),
-    )
     .unwrap();
-    records
-}
-
-#[test]
-fn local_replacement_suppresses_original_without_removing_it() {
-    let mut records = imported();
-    let original = parse_record(ORIGINAL)
-        .unwrap()
-        .statement
-        .claim_id()
-        .to_string();
-    save_record(
-        &mut records,
-        parse_record(CORRECTION).unwrap(),
-        Some(&original),
-    )
-    .unwrap();
-    assert_eq!(records.len(), 2);
-    assert!(is_rejected(&records[&original]));
-    let index = index(records);
-    let resolved = index
-        .resolve(ResolveMappingUnits {
-            expected_fingerprint: None,
-            unit_keys: vec!["com.imdb://title/tt0133093".into()],
-        })
-        .unwrap();
-    assert_eq!(resolved.units[0].matches.len(), 1);
-    assert!(
-        resolved.units[0].matches[0].right.members[0]
-            .unit_key
-            .ends_with("/604")
-    );
-}
-
-#[test]
-fn replacement_cannot_implicitly_restore_a_suppressed_claim() {
-    let mut records = imported();
-    import_records(
-        &mut records,
-        "import:custom",
-        Vec::new(),
-        vec![parse_record(CORRECTION).unwrap()],
-    )
-    .unwrap();
-    let previous = records.clone();
-    let original = parse_record(ORIGINAL)
-        .unwrap()
-        .statement
-        .claim_id()
-        .to_string();
-    assert!(
-        save_record(
-            &mut records,
-            parse_record(CORRECTION).unwrap(),
-            Some(&original)
-        )
-        .is_err()
-    );
-    assert_eq!(records, previous);
-}
-
-#[test]
-fn refreshed_source_can_withdraw_rejection_without_erasing_local_decisions() {
-    let mut records = imported();
-    import_records(
-        &mut records,
-        "import:other",
-        Vec::new(),
-        vec![parse_record(ORIGINAL).unwrap()],
-    )
-    .unwrap();
-    let original = parse_record(ORIGINAL)
-        .unwrap()
-        .statement
-        .claim_id()
-        .to_string();
-    assert!(is_rejected(&records[&original]));
-    import_records(
-        &mut records,
-        "import:other",
-        vec![parse_record(ORIGINAL).unwrap()],
-        Vec::new(),
-    )
-    .unwrap();
-    assert!(!is_rejected(&records[&original]));
-    records.get_mut(&original).unwrap().decide(true).unwrap();
-    import_records(
-        &mut records,
-        "import:other",
-        vec![parse_record(ORIGINAL).unwrap()],
-        Vec::new(),
-    )
-    .unwrap();
-    assert!(is_rejected(&records[&original]));
-}
-
-#[test]
-fn refresh_preserves_local_decisions_and_duplicates_merge_origins() {
-    let mut records = imported();
-    import_records(
-        &mut records,
-        "import:custom",
-        vec![parse_record(ORIGINAL).unwrap()],
-        Vec::new(),
-    )
-    .unwrap();
-    assert_eq!(records.len(), 1);
-    let original = parse_record(ORIGINAL)
-        .unwrap()
-        .statement
-        .claim_id()
-        .to_string();
-    save_record(
-        &mut records,
-        parse_record(CORRECTION).unwrap(),
-        Some(&original),
-    )
-    .unwrap();
-    import_records(
-        &mut records,
-        "import:community",
-        vec![parse_record(ORIGINAL).unwrap()],
-        Vec::new(),
-    )
-    .unwrap();
-    assert!(is_rejected(&records[&original]));
     assert_eq!(
-        records[&original]
-            .origins
-            .keys()
-            .map(String::as_str)
-            .collect::<Vec<_>>(),
-        ["import:community", "import:custom", "local"]
+        index.claims[&id].row.status,
+        MappingRecordStatus::Conflicting
     );
-}
-
-#[test]
-fn conflicting_claims_are_visible_and_not_silently_prioritized() {
-    let mut records = imported();
-    save_record(&mut records, parse_record(CORRECTION).unwrap(), None).unwrap();
-    let index = index(records);
-    assert!(
-        index
-            .claims
-            .iter()
-            .all(|claim| claim.row.status == MappingRecordStatus::Conflicting)
-    );
-    let resolved = index
-        .resolve(ResolveMappingUnits {
-            expected_fingerprint: None,
-            unit_keys: vec![
-                "com.imdb://title/tt0133093".into(),
-                "org.themoviedb://movie/603".into(),
-            ],
-        })
-        .unwrap();
-    assert!(resolved.units.iter().all(|unit| unit.matches.is_empty()));
-}
-
-#[test]
-fn shared_evaluator_preserves_weighted_alignment_offsets() {
-    let mut records = BTreeMap::new();
-    save_record(&mut records, parse_record("com.imdb://title/tt0133093 @2 <~> [org.themoviedb://movie/603,org.themoviedb://movie/604]").unwrap(), None).unwrap();
-    let index = index(records);
-    let evaluation = index.claims[0].evaluation.as_ref().unwrap();
-    assert_eq!(evaluation.alignments.len(), 2);
+    assert!(index.claims[&id].row.diagnostics[0].starts_with("origin conflict:"));
+    assert_eq!(index.state().units, 0);
+    assert!(record.decide(false, &BTreeSet::new()).is_err());
+    let disabled = BTreeSet::from(["second".into()]);
+    record.decide(false, &disabled).unwrap();
     assert_eq!(
-        (
-            evaluation.alignments[1].left_offset,
-            evaluation.alignments[1].right_offset
-        ),
-        (0, 1)
-    );
-}
-
-#[test]
-fn selector_claims_remain_unresolved_without_native_metadata() {
-    let mut records = BTreeMap::new();
-    save_record(&mut records, parse_record("co.anilist://media/1 :: episode=1..2 <=> org.themoviedb://tv/10 :: season=1,episode=1..2").unwrap(), None).unwrap();
-    let index = index(records);
-    assert_eq!(index.claims[0].row.status, MappingRecordStatus::Unresolved);
-    assert!(index.units.is_empty());
-}
-
-#[test]
-fn native_metadata_resolves_ranges_through_the_shared_evaluator() {
-    use serde_json::json;
-    use std::fs;
-    use trakkin_mappings_corpus::snapshots;
-
-    let directory = tempfile::tempdir().unwrap();
-    let mut requests = Vec::new();
-    for (namespace, adapter, records) in [
-        (
-            "co.anilist",
-            "anilist",
-            json!({"1":{"id":1,"type":"ANIME","episodes":2}}),
-        ),
-        (
-            "org.themoviedb",
-            "tmdb",
-            json!({
-                "tv:10":{"id":10,"seasons":[{"id":20,"season_number":1}]},
-                "season:20":{"id":20,"season_number":1,"episodes":[{"id":30,"season_number":1,"episode_number":1},{"id":31,"season_number":1,"episode_number":2}]}
-            }),
-        ),
-    ] {
-        let input = directory.path().join(namespace);
-        fs::create_dir_all(&input).unwrap();
-        fs::write(
-            input.join("records.json"),
-            serde_json::to_vec(&json!({"records":records})).unwrap(),
-        )
-        .unwrap();
-        let request = input.join("capture.json");
-        fs::write(&request, serde_json::to_vec(&json!({"sources":{namespace:{"file":"records.json","adapter":adapter,"scope":["fixture"],"complete":true,"captured_at":"2026-10-13T00:00:00Z"}}})).unwrap()).unwrap();
-        requests.push(request);
-    }
-    let snapshots =
-        snapshots::capture_many(&requests, &directory.path().join("artifacts/snapshot")).unwrap();
-    let resolver = MappingResolver {
-        snapshots: Some(snapshots),
-    };
-    let mut records = BTreeMap::new();
-    save_record(&mut records, parse_record("co.anilist://media/1 :: episode=1..2 <=> org.themoviedb://tv/10 :: season=1,episode=1..2").unwrap(), None).unwrap();
-    let index = MappingIndex::build(records, &resolver, &BTreeSet::new()).unwrap();
-    assert_eq!(index.claims[0].row.status, MappingRecordStatus::Resolved);
-    assert_eq!(
-        index.claims[0]
-            .evaluation
-            .as_ref()
-            .unwrap()
-            .alignments
+        Bindings::read(&record.origins["local"].record).unwrap().0[&key]
+            .units
             .len(),
-        2
+        1
     );
-    assert_eq!(index.units.len(), 4);
+    index
+        .apply(
+            BTreeMap::from([(id.clone(), Some(record))]),
+            &disabled,
+            ConflictPolicy::default(),
+        )
+        .unwrap();
+    assert_eq!(index.claims[&id].row.status, MappingRecordStatus::Resolved);
 }
 
 #[test]
-fn changed_records_invalidate_cursors_and_write_fingerprints() {
-    let records = imported();
-    let previous = index(records.clone()).fingerprint;
-    let mut records = records;
-    save_record(&mut records, parse_record(CORRECTION).unwrap(), None).unwrap();
-    assert!(index(records).check_fingerprint(Some(&previous)).is_err());
+fn equivalent_bindings_merge_without_duplicate_resolution_annotations() {
+    let mut record = stored("a://show :: episode=* <~> b://1", "first");
+    let key = record.origins["first"]
+        .record
+        .statement
+        .left
+        .selections()
+        .into_iter()
+        .chain(record.origins["first"].record.statement.right.selections())
+        .find(|selection| selection.selector.is_some())
+        .unwrap()
+        .selection_key();
+    Bindings(BTreeMap::from([(
+        key,
+        Resolution {
+            units: vec!["a://episode/1".into()],
+            ordered: true,
+            coordinates: None,
+            error: None,
+        },
+    )]))
+    .write(&mut record.origins.get_mut("first").unwrap().record)
+    .unwrap();
+    let mut second = record.origins["first"].clone();
+    for line in &mut second.record.metadata {
+        *line = line.replace("\"units\":", "\"units\": ");
+    }
+    record.origins.insert("second".into(), second);
+    let effective = record.effective(&BTreeSet::new()).unwrap().unwrap();
+    assert!(effective.binding_conflicts.is_empty());
+    assert_eq!(
+        effective
+            .record
+            .metadata
+            .iter()
+            .filter(|line| line.starts_with("#@resolve "))
+            .count(),
+        1
+    );
+    assert_eq!(
+        compile(&effective.record, false, vec![]).row.status,
+        MappingRecordStatus::Resolved
+    );
 }

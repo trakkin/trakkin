@@ -519,6 +519,8 @@ CREATE TABLE mapping_sources (
         consecutive_failures >= 0
     ),
     last_error TEXT,
+    conflict_policy JSONB NOT NULL DEFAULT
+    '{"format_version":1,"exclusive_source_pairs":[]}',
     CHECK ((id = 'local') = (kind = 'local')),
     CHECK (
         (
@@ -542,6 +544,20 @@ VALUES ('local', 'Local', 'local');
 
 CREATE INDEX mapping_sources_due_idx
 ON mapping_sources (next_check_at) WHERE enabled AND kind = 'upstream';
+
+CREATE TABLE mapping_origins (
+    source_id TEXT NOT NULL REFERENCES mapping_sources(id) ON DELETE CASCADE,
+    claim_id TEXT NOT NULL,
+    record JSONB NOT NULL,
+    rejected BOOLEAN NOT NULL,
+    PRIMARY KEY (source_id, claim_id)
+);
+CREATE INDEX mapping_origins_claim_idx ON mapping_origins (claim_id, source_id);
+
+CREATE TABLE mapping_invalidations (
+    claim_id TEXT PRIMARY KEY,
+    sequence BIGINT GENERATED ALWAYS AS IDENTITY UNIQUE
+);
 
 CREATE TABLE catalog_items (
     source_id UUID NOT NULL REFERENCES sources(id) ON DELETE CASCADE,

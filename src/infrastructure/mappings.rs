@@ -1,65 +1,39 @@
 mod index;
 mod records;
+mod updates;
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    path::Path,
-};
-
-use serde::Serialize;
-use sqlx::{FromRow, PgConnection, PgPool, Postgres, Transaction};
-use tokio::sync::{Mutex, MutexGuard};
-use trakkin_mappings_corpus::{
-    git::{Repository, RepositoryStore, WriteError},
-    snapshots::SnapshotSet,
-};
-use trakkin_mappings_language::{
-    Record, ResolvedSelection, Resolver, Selection, SemanticError, SemanticErrorKind, evaluate,
-    sha256,
-};
+pub use updates::MappingUpdates;
 
 use self::{
     index::{MappingIndex, compile},
-    records::{StoredRecord, import_records, read_record, save_record},
+    records::{OriginRecord, StoredRecord, read_record, save_record},
 };
 use crate::application::{
     error::{ApplicationError, ApplicationErrorCode},
     mappings::*,
 };
+use serde::Serialize;
+use sqlx::{Acquire, FromRow, PgConnection, PgPool, Postgres, Transaction};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+};
+use tokio::sync::{Mutex, MutexGuard};
+use trakkin_mappings_corpus::{
+    Artifact, Bindings, ConflictPolicy, POLICY, claim_path,
+    git::{Repository, RepositoryStore, WriteError},
+};
+use trakkin_mappings_language::{Record, SemanticErrorKind, evaluate, sha256};
 
 const MAXIMUM_BATCH: usize = 1000;
-pub(super) const MAXIMUM_RECORDS: usize = 100_000;
 const MAXIMUM_CONTENT_BYTES: usize = 2 * 1024 * 1024;
 const WRITE_LOCK: i64 = 0x7472616b6d617073;
 
 pub struct MappingStore {
-    pub(super) pool: PgPool,
-    pub(super) repositories: RepositoryStore,
+    pool: PgPool,
+    repositories: RepositoryStore,
     local: Repository,
-    resolver: MappingResolver,
     index: Mutex<MappingIndex>,
-}
-
-struct MappingResolver {
-    snapshots: Option<SnapshotSet>,
-}
-
-impl Resolver for MappingResolver {
-    fn resolve(&self, selection: &Selection) -> Result<ResolvedSelection, SemanticError> {
-        if selection.selector.is_none() {
-            let key = trakkin_provider_sdk::mapping::MappingUnitKey::parse(&selection.reference)
-                .map_err(|error| SemanticError::invalid(error.to_string()))?;
-            return Ok(ResolvedSelection {
-                units: vec![key.as_str().to_owned()],
-                ordered: true,
-                coordinates: None,
-            });
-        }
-        self.snapshots
-            .as_ref()
-            .ok_or_else(|| SemanticError::unresolved("selector requires native catalog metadata"))?
-            .resolve(selection)
-    }
 }
 
 #[derive(FromRow)]
@@ -77,6 +51,7 @@ struct SourceRow {
     next_check_at: Option<time::OffsetDateTime>,
     consecutive_failures: i32,
     last_error: Option<String>,
+    cached_records: i64,
 }
 
 #[derive(FromRow, Serialize)]
@@ -89,42 +64,61 @@ struct SourceConfiguration {
     poll_interval_seconds: Option<i64>,
     enabled: bool,
     generation: i64,
+    conflict_policy: serde_json::Value,
 }
 
 impl MappingStore {
+    pub async fn open(pool: PgPool, directory: &Path) -> Result<Self, ApplicationError> {
+        let repositories = RepositoryStore::open(directory).map_err(repository_error)?;
+        let local = repositories.local().await.map_err(repository_error)?;
+        let index = MappingIndex::build(BTreeMap::new(), &BTreeSet::new())?;
+        let store = Self {
+            pool,
+            repositories,
+            local,
+            index: Mutex::new(index),
+        };
+        let (index, mut transaction) = store.begin_write(None).await?;
+        let head = store.local.head().await.map_err(repository_error)?;
+        store
+            .import_revision(&mut transaction, "local", &store.local, &head)
+            .await?;
+        store.commit_write(index, transaction).await?;
+        Ok(store)
+    }
+
     pub async fn sources(&self) -> Result<MappingSourcesSnapshot, ApplicationError> {
-        let index = self.index.lock().await;
+        let (index, mut transaction) = self.begin_read().await?;
         let rows = sqlx::query_as::<_, SourceRow>(
             "SELECT
-    source.id,
-    source.display_name,
-    source.kind,
-    source.enabled,
-    source.url,
-    source.branch,
-    source.poll_interval_seconds,
-    source.revision,
-    source.last_checked_at,
-    source.last_updated_at,
-    source.next_check_at,
-    source.consecutive_failures,
-    source.last_error
-FROM mapping_sources AS source
-ORDER BY source.kind, source.display_name, source.id
+    s.id,
+    s.display_name,
+    s.kind,
+    s.enabled,
+    s.url,
+    s.branch,
+    s.poll_interval_seconds,
+    s.revision,
+    s.last_checked_at,
+    s.last_updated_at,
+    s.next_check_at,
+    s.consecutive_failures,
+    s.last_error,
+    (SELECT count(*) FROM mapping_origins o WHERE o.source_id = s.id
+    ) AS cached_records
+FROM mapping_sources s
+ORDER BY s.kind, s.display_name, s.id
 ",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *transaction)
         .await
         .map_err(database_error)?;
-        let sources = rows
-            .into_iter()
-            .map(|row| {
-                let cached_records = index
-                    .records
-                    .values()
-                    .filter(|record| record.origins.contains_key(&row.id))
-                    .count() as u64;
-                MappingSource {
+        transaction.commit().await.map_err(database_error)?;
+        Ok(MappingSourcesSnapshot {
+            fingerprint: index.fingerprint.clone(),
+            sources: rows
+                .into_iter()
+                .map(|row| MappingSource {
                     id: row.id,
                     display_name: row.display_name,
                     kind: if row.kind == "local" {
@@ -135,24 +129,20 @@ ORDER BY source.kind, source.display_name, source.id
                     enabled: row.enabled,
                     url: row.url,
                     branch: row.branch,
-                    repository_path: (row.kind == "local")
-                        .then(|| self.local.path().display().to_string()),
                     poll_interval_seconds: row
                         .poll_interval_seconds
                         .map(|interval| interval as u64),
-                    cached_records,
+                    repository_path: (row.kind == "local")
+                        .then(|| self.local.path().display().to_string()),
+                    cached_records: row.cached_records as u64,
                     revision: row.revision,
                     last_checked_at: row.last_checked_at,
                     last_updated_at: row.last_updated_at,
                     next_check_at: row.next_check_at,
                     consecutive_failures: row.consecutive_failures as u32,
                     last_error: row.last_error,
-                }
-            })
-            .collect();
-        Ok(MappingSourcesSnapshot {
-            fingerprint: index.fingerprint.clone(),
-            sources,
+                })
+                .collect(),
         })
     }
 
@@ -166,29 +156,28 @@ ORDER BY source.kind, source.display_name, source.id
                 "source name must contain 1 to 128 bytes without control characters",
             ));
         }
-        let url = self
-            .repositories
-            .validate_upstream(&command.url, &command.branch)
-            .await
-            .map_err(|error| invalid_request(&error.to_string()))?;
         if !(60..=604800).contains(&command.poll_interval_seconds) {
             return Err(invalid_request(
                 "polling interval must be between 60 seconds and 7 days",
             ));
         }
+        let url = self
+            .repositories
+            .validate_upstream(&command.url, &command.branch)
+            .await
+            .map_err(|error| invalid_request(&error.to_string()))?;
         let (index, mut transaction) = self
             .begin_write(Some(&command.expected_fingerprint))
             .await?;
         if let Some(id) = &command.id {
             require_upstream(&mut transaction, id).await?;
             sqlx::query(
-                "UPDATE mapping_sources
-SET
+                "UPDATE mapping_sources SET
     display_name = $2,
     url = $3,
-    branch = $6,
-    poll_interval_seconds = $4,
-    enabled = $5,
+    branch = $4,
+    poll_interval_seconds = $5,
+    enabled = $6,
     generation = generation + 1,
     consecutive_failures = 0,
     last_error = NULL,
@@ -199,15 +188,17 @@ WHERE id = $1
             .bind(id)
             .bind(name)
             .bind(&url)
+            .bind(&command.branch)
             .bind(command.poll_interval_seconds as i64)
             .bind(command.enabled)
-            .bind(&command.branch)
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
+            invalidate_source(&mut transaction, id).await?;
         } else {
             let count: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM mapping_sources WHERE kind = 'upstream'\n",
+                "SELECT count(*) FROM mapping_sources WHERE kind = 'upstream'
+",
             )
             .fetch_one(&mut *transaction)
             .await
@@ -224,20 +215,29 @@ WHERE id = $1
             bytes[8] = (bytes[8] & 0x3f) | 0x80;
             let id = uuid::Uuid::from_bytes(bytes).to_string();
             sqlx::query(
-                "INSERT INTO mapping_sources\n(\n    id,\n    display_name,\n    kind,\n    url,\n    poll_interval_seconds,\n    enabled,\n    branch,\n    next_check_at\n)\nVALUES ($1, $2, 'upstream', $3, $4, $5, $6, NOW())\n",
+                "INSERT INTO mapping_sources (
+    id,
+    display_name,
+    kind,
+    url,
+    branch,
+    poll_interval_seconds,
+    enabled,
+    next_check_at
+) VALUES ($1, $2, 'upstream', $3, $4, $5, $6, NOW())
+",
             )
             .bind(id)
             .bind(name)
-            .bind(&url)
+            .bind(url)
+            .bind(command.branch)
             .bind(command.poll_interval_seconds as i64)
             .bind(command.enabled)
-            .bind(&command.branch)
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
         }
-        let records = self.committed_records(&mut transaction).await?;
-        self.commit_write(index, transaction, records).await
+        self.commit_write(index, transaction).await
     }
 
     pub async fn delete_source(
@@ -248,15 +248,18 @@ WHERE id = $1
             .begin_write(Some(&command.expected_fingerprint))
             .await?;
         require_upstream(&mut transaction, &command.id).await?;
-        sqlx::query("DELETE FROM mapping_sources WHERE id = $1\n")
-            .bind(&command.id)
-            .execute(&mut *transaction)
-            .await
-            .map_err(database_error)?;
-        let records = self.committed_records(&mut transaction).await?;
-        let state = self.commit_write(index, transaction, records).await?;
+        invalidate_source(&mut transaction, &command.id).await?;
+        sqlx::query(
+            "DELETE FROM mapping_sources WHERE id = $1
+",
+        )
+        .bind(&command.id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        let state = self.commit_write(index, transaction).await?;
         if let Err(error) = self.repositories.remove_upstream(&command.id) {
-            tracing::warn!(source = %command.id, error = %error, "mapping cache cleanup deferred until the active fetch completes");
+            tracing::warn!(source=%command.id,error=%error,"mapping cache cleanup deferred");
         }
         Ok(state)
     }
@@ -269,79 +272,41 @@ WHERE id = $1
             .begin_write((command.id != "local").then_some(command.expected_fingerprint.as_str()))
             .await?;
         if command.id == "local" {
-            let records = index.records.clone();
-            return self.commit_write(index, transaction, records).await;
-        }
-        require_upstream(&mut transaction, &command.id).await?;
-        let enabled: bool =
-            sqlx::query_scalar("SELECT enabled FROM mapping_sources WHERE id = $1\n")
-                .bind(&command.id)
-                .fetch_one(&mut *transaction)
-                .await
-                .map_err(database_error)?;
-        if !enabled {
-            return Err(invalid_request("enable the source before refreshing it"));
-        }
-        sqlx::query(
-            "UPDATE mapping_sources
-SET
-    next_check_at = NOW(),
+            let head = self.local.head().await.map_err(repository_error)?;
+            self.import_revision(&mut transaction, "local", &self.local, &head)
+                .await?;
+        } else {
+            require_upstream(&mut transaction, &command.id).await?;
+            let enabled: bool = sqlx::query_scalar(
+                "SELECT enabled FROM mapping_sources WHERE id = $1
+",
+            )
+            .bind(&command.id)
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+            if !enabled {
+                return Err(invalid_request("enable the source before refreshing it"));
+            }
+            sqlx::query(
+                "UPDATE mapping_sources SET
     generation = generation + 1,
+    next_check_at = NOW(),
     consecutive_failures = 0,
     last_error = NULL
 WHERE id = $1
 ",
-        )
-        .bind(&command.id)
-        .execute(&mut *transaction)
-        .await
-        .map_err(database_error)?;
-        let records = self.committed_records(&mut transaction).await?;
-        self.commit_write(index, transaction, records).await
-    }
-
-    pub async fn revert(
-        &self,
-        command: DeleteMapping,
-    ) -> Result<MappingStateSnapshot, ApplicationError> {
-        self.update(Some(&command.expected_fingerprint), move |records| {
-            let stored = records
-                .get_mut(&command.claim_id)
-                .ok_or_else(|| invalid_request("mapping claim does not exist"))?;
-            if stored.origins.remove("local").is_none() {
-                return Err(invalid_request("mapping has no local decision"));
-            }
-            records.retain(|_, stored| !stored.origins.is_empty());
-            Ok(())
-        })
-        .await
-    }
-
-    pub async fn open(
-        pool: PgPool,
-        directory: &Path,
-        snapshots: Option<SnapshotSet>,
-    ) -> Result<Self, ApplicationError> {
-        let resolver = MappingResolver { snapshots };
-        let repositories = RepositoryStore::open(directory).map_err(repository_error)?;
-        let local = repositories.local().await.map_err(repository_error)?;
-        let index = MappingIndex::build(BTreeMap::new(), &resolver, &BTreeSet::new())?;
-        let store = Self {
-            pool,
-            repositories,
-            local,
-            resolver,
-            index: Mutex::new(index),
-        };
-        let (index, transaction) = store.begin_write(None).await?;
-        let records = index.records.clone();
-        store.commit_write(index, transaction, records).await?;
-        Ok(store)
+            )
+            .bind(command.id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+        }
+        self.commit_write(index, transaction).await
     }
 
     pub async fn preview(&self, text: &str) -> Result<MappingResult, ApplicationError> {
-        let record = read_record(text)?;
-        Ok(compile(&record, false, vec!["local".into()], &self.resolver).row)
+        Ok(compile(&read_record(text)?, false, vec!["local".into()]).row)
     }
 
     pub async fn save(
@@ -349,252 +314,403 @@ WHERE id = $1
         command: SaveMapping,
     ) -> Result<MappingStateSnapshot, ApplicationError> {
         let record = read_record(&command.record)?;
-        validate_evaluation(&record, &self.resolver)?;
-        self.update(Some(&command.expected_fingerprint), move |records| {
-            save_record(records, record, command.replaces.as_deref())
-        })
+        let mut ids = vec![record.statement.claim_id().to_string()];
+        ids.extend(command.replaces.clone());
+        self.update(
+            &command.expected_fingerprint,
+            ids,
+            move |records, disabled| {
+                save_record(records, record, command.replaces.as_deref(), disabled)
+            },
+        )
         .await
     }
-
     pub async fn decide(
         &self,
         command: DecideMapping,
     ) -> Result<MappingStateSnapshot, ApplicationError> {
-        self.update(Some(&command.expected_fingerprint), move |records| {
-            let record = records
-                .get_mut(&command.claim_id)
-                .ok_or_else(|| invalid_request("mapping claim does not exist"))?;
-            record.decide(command.rejected)
-        })
+        self.update(
+            &command.expected_fingerprint,
+            vec![command.claim_id.clone()],
+            move |records, disabled| {
+                records
+                    .get_mut(&command.claim_id)
+                    .ok_or_else(|| invalid_request("mapping claim does not exist"))?
+                    .decide(command.rejected, disabled)
+            },
+        )
         .await
     }
-
     pub async fn delete(
         &self,
         command: DeleteMapping,
     ) -> Result<MappingStateSnapshot, ApplicationError> {
-        self.update(Some(&command.expected_fingerprint), move |records| {
-            let record = records
-                .get(&command.claim_id)
-                .ok_or_else(|| invalid_request("mapping claim does not exist"))?;
-            if record.origins.keys().any(|source| source != "local") {
-                return Err(invalid_request(
-                    "imported mappings must be suppressed rather than deleted",
-                ));
-            }
-            records
-                .remove(&command.claim_id)
-                .ok_or_else(|| invalid_request("mapping claim does not exist"))?;
-            Ok(())
-        })
+        self.update(
+            &command.expected_fingerprint,
+            vec![command.claim_id.clone()],
+            move |records, _disabled| {
+                let record = records
+                    .get(&command.claim_id)
+                    .ok_or_else(|| invalid_request("mapping claim does not exist"))?;
+                if record.origins.keys().any(|source| source != "local") {
+                    return Err(invalid_request(
+                        "imported mappings must be suppressed rather than deleted",
+                    ));
+                }
+                records.remove(&command.claim_id);
+                Ok(())
+            },
+        )
+        .await
+    }
+    pub async fn revert(
+        &self,
+        command: DeleteMapping,
+    ) -> Result<MappingStateSnapshot, ApplicationError> {
+        self.update(
+            &command.expected_fingerprint,
+            vec![command.claim_id.clone()],
+            move |records, _disabled| {
+                let record = records
+                    .get_mut(&command.claim_id)
+                    .ok_or_else(|| invalid_request("mapping claim does not exist"))?;
+                if record.origins.remove("local").is_none() {
+                    return Err(invalid_request("mapping has no local decision"));
+                }
+                Ok(())
+            },
+        )
         .await
     }
 
-    pub(super) async fn complete_check(
+    async fn update(
         &self,
-        source: &super::mapping_updates::DueSource,
-        response: super::mapping_updates::CheckResult,
+        expected: &str,
+        ids: Vec<String>,
+        operation: impl FnOnce(
+            &mut BTreeMap<String, StoredRecord>,
+            &BTreeSet<String>,
+        ) -> Result<(), ApplicationError>
+        + Send,
+    ) -> Result<MappingStateSnapshot, ApplicationError> {
+        let (index, mut transaction) = self.begin_write(Some(expected)).await?;
+        let mut records = ids
+            .iter()
+            .filter_map(|id| {
+                index
+                    .records
+                    .get(id)
+                    .map(|record| (id.clone(), record.clone()))
+            })
+            .collect::<BTreeMap<_, _>>();
+        operation(&mut records, &index.disabled)?;
+        let mut changes = BTreeMap::new();
+        for id in ids {
+            let claim_id = id
+                .parse::<trakkin_mappings_language::ClaimId>()
+                .map_err(|error| invalid_request(&error.to_string()))?;
+            let text = if let Some(origin) = records
+                .get(&id)
+                .and_then(|record| record.origins.get("local"))
+            {
+                if !origin.rejected {
+                    validate_evaluation(&origin.record)?;
+                }
+                Some(
+                    Artifact {
+                        record: origin.record.clone(),
+                        rejected: origin.rejected,
+                    }
+                    .text(),
+                )
+            } else {
+                None
+            };
+            changes.insert(claim_path(&claim_id), text);
+        }
+        let base: Option<String> = sqlx::query_scalar(
+            "SELECT revision FROM mapping_sources WHERE id = 'local'
+",
+        )
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        let base =
+            base.ok_or_else(|| ApplicationError::internal("local mapping revision is missing"))?;
+        let prepared = self
+            .local
+            .prepare(&base, &changes, "Update Local mapping decisions")
+            .await
+            .map_err(write_error)?;
+        self.local.apply(&prepared).await.map_err(write_error)?;
+        self.import_revision(&mut transaction, "local", &self.local, &prepared.commit)
+            .await?;
+        self.commit_write(index, transaction).await
+    }
+
+    async fn complete_check(
+        &self,
+        source: &updates::DueSource,
+        response: updates::CheckResult,
         now: time::OffsetDateTime,
     ) -> Result<(), ApplicationError> {
-        use super::mapping_updates::{CheckResult, retry_delay};
+        use self::updates::{CheckResult, retry_delay};
         let (index, mut transaction) = self.begin_write(None).await?;
         let current: bool = sqlx::query_scalar(
-            "SELECT EXISTS(\n    SELECT 1\n    FROM mapping_sources\n    WHERE id = $1 AND generation = $2 AND enabled AND kind = 'upstream'\n)\n",
+            "SELECT
+    EXISTS(
+        SELECT 1
+        FROM mapping_sources
+        WHERE
+            id = $1
+            AND generation = $2
+            AND revision IS NOT DISTINCT FROM $3
+            AND enabled
+            AND kind = 'upstream'
+    )
+",
         )
         .bind(&source.id)
         .bind(source.generation)
+        .bind(&source.revision)
         .fetch_one(&mut *transaction)
         .await
         .map_err(database_error)?;
         if !current {
-            let exists: bool =
-                sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mapping_sources WHERE id = $1)\n")
-                    .bind(&source.id)
-                    .fetch_one(&mut *transaction)
-                    .await
-                    .map_err(database_error)?;
-            if !exists {
-                self.repositories
-                    .remove_upstream(&source.id)
-                    .map_err(repository_error)?;
+            let exists: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM mapping_sources WHERE id = $1)
+",
+            )
+            .bind(&source.id)
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+            if !exists && let Err(error) = self.repositories.remove_upstream(&source.id) {
+                tracing::warn!(source=%source.id,error=%error,"mapping cache cleanup deferred");
             }
             return Ok(());
         }
-        let mut records = index.records.clone();
-        let response = match response {
-            CheckResult::Updated(revision) => {
-                let validation = (|| {
-                    let decisions = revision
-                        .corpus
-                        .decisions()
-                        .map_err(|error| invalid_request(&error.to_string()))?;
-                    let mut accepted = Vec::new();
-                    let mut rejected = Vec::new();
-                    for (_, decision) in decisions {
-                        if decision.rejected {
-                            rejected.push(decision.record);
-                        } else {
-                            accepted.push(decision.record);
-                        }
-                    }
-                    for record in &accepted {
-                        validate_evaluation(record, &self.resolver)?;
-                    }
-                    import_records(&mut records, &source.id, accepted, rejected)?;
-                    if records.len() > MAXIMUM_RECORDS {
-                        return Err(invalid_request(
-                            "mapping store is limited to 100000 records",
-                        ));
-                    }
-                    MappingIndex::build(records.clone(), &self.resolver, &BTreeSet::new())?;
-                    Ok::<_, ApplicationError>(())
-                })();
-                match validation {
-                    Ok(()) => CheckResult::Updated(revision),
-                    Err(error) => CheckResult::Failed(error.to_string()),
+        let mut response = response;
+        if let CheckResult::Updated(commit) = &response {
+            let repository = self
+                .repositories
+                .upstream(&source.id)
+                .map_err(repository_error)?;
+            let mut savepoint = transaction.begin().await.map_err(database_error)?;
+            match self
+                .import_revision(&mut savepoint, &source.id, &repository, commit)
+                .await
+            {
+                Ok(()) => {
+                    savepoint.commit().await.map_err(database_error)?;
+                }
+                Err(error) => {
+                    savepoint.rollback().await.map_err(database_error)?;
+                    response = CheckResult::Failed(error.to_string());
                 }
             }
-            response => response,
-        };
-        let (revision, updated, failures, error) = match response {
-            CheckResult::Updated(revision) => {
-                self.repositories
-                    .upstream(&source.id)
-                    .map_err(repository_error)?
-                    .pin(&revision.commit)
-                    .await
-                    .map_err(repository_error)?;
-                (Some(revision.commit), true, 0, None)
-            }
-            CheckResult::Unchanged => (source.revision.clone(), false, 0, None),
+        }
+        let (updated, failures, error) = match response {
+            CheckResult::Updated(_) => (true, 0, None),
+            CheckResult::Unchanged => (false, 0, None),
             CheckResult::Failed(error) => {
-                let error: String = error.chars().take(2048).collect();
-                tracing::warn!(source = %source.id, error, "mapping Git fetch failed; keeping last valid mappings");
+                tracing::warn!(source=%source.id,error=%error,"mapping Git update failed; retaining last valid mappings");
                 (
-                    source.revision.clone(),
                     false,
                     source.consecutive_failures.saturating_add(1),
-                    Some(error),
+                    Some(error.chars().take(2048).collect::<String>()),
                 )
             }
         };
-        let next =
-            now + time::Duration::seconds(retry_delay(source.poll_interval_seconds, failures));
         sqlx::query(
-            "UPDATE mapping_sources
-SET
-    revision = $2,
-    last_checked_at = $3,
-    last_updated_at = CASE WHEN $4 THEN $3 ELSE last_updated_at END,
-    next_check_at = $5,
-    consecutive_failures = $6,
-    last_error = $7
+            "UPDATE mapping_sources SET
+    last_checked_at = $2,
+    next_check_at = $3,
+    consecutive_failures = $4,
+    last_error = $5
 WHERE id = $1
 ",
         )
         .bind(&source.id)
-        .bind(revision)
         .bind(now)
-        .bind(updated)
-        .bind(next)
+        .bind(now + time::Duration::seconds(retry_delay(source.poll_interval_seconds, failures)))
         .bind(failures)
         .bind(error)
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
+        self.commit_write(index, transaction).await?;
         if updated {
-            self.commit_write(index, transaction, records).await?;
-            tracing::info!(source = %source.id, "mapping Git revision applied");
-        } else {
-            transaction.commit().await.map_err(database_error)?;
+            tracing::info!(source=%source.id,"mapping Git delta applied");
         }
         Ok(())
     }
 
-    async fn committed_records(
+    async fn import_revision(
         &self,
         connection: &mut PgConnection,
-    ) -> Result<BTreeMap<String, StoredRecord>, ApplicationError> {
-        let sources = sqlx::query_as::<_, (String, Option<String>)>(
-            "SELECT id, revision FROM mapping_sources ORDER BY id\n",
+        source: &str,
+        repository: &Repository,
+        commit: &str,
+    ) -> Result<(), ApplicationError> {
+        let base: Option<String> = sqlx::query_scalar(
+            "SELECT revision FROM mapping_sources WHERE id = $1
+",
         )
-        .fetch_all(&mut *connection)
+        .bind(source)
+        .fetch_one(&mut *connection)
         .await
         .map_err(database_error)?;
-        let mut records = BTreeMap::new();
-        for (id, commit) in sources {
-            let revision = if id == "local" {
-                self.local.current().await.map_err(repository_error)?
-            } else if let Some(commit) = commit {
-                self.repositories
-                    .upstream(&id)
-                    .map_err(repository_error)?
-                    .read(&commit)
-                    .await
-                    .map_err(repository_error)?
+        if base.as_deref() == Some(commit) {
+            return Ok(());
+        }
+        let base = if let Some(base) = base {
+            if repository
+                .contains_commit(&base)
+                .await
+                .map_err(repository_error)?
+            {
+                Some(base)
             } else {
-                continue;
-            };
-            let mut accepted = Vec::new();
-            let mut rejected = Vec::new();
-            for (_, decision) in revision.corpus.decisions().map_err(repository_error)? {
-                if decision.rejected {
-                    rejected.push(decision.record);
-                } else {
-                    validate_evaluation(&decision.record, &self.resolver)?;
-                    accepted.push(decision.record);
+                if source == "local" {
+                    return Err(invalid_request(
+                        "local mapping history is missing; restore the local Git repository before continuing",
+                    ));
                 }
-            }
-            import_records(&mut records, &id, accepted, rejected)?;
-            if id == "local" {
-                sqlx::query("UPDATE mapping_sources SET\n    last_updated_at\n    = CASE\n        WHEN revision IS DISTINCT FROM $1 THEN NOW() ELSE last_updated_at\n    END,\n    revision = $1\nWHERE id = 'local'\n")
-                    .bind(&revision.commit).execute(&mut *connection).await.map_err(database_error)?;
-            }
-        }
-        Ok(records)
-    }
-
-    async fn update(
-        &self,
-        expected: Option<&str>,
-        operation: impl FnOnce(&mut BTreeMap<String, StoredRecord>) -> Result<(), ApplicationError>
-        + Send,
-    ) -> Result<MappingStateSnapshot, ApplicationError> {
-        let (index, mut transaction) = self.begin_write(expected).await?;
-        let mut records = index.records.clone();
-        operation(&mut records)?;
-        let decisions = records::local_decisions(&mut records)?;
-        if records.len() > MAXIMUM_RECORDS {
-            return Err(invalid_request(
-                "mapping store is limited to 100000 records",
-            ));
-        }
-        build_index(records.clone(), &mut transaction, &self.resolver).await?;
-        let expected: String =
-            sqlx::query_scalar("SELECT revision FROM mapping_sources WHERE id = 'local'\n")
-                .fetch_one(&mut *transaction)
+                invalidate_source(connection, source).await?;
+                sqlx::query(
+                    "DELETE FROM mapping_origins WHERE source_id = $1
+",
+                )
+                .bind(source)
+                .execute(&mut *connection)
                 .await
                 .map_err(database_error)?;
-        let revision = self
-            .local
-            .commit(&expected, decisions, "Update Local mapping decisions")
-            .await
-            .map_err(|error| match error {
-                WriteError::RevisionChanged => ApplicationError::new(
-                    ApplicationErrorCode::MappingsChanged,
-                    "Local repository changed; reload mappings before continuing",
-                ),
-                WriteError::DirtyWorktree => invalid_request(&error.to_string()),
-                _ => ApplicationError::internal(error.to_string()),
-            })?;
+                None
+            }
+        } else {
+            None
+        };
+        let mut after = None;
+        loop {
+            let page = repository
+                .changes(base.as_deref(), commit, after.as_deref(), MAXIMUM_BATCH)
+                .await
+                .map_err(repository_error)?;
+            let mut upserts = Vec::new();
+            let mut deletions = Vec::new();
+            let mut ids = Vec::new();
+            for change in page.changes {
+                if change.path == POLICY {
+                    continue;
+                }
+                if let Some(text) = change.text {
+                    let artifact =
+                        Artifact::parse(&change.path, &text).map_err(repository_error)?;
+                    if !artifact.rejected {
+                        validate_evaluation(&artifact.record)?;
+                    }
+                    let id = artifact.record.statement.claim_id().to_string();
+                    upserts.push(serde_json::json!({"claim_id":id,"record":artifact.record,"rejected":artifact.rejected}));
+                    ids.push(id);
+                } else {
+                    let hash = change
+                        .path
+                        .rsplit('/')
+                        .next()
+                        .and_then(|name| name.strip_suffix(".trk"))
+                        .ok_or_else(|| invalid_request("invalid deleted claim path"))?;
+                    let id = format!("v1:{hash}");
+                    deletions.push(id.clone());
+                    ids.push(id);
+                }
+            }
+            if !deletions.is_empty() {
+                sqlx::query(
+                    "DELETE FROM mapping_origins WHERE source_id = $1 AND claim_id = ANY($2)
+",
+                )
+                .bind(source)
+                .bind(&deletions)
+                .execute(&mut *connection)
+                .await
+                .map_err(database_error)?;
+            }
+            if !upserts.is_empty() {
+                sqlx::query(
+                    "INSERT INTO mapping_origins (source_id, claim_id, record, rejected)
+SELECT $1 AS source_id, r.claim_id, r.record, r.rejected
+FROM
+    jsonb_to_recordset($2::jsonb) r (
+        claim_id text, record jsonb, rejected boolean
+    )
+ON CONFLICT (source_id, claim_id) DO UPDATE SET
+record = excluded.record,
+rejected = excluded.rejected
+WHERE
+mapping_origins.record IS DISTINCT FROM excluded.record
+OR mapping_origins.rejected <> excluded.rejected
+",
+                )
+                .bind(source)
+                .bind(serde_json::json!(upserts))
+                .execute(&mut *connection)
+                .await
+                .map_err(database_error)?;
+            }
+            if !ids.is_empty() {
+                sqlx::query(
+                    "INSERT INTO mapping_invalidations (claim_id)
+SELECT DISTINCT changed.claim_id
+FROM UNNEST($1::text []) AS changed (claim_id)
+WHERE TRUE
+ON CONFLICT (claim_id) DO UPDATE SET sequence = DEFAULT
+",
+                )
+                .bind(ids)
+                .execute(&mut *connection)
+                .await
+                .map_err(database_error)?;
+            }
+            after = page.next;
+            if after.is_none() {
+                break;
+            }
+        }
+        let policy = repository.policy(commit).await.map_err(repository_error)?;
+        repository.pin(commit).await.map_err(repository_error)?;
         sqlx::query(
-            "UPDATE mapping_sources SET revision = $1, last_updated_at = NOW()\nWHERE id = 'local'\n",
+            "UPDATE mapping_sources SET
+    revision = $2, conflict_policy = $3, last_updated_at = NOW()
+WHERE id = $1
+",
         )
-        .bind(&revision.commit)
-        .execute(&mut *transaction)
+        .bind(source)
+        .bind(commit)
+        .bind(serde_json::to_value(policy).map_err(repository_error)?)
+        .execute(&mut *connection)
         .await
         .map_err(database_error)?;
-        self.commit_write(index, transaction, records).await
+        Ok(())
+    }
+
+    async fn begin_read(
+        &self,
+    ) -> Result<(MutexGuard<'_, MappingIndex>, Transaction<'_, Postgres>), ApplicationError> {
+        let mut index = self.index.lock().await;
+        let mut transaction = self
+            .pool
+            .begin_with("BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            .await
+            .map_err(database_error)?;
+        self.catch_up(&mut index, &mut transaction).await?;
+        Ok((index, transaction))
+    }
+
+    async fn read_index(&self) -> Result<MutexGuard<'_, MappingIndex>, ApplicationError> {
+        let (index, transaction) = self.begin_read().await?;
+        transaction.commit().await.map_err(database_error)?;
+        Ok(index)
     }
 
     async fn begin_write(
@@ -603,109 +719,241 @@ WHERE id = $1
     ) -> Result<(MutexGuard<'_, MappingIndex>, Transaction<'_, Postgres>), ApplicationError> {
         let mut index = self.index.lock().await;
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
-        sqlx::query("SELECT pg_advisory_xact_lock($1)\n")
-            .bind(WRITE_LOCK)
-            .execute(&mut *transaction)
-            .await
-            .map_err(database_error)?;
-        let current = build_index(
-            self.committed_records(&mut transaction).await?,
-            &mut transaction,
-            &self.resolver,
+        sqlx::query(
+            "SELECT pg_advisory_xact_lock($1)
+",
         )
-        .await?;
-        *index = current;
-        if let Err(error) = index.check_fingerprint(expected) {
-            let records = index.records.clone();
-            self.commit_write(index, transaction, records).await?;
-            return Err(error);
-        }
+        .bind(WRITE_LOCK)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        self.catch_up(&mut index, &mut transaction).await?;
+        index.check_fingerprint(expected)?;
         Ok((index, transaction))
     }
-
     async fn commit_write(
         &self,
         mut index: MutexGuard<'_, MappingIndex>,
-        mut transaction: Transaction<'_, Postgres>,
-        records: BTreeMap<String, StoredRecord>,
+        transaction: Transaction<'_, Postgres>,
     ) -> Result<MappingStateSnapshot, ApplicationError> {
-        if records.len() > MAXIMUM_RECORDS {
-            return Err(invalid_request(
-                "mapping store is limited to 100000 records",
-            ));
-        }
-        let replacement = build_index(records, &mut transaction, &self.resolver).await?;
         transaction.commit().await.map_err(database_error)?;
-        *index = replacement;
+        let mut refresh = self.pool.begin().await.map_err(database_error)?;
+        sqlx::query(
+            "SELECT pg_advisory_xact_lock($1)
+",
+        )
+        .bind(WRITE_LOCK)
+        .execute(&mut *refresh)
+        .await
+        .map_err(database_error)?;
+        self.catch_up(&mut index, &mut refresh).await?;
+        refresh.commit().await.map_err(database_error)?;
         Ok(index.state())
     }
-}
-
-async fn build_index(
-    records: BTreeMap<String, StoredRecord>,
-    connection: &mut PgConnection,
-    resolver: &MappingResolver,
-) -> Result<MappingIndex, ApplicationError> {
-    let configuration = sqlx::query_as::<_, SourceConfiguration>(
-        "SELECT\n    id,\n    display_name,\n    url,\n    branch,\n    revision,\n    poll_interval_seconds,\n    enabled,\n    generation
+    async fn catch_up(
+        &self,
+        index: &mut MappingIndex,
+        connection: &mut PgConnection,
+    ) -> Result<(), ApplicationError> {
+        let configuration = sqlx::query_as::<_, SourceConfiguration>(
+            "SELECT
+    id,
+    display_name,
+    url,
+    branch,
+    revision,
+    poll_interval_seconds,
+    enabled,
+    generation,
+    conflict_policy
 FROM mapping_sources
 ORDER BY id
 ",
-    )
-    .fetch_all(connection)
-    .await
-    .map_err(database_error)?;
-    let disabled = configuration
-        .iter()
-        .filter(|source| !source.enabled)
-        .map(|source| source.id.clone())
-        .collect();
-    let mut index = MappingIndex::build(records, resolver, &disabled)?;
-    index.fingerprint = sha256(
-        &serde_json::to_vec(&(&index.fingerprint, configuration))
-            .map_err(|error| ApplicationError::internal(error.to_string()))?,
-    );
-    Ok(index)
-}
-
-fn repository_error(error: impl std::fmt::Display) -> ApplicationError {
-    ApplicationError::internal(format!("mapping Git repository failed: {error}"))
-}
-
-async fn require_upstream(connection: &mut PgConnection, id: &str) -> Result<(), ApplicationError> {
-    let kind: Option<String> =
-        sqlx::query_scalar("SELECT kind FROM mapping_sources WHERE id = $1\n")
-            .bind(id)
-            .fetch_optional(connection)
+        )
+        .fetch_all(&mut *connection)
+        .await
+        .map_err(database_error)?;
+        let disabled = configuration
+            .iter()
+            .filter(|source| !source.enabled)
+            .map(|source| source.id.clone())
+            .collect::<BTreeSet<_>>();
+        let mut policy = ConflictPolicy::default();
+        for source in configuration.iter().filter(|source| source.enabled) {
+            let incoming = ConflictPolicy::parse(&source.conflict_policy.to_string())
+                .map_err(repository_error)?;
+            policy
+                .exclusive_source_pairs
+                .extend(incoming.exclusive_source_pairs);
+        }
+        policy.exclusive_source_pairs.sort();
+        policy.exclusive_source_pairs.dedup();
+        if index.position == 0 && index.records.is_empty() {
+            let through: i64 = sqlx::query_scalar(
+                "SELECT COALESCE(MAX(sequence), 0) FROM mapping_invalidations
+",
+            )
+            .fetch_one(&mut *connection)
             .await
             .map_err(database_error)?;
-    match kind.as_deref() {
-        Some("upstream") => Ok(()),
-        Some(_) => Err(invalid_request(
-            "the Local source cannot be configured or removed",
-        )),
-        None => Err(invalid_request("mapping source does not exist")),
+            let mut after = String::new();
+            loop {
+                let ids = sqlx::query_scalar::<_, String>(
+                    "SELECT DISTINCT claim_id
+FROM mapping_origins
+WHERE claim_id > $1
+ORDER BY claim_id
+LIMIT 1000
+",
+                )
+                .bind(&after)
+                .fetch_all(&mut *connection)
+                .await
+                .map_err(database_error)?;
+                if ids.is_empty() {
+                    break;
+                }
+                let replacements = load_origins(connection, &ids).await?;
+                index.apply(replacements, &disabled, policy.clone())?;
+                after = ids.last().expect("nonempty origin page").clone();
+            }
+            index.position = through;
+        }
+        loop {
+            let invalidations = sqlx::query_as::<_, (i64, String)>(
+                "SELECT sequence, claim_id
+FROM mapping_invalidations
+WHERE sequence > $1
+ORDER BY sequence
+LIMIT 1000
+",
+            )
+            .bind(index.position)
+            .fetch_all(&mut *connection)
+            .await
+            .map_err(database_error)?;
+            if invalidations.is_empty() {
+                break;
+            }
+            let ids = invalidations
+                .iter()
+                .map(|(_, id)| id.clone())
+                .collect::<Vec<_>>();
+            let replacements = load_origins(connection, &ids).await?;
+            index.apply(replacements, &disabled, policy.clone())?;
+            index.position = invalidations.last().expect("nonempty invalidation page").0;
+        }
+        index.apply(BTreeMap::new(), &disabled, policy)?;
+        index.fingerprint = sha256(
+            &serde_json::to_vec(&(
+                trakkin_mappings_language::semantic_revision(),
+                index.position,
+                configuration,
+            ))
+            .map_err(repository_error)?,
+        );
+        Ok(())
     }
 }
 
-fn validate_evaluation(
-    record: &Record,
-    resolver: &MappingResolver,
+async fn load_origins(
+    connection: &mut PgConnection,
+    ids: &[String],
+) -> Result<BTreeMap<String, Option<StoredRecord>>, ApplicationError> {
+    let rows = sqlx::query_as::<_, (String, String, serde_json::Value, bool)>(
+        "SELECT claim_id, source_id, record, rejected
+FROM mapping_origins
+WHERE claim_id = ANY($1)
+ORDER BY claim_id, source_id
+",
+    )
+    .bind(ids)
+    .fetch_all(connection)
+    .await
+    .map_err(database_error)?;
+    let mut replacements = ids
+        .iter()
+        .map(|id| (id.clone(), None))
+        .collect::<BTreeMap<_, _>>();
+    for (id, source, record, rejected) in rows {
+        let origin = OriginRecord {
+            record: serde_json::from_value(record).map_err(repository_error)?,
+            rejected,
+        };
+        let stored = replacements
+            .entry(id.clone())
+            .or_default()
+            .get_or_insert_with(|| StoredRecord {
+                claim_id: id,
+                origins: BTreeMap::new(),
+            });
+        stored.origins.insert(source, origin);
+    }
+    Ok(replacements)
+}
+
+async fn invalidate_source(
+    connection: &mut PgConnection,
+    source: &str,
 ) -> Result<(), ApplicationError> {
-    if let Err(error) = evaluate(&record.statement, resolver)
+    sqlx::query(
+        "INSERT INTO mapping_invalidations (claim_id)
+SELECT claim_id
+FROM mapping_origins
+WHERE source_id = $1
+ON CONFLICT (claim_id) DO UPDATE SET sequence
+= DEFAULT
+",
+    )
+    .bind(source)
+    .execute(connection)
+    .await
+    .map_err(database_error)?;
+    Ok(())
+}
+async fn require_upstream(connection: &mut PgConnection, id: &str) -> Result<(), ApplicationError> {
+    let kind: Option<String> = sqlx::query_scalar(
+        "SELECT kind FROM mapping_sources WHERE id = $1
+",
+    )
+    .bind(id)
+    .fetch_optional(connection)
+    .await
+    .map_err(database_error)?;
+    if kind.as_deref() != Some("upstream") {
+        return Err(invalid_request(
+            "mapping source must be an existing upstream",
+        ));
+    }
+    Ok(())
+}
+fn validate_evaluation(record: &Record) -> Result<(), ApplicationError> {
+    let bindings = Bindings::read(record).map_err(|error| invalid_request(&error.to_string()))?;
+    if let Err(error) = evaluate(&record.statement, &bindings)
         && error.kind == SemanticErrorKind::Invalid
     {
         return Err(invalid_request(&error.message));
     }
     Ok(())
 }
-
-fn invalid_request(message: &str) -> ApplicationError {
-    ApplicationError::new(ApplicationErrorCode::InvalidRequest, message)
+fn repository_error(error: impl std::fmt::Display) -> ApplicationError {
+    ApplicationError::internal(format!("mapping Git repository failed: {error}"))
 }
-
+fn write_error(error: WriteError) -> ApplicationError {
+    match error {
+        WriteError::RevisionChanged => ApplicationError::new(
+            ApplicationErrorCode::MappingsChanged,
+            "Local repository changed; refresh it before editing",
+        ),
+        WriteError::DirtyWorktree => invalid_request(&error.to_string()),
+        _ => repository_error(error),
+    }
+}
 fn database_error(error: sqlx::Error) -> ApplicationError {
     ApplicationError::internal(format!("mapping storage failed: {error}"))
+}
+fn invalid_request(message: &str) -> ApplicationError {
+    ApplicationError::new(ApplicationErrorCode::InvalidRequest, message)
 }
 
 impl MappingApi for MappingStore {
@@ -730,30 +978,29 @@ impl MappingApi for MappingStore {
     fn revert(&self, command: DeleteMapping) -> MappingFuture<'_, MappingStateSnapshot> {
         Box::pin(MappingStore::revert(self, command))
     }
-
     fn state(&self) -> MappingFuture<'_, MappingStateSnapshot> {
-        Box::pin(async { Ok(self.index.lock().await.state()) })
+        Box::pin(async { Ok(self.read_index().await?.state()) })
     }
     fn query(&self, query: QueryMappings) -> MappingFuture<'_, MappingPageSnapshot> {
-        Box::pin(async move { self.index.lock().await.query(query) })
+        Box::pin(async move { self.read_index().await?.query(query) })
     }
     fn preview(&self, record: String) -> MappingFuture<'_, MappingResult> {
         Box::pin(async move { MappingStore::preview(self, &record).await })
     }
     fn save(&self, command: SaveMapping) -> MappingFuture<'_, MappingStateSnapshot> {
-        Box::pin(async move { MappingStore::save(self, command).await })
+        Box::pin(MappingStore::save(self, command))
     }
     fn decide(&self, command: DecideMapping) -> MappingFuture<'_, MappingStateSnapshot> {
-        Box::pin(async move { MappingStore::decide(self, command).await })
+        Box::pin(MappingStore::decide(self, command))
     }
     fn delete(&self, command: DeleteMapping) -> MappingFuture<'_, MappingStateSnapshot> {
-        Box::pin(async move { MappingStore::delete(self, command).await })
+        Box::pin(MappingStore::delete(self, command))
     }
     fn resolve_units(
         &self,
         command: ResolveMappingUnits,
     ) -> MappingFuture<'_, MappingUnitResolutionBatchSnapshot> {
-        Box::pin(async move { self.index.lock().await.resolve(command) })
+        Box::pin(async move { self.read_index().await?.resolve(command) })
     }
 }
 

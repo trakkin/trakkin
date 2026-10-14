@@ -1707,7 +1707,7 @@ async fn apply_catalog_delta(
 ) -> Result<(), PublicationError> {
     sqlx::query(
         "DELETE FROM subject_unit_bindings AS published
-    USING staged_subject_unit_bindings AS staged
+USING staged_subject_unit_bindings AS staged
 WHERE
     staged.attempt_id = $1
     AND staged.operation = 'delete'

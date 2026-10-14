@@ -1,16 +1,16 @@
-use super::{MAXIMUM_BATCH, MappingResolver, invalid_request, records::StoredRecord};
+use super::{MAXIMUM_BATCH, invalid_request, records::StoredRecord};
 use crate::application::{
     error::{ApplicationError, ApplicationErrorCode},
     mappings::*,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-use trakkin_mappings_corpus::snapshots::SnapshotSet;
+use trakkin_mappings_corpus::{Bindings, ConflictPolicy};
 use trakkin_mappings_language::{
-    Evaluation, Operator, Record, ResolvedExpression, SemanticErrorKind, evaluate,
-    semantic_revision, sha256,
+    Evaluation, Record, ResolvedExpression, SemanticErrorKind, evaluate, semantic_revision, sha256,
 };
 
+#[derive(Clone)]
 pub(super) struct Claim {
     pub(super) row: MappingResult,
     pub(super) evaluation: Option<Evaluation>,
@@ -21,9 +21,14 @@ pub(super) struct Claim {
 pub(super) struct MappingIndex {
     pub(super) fingerprint: String,
     pub(super) records: BTreeMap<String, StoredRecord>,
-    pub(super) claims: Vec<Claim>,
-    pub(super) units: BTreeMap<String, Vec<(usize, MappingUnitSide, usize)>>,
-    pub(super) metadata_snapshot: Option<String>,
+    pub(super) claims: BTreeMap<String, Claim>,
+    pub(super) units: BTreeMap<String, Vec<(String, MappingUnitSide, usize)>>,
+    pub(super) position: i64,
+    pub(super) disabled: BTreeSet<String>,
+    targets: BTreeMap<(String, String), BTreeMap<String, BTreeSet<String>>>,
+    policy: ConflictPolicy,
+    counts: [u64; 5],
+    active_units: BTreeSet<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -34,12 +39,7 @@ struct PageCursor {
     position: usize,
 }
 
-pub(super) fn compile(
-    record: &Record,
-    rejected: bool,
-    sources: Vec<String>,
-    resolver: &MappingResolver,
-) -> Claim {
+pub(super) fn compile(record: &Record, rejected: bool, sources: Vec<String>) -> Claim {
     let mut row = MappingResult {
         claim_id: record.statement.claim_id().to_string(),
         canonical_statement: record.statement.canonical(),
@@ -58,7 +58,10 @@ pub(super) fn compile(
     let evaluation = if rejected {
         None
     } else {
-        match evaluate(&record.statement, resolver) {
+        match Bindings::read(record)
+            .map_err(|error| trakkin_mappings_language::SemanticError::invalid(error.to_string()))
+            .and_then(|bindings| evaluate(&record.statement, &bindings))
+        {
             Ok(evaluation) => {
                 if evaluation.left_unmapped_extent != 0 || evaluation.right_unmapped_extent != 0 {
                     row.diagnostics.push(format!(
@@ -89,93 +92,223 @@ pub(super) fn compile(
 impl MappingIndex {
     pub(super) fn build(
         records: BTreeMap<String, StoredRecord>,
-        resolver: &MappingResolver,
         disabled: &BTreeSet<String>,
     ) -> Result<Self, ApplicationError> {
-        let revision = resolver.snapshots.as_ref().map(SnapshotSet::id);
         let fingerprint = sha256(
-            &serde_json::to_vec(&(semantic_revision(), revision, &records, disabled))
+            &serde_json::to_vec(&(semantic_revision(), &records, disabled))
                 .map_err(|error| ApplicationError::internal(error.to_string()))?,
         );
-        let mut claims = Vec::new();
-        let mut units = BTreeMap::<String, Vec<(usize, MappingUnitSide, usize)>>::new();
-        for stored in records.values() {
-            let origins = stored.origins.keys().cloned().collect();
-            let Some((record, rejected)) = stored.effective(disabled)? else {
-                continue;
-            };
-            let claim = compile(&record, rejected, origins, resolver);
-            if let Some(evaluation) = &claim.evaluation {
-                for (side, expression) in [
-                    (MappingUnitSide::Left, &evaluation.left),
-                    (MappingUnitSide::Right, &evaluation.right),
-                ] {
-                    for (ordinal, member) in expression.members.iter().enumerate() {
-                        if evaluation.alignments.is_empty()
-                            || evaluation.alignments.iter().any(|segment| match side {
-                                MappingUnitSide::Left => segment.left == ordinal,
-                                MappingUnitSide::Right => segment.right == ordinal,
-                            })
-                        {
-                            units.entry(member.reference.clone()).or_default().push((
-                                claims.len(),
-                                side,
-                                ordinal,
-                            ));
+        let mut index = Self {
+            fingerprint,
+            records: BTreeMap::new(),
+            claims: BTreeMap::new(),
+            units: BTreeMap::new(),
+            position: 0,
+            disabled: disabled.clone(),
+            targets: BTreeMap::new(),
+            policy: ConflictPolicy::default(),
+            counts: [0; 5],
+            active_units: BTreeSet::new(),
+        };
+        index.apply(
+            records
+                .into_iter()
+                .map(|(id, record)| (id, Some(record)))
+                .collect(),
+            disabled,
+            ConflictPolicy::default(),
+        )?;
+        Ok(index)
+    }
+
+    pub(super) fn apply(
+        &mut self,
+        changes: BTreeMap<String, Option<StoredRecord>>,
+        disabled: &BTreeSet<String>,
+        policy: ConflictPolicy,
+    ) -> Result<(), ApplicationError> {
+        self.disabled.clone_from(disabled);
+        let mut affected = BTreeSet::new();
+        let mut unit_keys = BTreeSet::new();
+        for (id, record) in changes {
+            affected.insert(id.clone());
+            if let Some(old) = self.claims.remove(&id) {
+                self.counts[status_index(old.row.status)] -= 1;
+                if let Some(evaluation) = &old.evaluation {
+                    for ((origin, source), targets) in self.policy.targets(evaluation) {
+                        let key = (origin, source);
+                        if let Some(alternatives) = self.targets.get_mut(&key) {
+                            affected.extend(alternatives.values().flatten().cloned());
+                            for target in targets {
+                                if let Some(claims) = alternatives.get_mut(&target) {
+                                    claims.remove(&id);
+                                    if claims.is_empty() {
+                                        alternatives.remove(&target);
+                                    }
+                                }
+                            }
+                            if alternatives.is_empty() {
+                                self.targets.remove(&key);
+                            }
+                        }
+                    }
+                    for member in evaluation
+                        .left
+                        .members
+                        .iter()
+                        .chain(&evaluation.right.members)
+                    {
+                        unit_keys.insert(member.reference.clone());
+                        if let Some(matches) = self.units.get_mut(&member.reference) {
+                            matches.retain(|(claim, _, _)| claim != &id);
+                            if matches.is_empty() {
+                                self.units.remove(&member.reference);
+                            }
                         }
                     }
                 }
             }
-            claims.push(claim);
+            self.records.remove(&id);
+            if let Some(stored) = record {
+                if let Some(effective) = stored.effective(disabled)? {
+                    let mut claim = compile(
+                        &effective.record,
+                        effective.rejected,
+                        stored.origins.keys().cloned().collect(),
+                    );
+                    if !effective.rejected && !effective.binding_conflicts.is_empty() {
+                        claim.row.status = MappingRecordStatus::Conflicting;
+                        claim.row.diagnostics = effective
+                            .binding_conflicts
+                            .into_iter()
+                            .map(|key| {
+                                format!("origin conflict: different published bindings for {key}")
+                            })
+                            .collect();
+                        claim.evaluation = None;
+                    }
+                    if let Some(evaluation) = &claim.evaluation {
+                        let all_members = evaluation.alignments.is_empty();
+                        let mut left_aligned = vec![all_members; evaluation.left.members.len()];
+                        let mut right_aligned = vec![all_members; evaluation.right.members.len()];
+                        for alignment in &evaluation.alignments {
+                            left_aligned[alignment.left] = true;
+                            right_aligned[alignment.right] = true;
+                        }
+                        for (side, expression, aligned) in [
+                            (MappingUnitSide::Left, &evaluation.left, left_aligned),
+                            (MappingUnitSide::Right, &evaluation.right, right_aligned),
+                        ] {
+                            for (ordinal, member) in expression.members.iter().enumerate() {
+                                if aligned[ordinal] {
+                                    self.units
+                                        .entry(member.reference.clone())
+                                        .or_default()
+                                        .push((id.clone(), side, ordinal));
+                                    unit_keys.insert(member.reference.clone());
+                                }
+                            }
+                        }
+                        for (key, targets) in self.policy.targets(evaluation) {
+                            let alternatives = self.targets.entry(key).or_default();
+                            for target in targets {
+                                alternatives.entry(target).or_default().insert(id.clone());
+                            }
+                            affected.extend(alternatives.values().flatten().cloned());
+                        }
+                    }
+                    self.counts[status_index(claim.row.status)] += 1;
+                    self.claims.insert(id.clone(), claim);
+                }
+                self.records.insert(id, stored);
+            }
         }
-        mark_conflicts(&mut claims);
-        units.retain(|_, matches| {
-            matches
-                .retain(|(index, _, _)| claims[*index].row.status == MappingRecordStatus::Resolved);
-            !matches.is_empty()
-        });
-        Ok(Self {
-            fingerprint,
-            records,
-            claims,
-            units,
-            metadata_snapshot: revision.map(str::to_owned),
-        })
+        if serde_json::to_value(&policy)
+            .map_err(|error| ApplicationError::internal(error.to_string()))?
+            != serde_json::to_value(&self.policy)
+                .map_err(|error| ApplicationError::internal(error.to_string()))?
+        {
+            self.policy = policy;
+            self.targets.clear();
+            for (id, claim) in &self.claims {
+                if let Some(evaluation) = &claim.evaluation {
+                    for (key, targets) in self.policy.targets(evaluation) {
+                        for target in targets {
+                            self.targets
+                                .entry(key.clone())
+                                .or_default()
+                                .entry(target)
+                                .or_default()
+                                .insert(id.clone());
+                        }
+                    }
+                }
+            }
+            affected.extend(self.claims.keys().cloned());
+        }
+        for id in affected {
+            let Some(claim) = self.claims.get_mut(&id) else {
+                continue;
+            };
+            self.counts[status_index(claim.row.status)] -= 1;
+            if let Some(evaluation) = &claim.evaluation {
+                claim.row.status = MappingRecordStatus::Resolved;
+                claim
+                    .row
+                    .diagnostics
+                    .retain(|message| !message.starts_with("exclusive conflict: "));
+                for (key, _) in self.policy.targets(evaluation) {
+                    if self
+                        .targets
+                        .get(&key)
+                        .is_some_and(|targets| targets.len() > 1)
+                    {
+                        claim.row.status = MappingRecordStatus::Conflicting;
+                        claim.row.diagnostics.push(format!(
+                            "exclusive conflict: {} has alternative exact targets in {}",
+                            key.0, key.1
+                        ));
+                    }
+                }
+                unit_keys.extend(
+                    evaluation
+                        .left
+                        .members
+                        .iter()
+                        .chain(&evaluation.right.members)
+                        .map(|member| member.reference.clone()),
+                );
+            }
+            self.counts[status_index(claim.row.status)] += 1;
+        }
+        for unit in unit_keys {
+            let active = self.units.get(&unit).is_some_and(|matches| {
+                matches.iter().any(|(id, _, _)| {
+                    self.claims
+                        .get(id)
+                        .is_some_and(|claim| claim.row.status == MappingRecordStatus::Resolved)
+                })
+            });
+            if active {
+                self.active_units.insert(unit);
+            } else {
+                self.active_units.remove(&unit);
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn state(&self) -> MappingStateSnapshot {
-        let rejected = self
-            .claims
-            .iter()
-            .filter(|claim| claim.row.rejected)
-            .count() as u64;
+        let rejected = self.counts[status_index(MappingRecordStatus::Rejected)];
         MappingStateSnapshot {
             fingerprint: self.fingerprint.clone(),
             records: self.claims.len() as u64,
             active: self.claims.len() as u64 - rejected,
             rejected,
-            resolved: self
-                .claims
-                .iter()
-                .filter(|claim| claim.row.status == MappingRecordStatus::Resolved)
-                .count() as u64,
-            unresolved: self
-                .claims
-                .iter()
-                .filter(|claim| {
-                    matches!(
-                        claim.row.status,
-                        MappingRecordStatus::Unresolved | MappingRecordStatus::Invalid
-                    )
-                })
-                .count() as u64,
-            conflicting: self
-                .claims
-                .iter()
-                .filter(|claim| claim.row.status == MappingRecordStatus::Conflicting)
-                .count() as u64,
-            units: self.units.len() as u64,
-            metadata_snapshot: self.metadata_snapshot.clone(),
+            resolved: self.counts[0],
+            unresolved: self.counts[1] + self.counts[2],
+            conflicting: self.counts[3],
+            units: self.active_units.len() as u64,
         }
     }
 
@@ -233,7 +366,7 @@ impl MappingIndex {
         };
         let mut selected = self
             .claims
-            .iter()
+            .values()
             .enumerate()
             .skip(start)
             .filter(|(_, claim)| {
@@ -333,8 +466,13 @@ impl MappingIndex {
                 .get(&unit_key)
                 .into_iter()
                 .flatten()
-                .map(|(index, matched_side, ordinal)| {
-                    let claim = &self.claims[*index];
+                .filter(|(id, _, _)| {
+                    self.claims
+                        .get(id)
+                        .is_some_and(|claim| claim.row.status == MappingRecordStatus::Resolved)
+                })
+                .map(|(id, matched_side, ordinal)| {
+                    let claim = &self.claims[id];
                     let evaluation = claim
                         .evaluation
                         .as_ref()
@@ -369,44 +507,13 @@ impl MappingIndex {
     }
 }
 
-fn mark_conflicts(claims: &mut [Claim]) {
-    let mut targets = BTreeMap::<(String, String), BTreeMap<String, BTreeSet<usize>>>::new();
-    for (index, claim) in claims.iter().enumerate() {
-        let Some(evaluation) = &claim.evaluation else {
-            continue;
-        };
-        if evaluation.operator != Operator::Exact {
-            continue;
-        }
-        for segment in &evaluation.alignments {
-            let left = &evaluation.left.members[segment.left].reference;
-            let right = &evaluation.right.members[segment.right].reference;
-            for (origin, target) in [(left, right), (right, left)] {
-                let namespace = target.split_once("://").expect("evaluated reference").0;
-                targets
-                    .entry((origin.clone(), namespace.into()))
-                    .or_default()
-                    .entry(target.clone())
-                    .or_default()
-                    .insert(index);
-            }
-        }
-    }
-    for ((origin, namespace), alternatives) in targets {
-        if alternatives.len() <= 1 {
-            continue;
-        }
-        for index in alternatives
-            .values()
-            .flatten()
-            .copied()
-            .collect::<BTreeSet<_>>()
-        {
-            claims[index].row.status = MappingRecordStatus::Conflicting;
-            claims[index].row.diagnostics.push(format!(
-                "{origin} has conflicting exact targets in {namespace}"
-            ));
-        }
+fn status_index(status: MappingRecordStatus) -> usize {
+    match status {
+        MappingRecordStatus::Resolved => 0,
+        MappingRecordStatus::Unresolved => 1,
+        MappingRecordStatus::Invalid => 2,
+        MappingRecordStatus::Conflicting => 3,
+        MappingRecordStatus::Rejected => 4,
     }
 }
 

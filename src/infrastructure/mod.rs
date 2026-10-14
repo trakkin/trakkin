@@ -3,7 +3,6 @@ pub mod adapter_process;
 pub mod catalog_publication;
 pub mod catalog_queries;
 pub mod connection;
-pub mod mapping_updates;
 pub mod mappings;
 pub mod provider_access;
 pub mod provider_oci;

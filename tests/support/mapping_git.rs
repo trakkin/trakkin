@@ -5,6 +5,7 @@ use axum::{
     http::{HeaderName, HeaderValue, StatusCode},
     response::Response,
 };
+use std::collections::BTreeMap;
 use std::{
     path::{Path, PathBuf},
     process::Stdio,
@@ -17,7 +18,7 @@ use tokio::{
     sync::{Notify, watch},
     task::JoinHandle,
 };
-use trakkin_mappings_corpus::git::Repository;
+use trakkin_mappings_corpus::{Artifact, POLICY, git::Repository};
 use trakkin_mappings_language::Decisions;
 
 #[derive(Clone)]
@@ -58,16 +59,7 @@ impl GitServer {
     }
 
     pub async fn commit(&self, accepted: &str) -> String {
-        let current = self.source.current().await.unwrap();
-        self.source
-            .commit(
-                &current.commit,
-                Decisions::parse(accepted, "").unwrap(),
-                "Update fixture corpus",
-            )
-            .await
-            .unwrap()
-            .commit
+        commit_records(&self.source, accepted, "").await
     }
 
     pub async fn wait_for_fetch(&self) {
@@ -75,6 +67,51 @@ impl GitServer {
             .await
             .expect("Git HTTP request starts");
     }
+}
+
+pub async fn artifacts(repository: &Repository) -> Vec<Artifact> {
+    let head = repository.head().await.unwrap();
+    let mut after = None;
+    let mut records = Vec::new();
+    loop {
+        let page = repository
+            .changes(None, &head, after.as_deref(), 1000)
+            .await
+            .unwrap();
+        for change in page.changes {
+            if change.path != POLICY {
+                records
+                    .push(Artifact::parse(&change.path, change.text.as_deref().unwrap()).unwrap());
+            }
+        }
+        after = page.next;
+        if after.is_none() {
+            break;
+        }
+    }
+    records
+}
+
+pub async fn commit_records(repository: &Repository, accepted: &str, rejected: &str) -> String {
+    let head = repository.head().await.unwrap();
+    let mut changes = artifacts(repository)
+        .await
+        .into_iter()
+        .map(|artifact| (artifact.path(), None))
+        .collect::<BTreeMap<_, _>>();
+    for (_, decision) in Decisions::parse(accepted, rejected).unwrap() {
+        let artifact = Artifact {
+            record: decision.record,
+            rejected: decision.rejected,
+        };
+        changes.insert(artifact.path(), Some(artifact.text()));
+    }
+    let prepared = repository
+        .prepare(&head, &changes, "Update fixture decisions")
+        .await
+        .unwrap();
+    repository.apply(&prepared).await.unwrap();
+    prepared.commit
 }
 
 impl Drop for GitServer {

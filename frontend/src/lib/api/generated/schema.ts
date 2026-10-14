@@ -1023,7 +1023,6 @@ export interface components {
             /** Format: int64 */
             conflicting: number;
             fingerprint: string;
-            metadataSnapshot?: string | null;
             /** Format: int64 */
             records: number;
             /** Format: int64 */

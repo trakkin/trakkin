@@ -9,12 +9,9 @@ use tokio::{
     task::JoinHandle,
     time::{Instant, sleep, timeout_at},
 };
-use trakkin_mappings_corpus::snapshots::SnapshotSet;
 use uuid::Uuid;
 
 use crate::{
-    application::task_lifecycle::{InterruptActiveTasks, TaskLifecycleRepository},
-    application::task_manager::TaskRepository,
     application::{
         assets::BinaryAssetInteractionService,
         connection::{
@@ -24,12 +21,11 @@ use crate::{
         error::ApplicationError,
         facade::{ApplicationApi, ApplicationFacade},
         task_dispatcher::{DispatchNextTask, TaskDispatcher},
-        task_manager::TaskService,
+        task_lifecycle::{InterruptActiveTasks, TaskLifecycleRepository},
+        task_manager::{TaskRepository, TaskService},
         workspaces::WorkspaceService,
     },
     database::{DatabaseError, DatabaseRuntime},
-    infrastructure::task_lifecycle::{PostgresTaskLifecycleRepository, TaskLifecycleError},
-    infrastructure::task_manager::PostgresTaskRepository,
     infrastructure::{
         acquisition_dispatch::AcquisitionTaskHandler,
         adapter_process::{AdapterProcess, AdapterProcessLauncher},
@@ -39,10 +35,11 @@ use crate::{
             ConnectionMasterKey, ConnectionPersistenceError, ConnectionSessionRetirementError,
             PostgresConnectionRepository, ProcessSessionRegistry,
         },
-        mapping_updates::MappingUpdates,
-        mappings::MappingStore,
+        mappings::{MappingStore, MappingUpdates},
         provider_access::PostgresProviderAccessRepository,
         provider_registry::{PostgresProviderRegistry, ProbedProviderRegistry},
+        task_lifecycle::{PostgresTaskLifecycleRepository, TaskLifecycleError},
+        task_manager::PostgresTaskRepository,
         workspaces::PostgresWorkspaceRepository,
     },
 };
@@ -56,7 +53,6 @@ const PROVIDER_UPDATE_INTERVAL: Duration = Duration::from_secs(15 * 60);
 pub struct Host {
     database: DatabaseRuntime,
     task_repository: PostgresTaskRepository,
-    mapping_metadata: Option<PathBuf>,
 }
 
 impl Host {
@@ -81,11 +77,6 @@ impl Host {
         &self.task_repository
     }
 
-    pub fn with_mapping_metadata(mut self, path: impl Into<PathBuf>) -> Self {
-        self.mapping_metadata = Some(path.into());
-        self
-    }
-
     pub async fn into_runtime(
         self,
         data_directory: impl Into<PathBuf>,
@@ -94,32 +85,10 @@ impl Host {
     ) -> Result<RunningHost, HostError> {
         let pool = self.database.pool();
         let data_directory = data_directory.into();
-        let snapshots = if let Some(path) = self.mapping_metadata.clone() {
-            let snapshots = tokio::task::spawn_blocking(move || SnapshotSet::load(&path))
-                .await
-                .map_err(|error| {
-                    HostError::Mappings(ApplicationError::internal(format!(
-                        "mapping metadata load task failed: {error}"
-                    )))
-                })?
-                .map_err(|error| {
-                    HostError::Mappings(ApplicationError::new(
-                        crate::application::error::ApplicationErrorCode::InvalidMappingData,
-                        format!("invalid mapping metadata: {error}"),
-                    ))
-                })?;
-            Some(snapshots)
-        } else {
-            None
-        };
         let mappings = Arc::new(
-            MappingStore::open(
-                pool.clone(),
-                &data_directory.join("mapping-repositories"),
-                snapshots,
-            )
-            .await
-            .map_err(HostError::Mappings)?,
+            MappingStore::open(pool.clone(), &data_directory.join("mapping-repositories"))
+                .await
+                .map_err(HostError::Mappings)?,
         );
         let mapping_updates = MappingUpdates::new(mappings.clone());
         let provider_registry = PostgresProviderRegistry::new(
@@ -282,7 +251,6 @@ impl Host {
         Ok(Self {
             database,
             task_repository,
-            mapping_metadata: None,
         })
     }
 }

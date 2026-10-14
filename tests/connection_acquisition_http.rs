@@ -157,7 +157,6 @@ async fn connection_and_acquisition_routes_are_closed_bounded_and_secret_safe() 
         MappingStore::open(
             database.pool(),
             &directory.path().join("mapping-repositories"),
-            None,
         )
         .await
         .unwrap(),

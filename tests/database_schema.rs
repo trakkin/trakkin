@@ -14,12 +14,12 @@ use trakkin::{
     },
     database::DatabaseRuntime,
     infrastructure::{
-        catalog_publication::PostgresPublicationRepository, mapping_updates::MappingUpdates,
-        mappings::MappingStore,
+        catalog_publication::PostgresPublicationRepository,
+        mappings::{MappingStore, MappingUpdates},
     },
 };
 use trakkin_mappings_corpus::git::RepositoryStore;
-use trakkin_mappings_language::{Decisions, parse_record};
+use trakkin_mappings_language::parse_record;
 
 #[path = "support/catalog_publication.rs"]
 #[expect(
@@ -51,6 +51,249 @@ async fn fresh_database_starts() {
 }
 
 #[tokio::test]
+async fn mapping_readers_catch_up_other_instances_without_taking_the_writer_lock() {
+    let directory = tempdir().unwrap();
+    let database = DatabaseRuntime::start(directory.path()).await.unwrap();
+    let root = directory.path().join("mapping-repositories");
+    let writer = MappingStore::open(database.pool(), &root).await.unwrap();
+    let reader = MappingStore::open(database.pool(), &root).await.unwrap();
+    let saved = writer
+        .save(SaveMapping {
+            expected_fingerprint: writer.state().await.unwrap().fingerprint,
+            record: ORIGINAL.into(),
+            replaces: None,
+        })
+        .await
+        .unwrap();
+    let mut transaction = database.pool().begin().await.unwrap();
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(0x7472616b6d617073_i64)
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+    let observed = tokio::time::timeout(std::time::Duration::from_secs(5), reader.state())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(observed, saved);
+    let resolved = reader
+        .resolve_units(ResolveMappingUnits {
+            expected_fingerprint: Some(saved.fingerprint.clone()),
+            unit_keys: vec!["com.imdb://title/tt0133093".into()],
+        })
+        .await
+        .unwrap();
+    assert_eq!(resolved.units[0].matches.len(), 1);
+    assert_eq!(
+        reader.sources().await.unwrap().fingerprint,
+        saved.fingerprint
+    );
+    transaction.rollback().await.unwrap();
+    let rejected = writer
+        .decide(DecideMapping {
+            expected_fingerprint: saved.fingerprint,
+            claim_id: parse_record(ORIGINAL)
+                .unwrap()
+                .statement
+                .claim_id()
+                .to_string(),
+            rejected: true,
+        })
+        .await
+        .unwrap();
+    assert_eq!(reader.state().await.unwrap(), rejected);
+    let mut latest = rejected;
+    for step in 0..8 {
+        latest = writer
+            .decide(DecideMapping {
+                expected_fingerprint: latest.fingerprint,
+                claim_id: parse_record(ORIGINAL)
+                    .unwrap()
+                    .statement
+                    .claim_id()
+                    .to_string(),
+                rejected: step % 2 != 0,
+            })
+            .await
+            .unwrap();
+    }
+    let invalidations: i64 = sqlx::query_scalar("SELECT count(*) FROM mapping_invalidations")
+        .fetch_one(&database.pool())
+        .await
+        .unwrap();
+    assert_eq!(invalidations, 1);
+    assert_eq!(reader.state().await.unwrap(), latest);
+    let deleted = writer
+        .delete(DeleteMapping {
+            expected_fingerprint: latest.fingerprint,
+            claim_id: parse_record(ORIGINAL)
+                .unwrap()
+                .statement
+                .claim_id()
+                .to_string(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(deleted.records, 0);
+    assert_eq!(reader.state().await.unwrap(), deleted);
+    database.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn invalid_restoration_never_advances_the_local_git_revision() {
+    let directory = tempdir().unwrap();
+    let remote_directory = tempdir().unwrap();
+    let server = GitServer::open(remote_directory.path()).await;
+    let invalid = "a://1 @2 <=> b://1";
+    mapping_git::commit_records(&server.source, "", invalid).await;
+    let database = DatabaseRuntime::start(directory.path()).await.unwrap();
+    let root = directory.path().join("mapping-repositories");
+    let store = Arc::new(MappingStore::open(database.pool(), &root).await.unwrap());
+    store
+        .save_source(SaveMappingSource {
+            expected_fingerprint: store.state().await.unwrap().fingerprint,
+            id: None,
+            display_name: "Suppressions".into(),
+            url: server.remote.clone(),
+            branch: "main".into(),
+            poll_interval_seconds: 60,
+            enabled: true,
+        })
+        .await
+        .unwrap();
+    MappingUpdates::new(store.clone())
+        .poll_due(time::OffsetDateTime::now_utc())
+        .await
+        .unwrap();
+    let prior = store.state().await.unwrap();
+    assert_eq!(prior.rejected, 1);
+    let local = RepositoryStore::open(&root).unwrap().local().await.unwrap();
+    let head = local.head().await.unwrap();
+    assert!(
+        store
+            .decide(DecideMapping {
+                expected_fingerprint: prior.fingerprint.clone(),
+                claim_id: parse_record(invalid)
+                    .unwrap()
+                    .statement
+                    .claim_id()
+                    .to_string(),
+                rejected: false,
+            })
+            .await
+            .is_err()
+    );
+    assert_eq!(local.head().await.unwrap(), head);
+    assert_eq!(store.state().await.unwrap(), prior);
+    assert_eq!(
+        MappingStore::open(database.pool(), &root)
+            .await
+            .unwrap()
+            .state()
+            .await
+            .unwrap(),
+        prior
+    );
+    database.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn missing_local_history_never_erases_saved_decisions() {
+    let directory = tempdir().unwrap();
+    let database = DatabaseRuntime::start(directory.path()).await.unwrap();
+    let store = MappingStore::open(
+        database.pool(),
+        &directory.path().join("mapping-repositories"),
+    )
+    .await
+    .unwrap();
+    let saved = store
+        .save(SaveMapping {
+            expected_fingerprint: store.state().await.unwrap().fingerprint,
+            record: ORIGINAL.into(),
+            replaces: None,
+        })
+        .await
+        .unwrap();
+    assert!(
+        MappingStore::open(
+            database.pool(),
+            &directory.path().join("missing-local-history")
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(store.state().await.unwrap(), saved);
+    let local_records: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM mapping_origins WHERE source_id='local'")
+            .fetch_one(&database.pool())
+            .await
+            .unwrap();
+    assert_eq!(local_records, 1);
+    database.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn upstream_cache_loss_reimports_current_tree_without_stale_origins() {
+    let directory = tempdir().unwrap();
+    let remote_directory = tempdir().unwrap();
+    let server = GitServer::open(remote_directory.path()).await;
+    server.commit(&format!("{ORIGINAL}\n{CORRECTION}")).await;
+    let database = DatabaseRuntime::start(directory.path()).await.unwrap();
+    let root = directory.path().join("mapping-repositories");
+    let store = Arc::new(MappingStore::open(database.pool(), &root).await.unwrap());
+    store
+        .save_source(SaveMappingSource {
+            expected_fingerprint: store.state().await.unwrap().fingerprint,
+            id: None,
+            display_name: "Community".into(),
+            url: server.remote.clone(),
+            branch: "main".into(),
+            poll_interval_seconds: 60,
+            enabled: true,
+        })
+        .await
+        .unwrap();
+    let updates = MappingUpdates::new(store.clone());
+    let now = time::OffsetDateTime::now_utc();
+    updates.poll_due(now).await.unwrap();
+    let imported = store.state().await.unwrap();
+    assert_eq!(imported.records, 2);
+    store
+        .decide(DecideMapping {
+            expected_fingerprint: imported.fingerprint,
+            claim_id: parse_record(ORIGINAL)
+                .unwrap()
+                .statement
+                .claim_id()
+                .to_string(),
+            rejected: true,
+        })
+        .await
+        .unwrap();
+    let source_id = store.sources().await.unwrap().sources[1].id.clone();
+    RepositoryStore::open(&root)
+        .unwrap()
+        .remove_upstream(&source_id)
+        .unwrap();
+    let current = server.commit("a://1 <=> b://1").await;
+    updates
+        .poll_due(now + time::Duration::seconds(61))
+        .await
+        .unwrap();
+    let sources = store.sources().await.unwrap();
+    assert_eq!(
+        sources.sources[1].revision.as_deref(),
+        Some(current.as_str())
+    );
+    assert_eq!(sources.sources[1].cached_records, 1);
+    assert_eq!(sources.sources[1].consecutive_failures, 0);
+    let state = store.state().await.unwrap();
+    assert_eq!((state.records, state.resolved, state.rejected), (2, 1, 1));
+    database.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn git_sources_fetch_exact_commits_and_preserve_last_good_and_local_decisions() {
     let directory = tempdir().unwrap();
     let remote_directory = tempdir().unwrap();
@@ -58,11 +301,7 @@ async fn git_sources_fetch_exact_commits_and_preserve_last_good_and_local_decisi
     let first = server.commit(ORIGINAL).await;
     let database = DatabaseRuntime::start(directory.path()).await.unwrap();
     let root = directory.path().join("mapping-repositories");
-    let store = Arc::new(
-        MappingStore::open(database.pool(), &root, None)
-            .await
-            .unwrap(),
-    );
+    let store = Arc::new(MappingStore::open(database.pool(), &root).await.unwrap());
     let initial = store.sources().await.unwrap();
     assert_eq!(initial.sources.len(), 1);
     assert_eq!(initial.sources[0].id, "local");
@@ -130,22 +369,14 @@ async fn git_sources_fetch_exact_commits_and_preserve_last_good_and_local_decisi
         (3, 1, 2)
     );
     let repositories = RepositoryStore::open(&root).unwrap();
-    let local = repositories.local().await.unwrap().current().await.unwrap();
-    assert_eq!(local.corpus.entries().count(), 2);
+    let local = repositories.local().await.unwrap();
+    let artifacts = mapping_git::artifacts(&local).await;
+    assert_eq!(artifacts.len(), 2);
     assert!(
-        local
-            .corpus
-            .decisions()
-            .unwrap()
-            .documents()
-            .1
-            .contains("#@note Explicitly suppressed")
+        artifacts.iter().any(|artifact| artifact.rejected
+            && artifact.text().contains("#@note Explicitly suppressed"))
     );
-    let reopened = Arc::new(
-        MappingStore::open(database.pool(), &root, None)
-            .await
-            .unwrap(),
-    );
+    let reopened = Arc::new(MappingStore::open(database.pool(), &root).await.unwrap());
     assert_eq!(reopened.state().await.unwrap(), refreshed);
     std::fs::write(
         server.source.path().join("mappings/v1/invalid.trk"),
@@ -185,12 +416,11 @@ async fn git_sources_fetch_exact_commits_and_preserve_last_good_and_local_decisi
         repositories
             .upstream(&source_id)
             .unwrap()
-            .read(&first)
+            .changes(None, &first, None, 1000)
             .await
             .unwrap()
-            .corpus
-            .entries()
-            .count(),
+            .changes
+            .len(),
         1
     );
     Command::new("git")
@@ -273,9 +503,7 @@ async fn local_git_recovery_rebuilds_status_and_rejects_external_dirty_writes() 
     let directory = tempdir().unwrap();
     let database = DatabaseRuntime::start(directory.path()).await.unwrap();
     let root = directory.path().join("mapping-repositories");
-    let store = MappingStore::open(database.pool(), &root, None)
-        .await
-        .unwrap();
+    let store = MappingStore::open(database.pool(), &root).await.unwrap();
     let original_id = parse_record(ORIGINAL)
         .unwrap()
         .statement
@@ -312,10 +540,10 @@ async fn local_git_recovery_rebuilds_status_and_rejects_external_dirty_writes() 
             .is_err()
     );
     let repository = RepositoryStore::open(&root).unwrap().local().await.unwrap();
-    let committed = repository.current().await.unwrap();
-    assert_eq!(committed.corpus.entries().count(), 2);
+    let committed = repository.head().await.unwrap();
+    assert_eq!(mapping_git::artifacts(&repository).await.len(), 2);
     assert_eq!(
-        MappingStore::open(database.pool(), &root, None)
+        MappingStore::open(database.pool(), &root)
             .await
             .unwrap()
             .state()
@@ -347,29 +575,37 @@ async fn local_git_recovery_rebuilds_status_and_rejects_external_dirty_writes() 
             .await
             .is_err()
     );
-    assert_eq!(repository.current().await.unwrap().commit, committed.commit);
+    assert_eq!(repository.head().await.unwrap(), committed);
     assert_eq!(
         std::fs::read_to_string(repository.path().join("external.trk")).unwrap(),
         "do not overwrite"
     );
     std::fs::remove_file(repository.path().join("external.trk")).unwrap();
-    let documents = committed.corpus.decisions().unwrap().documents();
-    let interrupted = repository
-        .commit(
-            &committed.commit,
-            Decisions::parse(&format!("{}a://9 <=> b://9\n", documents.0), &documents.1).unwrap(),
-            "Commit before interrupted activation",
-        )
-        .await
-        .unwrap();
-    assert_ne!(interrupted.commit, committed.commit);
-    assert_eq!(interrupted.corpus.entries().count(), 3);
+    let artifacts = mapping_git::artifacts(&repository).await;
+    let accepted = artifacts
+        .iter()
+        .filter(|artifact| !artifact.rejected)
+        .map(|artifact| artifact.record.canonical())
+        .collect::<String>();
+    let rejected = artifacts
+        .iter()
+        .filter(|artifact| artifact.rejected)
+        .map(|artifact| artifact.record.canonical())
+        .collect::<String>();
+    let interrupted = mapping_git::commit_records(
+        &repository,
+        &format!("{accepted}a://9 <=> b://9\n"),
+        &rejected,
+    )
+    .await;
+    assert_ne!(interrupted, committed);
+    assert_eq!(mapping_git::artifacts(&repository).await.len(), 3);
     let applied: String =
         sqlx::query_scalar("SELECT revision FROM mapping_sources WHERE id = 'local'")
             .fetch_one(&database.pool())
             .await
             .unwrap();
-    assert_eq!(applied, committed.commit);
+    assert_eq!(applied, committed);
     let recovered = store
         .refresh_source(ChangeMappingSource {
             id: "local".into(),
@@ -383,10 +619,10 @@ async fn local_git_recovery_rebuilds_status_and_rejects_external_dirty_writes() 
         store.sources().await.unwrap().sources[0]
             .revision
             .as_deref(),
-        Some(interrupted.commit.as_str())
+        Some(interrupted.as_str())
     );
     assert_eq!(
-        MappingStore::open(database.pool(), &root, None)
+        MappingStore::open(database.pool(), &root)
             .await
             .unwrap()
             .state()
@@ -402,7 +638,8 @@ async fn local_git_recovery_rebuilds_status_and_rejects_external_dirty_writes() 
         })
         .await
         .unwrap();
-    assert_eq!(conflicting.conflicting, 2);
+    assert_eq!(conflicting.conflicting, 0);
+    assert_eq!(conflicting.resolved, 3);
     database.shutdown().await.unwrap();
 }
 
@@ -480,35 +717,6 @@ async fn staged_catalog_checks_reject_missing_required_upsert_fields() {
         .expect("virtual root with no parent or item is accepted");
     sqlx::query(relation_insert).bind(json!({"attempt_id": READ_ATTEMPT_ID,"key_namespace": "fixture.relation", "key_value": "\\x02","operation": "delete", "batch_sequence": 0, "row_ordinal": 1})).execute(&database.pool()).await.expect("relation delete with no payload is accepted");
     database.shutdown().await.expect("database shuts down");
-}
-
-#[tokio::test]
-async fn mappings_store_configuration_without_mapping_content_tables() {
-    let directory = tempdir().unwrap();
-    let database = DatabaseRuntime::start(directory.path()).await.unwrap();
-    let local: (String, bool, Option<String>) =
-        sqlx::query_as("SELECT kind, enabled, branch FROM mapping_sources WHERE id = 'local'")
-            .fetch_one(&database.pool())
-            .await
-            .unwrap();
-    assert_eq!(local, ("local".into(), true, None));
-    for table in [
-        "mapping_records",
-        "mapping_source_objects",
-        "mapping_subscriptions",
-        "mapping_source_versions",
-        "mapping_generations",
-        "mapping_generation_sources",
-        "mapping_chain_state",
-    ] {
-        let present: bool = sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL")
-            .bind(table)
-            .fetch_one(&database.pool())
-            .await
-            .unwrap();
-        assert!(!present, "unnecessary mapping table {table} remains");
-    }
-    database.shutdown().await.unwrap();
 }
 
 fn assert_check_violation(result: Result<sqlx::postgres::PgQueryResult, sqlx::Error>) {

@@ -51,7 +51,6 @@ pub struct MappingStateResponse {
     pub unresolved: u64,
     pub conflicting: u64,
     pub units: u64,
-    pub metadata_snapshot: Option<String>,
 }
 
 impl From<MappingStateSnapshot> for MappingStateResponse {
@@ -65,7 +64,6 @@ impl From<MappingStateSnapshot> for MappingStateResponse {
             unresolved: snapshot.unresolved,
             conflicting: snapshot.conflicting,
             units: snapshot.units,
-            metadata_snapshot: snapshot.metadata_snapshot,
         }
     }
 }

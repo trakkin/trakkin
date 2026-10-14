@@ -229,12 +229,14 @@ ORDER BY
         let (subject_kind, subject_namespace, subject_value) = subject_filter(Some(&query.subject));
         let rows = sqlx::query_as::<_, (String, i64)>(
             "SELECT unit_key, relevance_rank
-             FROM subject_unit_bindings
-             WHERE source_id = $1
-               AND subject_kind = $2
-               AND subject_key_namespace = $3
-               AND subject_key_value = $4
-             ORDER BY relevance_rank, unit_key",
+FROM subject_unit_bindings
+WHERE
+    source_id = $1
+    AND subject_kind = $2
+    AND subject_key_namespace = $3
+    AND subject_key_value = $4
+ORDER BY relevance_rank, unit_key
+",
         )
         .bind(query.source_id)
         .bind(subject_kind)
@@ -401,9 +403,10 @@ async fn load_assets(
     kind_namespace,
     kind_name
 FROM catalog_assets AS asset
-JOIN UNNEST($2::TEXT[], $3::BYTEA[]) AS requested(namespace, value)
-    ON asset.item_key_namespace = requested.namespace
-    AND asset.item_key_value = requested.value
+JOIN UNNEST($2::TEXT [], $3::BYTEA []) AS requested (namespace, value)
+    ON
+        asset.item_key_namespace = requested.namespace
+        AND asset.item_key_value = requested.value
 WHERE asset.source_id = $1
 ORDER BY asset_key_namespace, asset_key_value
 ",
