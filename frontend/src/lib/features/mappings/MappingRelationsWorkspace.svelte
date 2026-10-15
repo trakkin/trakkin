@@ -59,6 +59,7 @@ let previewLoading = $state(false);
 let previewSequence = 0;
 let removeOpen = $state(false);
 let removeTarget = $state<MappingResult>();
+let removeFingerprint = $state("");
 let removeAction = $state<"delete" | "revert">("delete");
 let returnFocus: HTMLElement | undefined;
 let loadSequence = 0;
@@ -253,20 +254,22 @@ async function changeDecision(claim: MappingResult): Promise<void> {
 }
 
 function confirmRemove(claim: MappingResult, action: "delete" | "revert" = "delete"): void {
+  if (!mappingState || busy) return;
   rememberFocus();
   removeTarget = claim;
+  removeFingerprint = mappingState.fingerprint;
   removeAction = action;
   removeOpen = true;
 }
 
 async function removeMapping(): Promise<void> {
-  if (!mappingState || !removeTarget || busy) return;
+  if (!removeFingerprint || !removeTarget || busy) return;
   busy = true;
   queryError = "";
   try {
     mappingState = await (removeAction === "revert" ? revertMapping : deleteMapping)(
       removeTarget.claimId,
-      mappingState.fingerprint,
+      removeFingerprint,
       lifecycle.signal,
     );
     removeOpen = false;

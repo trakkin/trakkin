@@ -25,7 +25,6 @@ const state = (items: MappingResult[], revision = fingerprint) => ({
   unresolved: 0,
   conflicting: 0,
   units: items.filter((item) => item.status === "resolved").length * 2,
-  metadataSnapshot: null,
 });
 
 test("sources are user managed and Local exists without an official placeholder", async ({ page }, testInfo) => {
@@ -185,6 +184,99 @@ test("source errors keep the draft and stale source writes can be retried explic
   await expect(page.getByRole("dialog")).toHaveCount(0);
   expect(writes).toBe(2);
 });
+
+for (const action of ["edit", "remove"] as const) {
+  test(`source ${action} keeps its opening fingerprint while a reload completes`, async ({ page }) => {
+    const reload = Promise.withResolvers<void>();
+    const writes: string[] = [];
+    const mirror: MappingSource = {
+      ...localMappingSource,
+      id: "mirror",
+      displayName: "My mirror",
+      kind: "upstream",
+      url: "https://example.com/mappings.git",
+      branch: "main",
+      repositoryPath: null,
+      pollIntervalSeconds: 3600,
+    };
+    let reads = 0;
+    await mockApi(page, async (route) => {
+      const request = route.request();
+      const path = new URL(request.url()).pathname;
+      if (path === "/api/v1/workspaces") return json(route, [workspace]);
+      if (path === "/api/v1/mappings/sources" && request.method() === "GET") {
+        reads += 1;
+        if (reads === 2) await reload.promise;
+        return json(route, {
+          fingerprint: reads === 1 ? fingerprint : "fresh",
+          sources: [localMappingSource, reads === 1 ? mirror : { ...mirror, displayName: "Changed elsewhere" }],
+        });
+      }
+      if (path === "/api/v1/mappings/sources/mirror") {
+        writes.push(request.postDataJSON().expectedFingerprint);
+        return json(route, { code: "mappings_changed", message: "Mapping sources changed", fieldProblems: [] }, 409);
+      }
+      return fallback(route);
+    });
+    await page.goto("/mappings/sources");
+    const actionName = action === "edit" ? "Edit My mirror" : "Remove My mirror";
+    await expect(page.getByRole("button", { name: actionName, exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Reload sources", exact: true }).click();
+    await expect.poll(() => reads).toBe(2);
+    await page.getByRole("button", { name: actionName, exact: true }).click();
+    if (action === "edit") await page.getByLabel("Name", { exact: true }).fill("Retained draft");
+    reload.resolve();
+    await expect(page.getByRole("heading", { name: "Changed elsewhere", includeHidden: true })).toBeAttached();
+    if (action === "edit") {
+      await expect(page.getByLabel("Name", { exact: true })).toHaveValue("Retained draft");
+      await page.getByRole("button", { name: "Save", exact: true }).click();
+    } else {
+      await page.getByRole("button", { name: "Remove", exact: true }).click();
+    }
+    await expect(page.getByRole("alert")).toHaveText("Mapping sources changed");
+    expect(writes).toEqual([fingerprint]);
+  });
+}
+
+for (const action of ["delete", "revert"] as const) {
+  test(`mapping ${action} confirmation keeps its opening fingerprint while a reload completes`, async ({ page }) => {
+    const reload = Promise.withResolvers<void>();
+    const writes: string[] = [];
+    const items = [claim("original", original, action === "delete" ? ["local"] : ["local", "mirror"])];
+    let reads = 0;
+    await mockApi(page, async (route) => {
+      const request = route.request();
+      const path = new URL(request.url()).pathname;
+      if (path === "/api/v1/workspaces") return json(route, [workspace]);
+      if (path === "/api/v1/mappings/state") {
+        reads += 1;
+        if (reads === 2) await reload.promise;
+        return json(route, state(items, reads === 1 ? fingerprint : "fresh"));
+      }
+      if (path === "/api/v1/mappings") {
+        return json(route, { fingerprint: reads === 1 ? fingerprint : "fresh", items, nextCursor: null });
+      }
+      if (path === `/api/v1/mappings/original${action === "revert" ? "/revert" : ""}`) {
+        writes.push(request.postDataJSON().expectedFingerprint);
+        return json(route, { code: "mappings_changed", message: "Mappings changed", fieldProblems: [] }, 409);
+      }
+      return fallback(route);
+    });
+    await page.goto("/mappings");
+    const actionName = action === "delete" ? "Delete mapping" : "Revert to upstream";
+    await expect(page.getByRole("button", { name: actionName, exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Refresh mappings", exact: true }).click();
+    await expect.poll(() => reads).toBe(2);
+    await page.getByRole("button", { name: actionName, exact: true }).click();
+    reload.resolve();
+    await expect(
+      page.getByRole("button", { name: "Refresh mappings", exact: true, includeHidden: true }),
+    ).toBeEnabled();
+    await page.getByRole("button", { name: action === "delete" ? "Delete" : "Revert", exact: true }).click();
+    await expect.poll(() => writes.length).toBe(1);
+    expect(writes).toEqual([fingerprint]);
+  });
+}
 
 test("a failed enable change rolls back its switch and reports the error", async ({ page }) => {
   await mockApi(page, async (route) => {

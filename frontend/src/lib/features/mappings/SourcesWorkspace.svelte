@@ -18,6 +18,7 @@ let busy = $state(false);
 let errorMessage = $state("");
 let statusMessage = $state("");
 let editorOpen = $state(false);
+let editorFingerprint = $state("");
 let editing = $state<MappingSource>();
 let name = $state("");
 let url = $state("");
@@ -26,6 +27,7 @@ let intervalMinutes = $state(60);
 let enabled = $state(true);
 let editorError = $state("");
 let removeTarget = $state<MappingSource>();
+let removeFingerprint = $state("");
 let removeOpen = $state(false);
 let returnFocus: HTMLElement | undefined;
 let sequence = 0;
@@ -81,6 +83,7 @@ function edit(source?: MappingSource): void {
   if (!fingerprint || busy) return;
   rememberFocus();
   editing = source;
+  editorFingerprint = fingerprint;
   name = source?.displayName ?? "";
   url = source?.url ?? "";
   branch = source?.branch ?? "main";
@@ -92,13 +95,13 @@ function edit(source?: MappingSource): void {
 
 async function save(event: SubmitEvent): Promise<void> {
   event.preventDefault();
-  if (!fingerprint || busy) return;
+  if (!editorFingerprint || busy) return;
   busy = true;
   editorError = "";
   try {
     const next = await saveMappingSource(
       {
-        expectedFingerprint: fingerprint,
+        expectedFingerprint: editorFingerprint,
         displayName: name.trim(),
         url: url.trim(),
         branch: branch.trim(),
@@ -114,7 +117,10 @@ async function save(event: SubmitEvent): Promise<void> {
     editorOpen = false;
   } catch (error) {
     editorError = message(error);
-    if (error instanceof ApiRequestError && error.code === "mappings_changed") await load();
+    if (error instanceof ApiRequestError && error.code === "mappings_changed") {
+      await load();
+      editorFingerprint = fingerprint;
+    }
   } finally {
     busy = false;
   }
@@ -165,17 +171,19 @@ async function refresh(source: MappingSource): Promise<void> {
 }
 
 function confirmRemove(source: MappingSource): void {
+  if (!fingerprint || busy) return;
   rememberFocus();
   removeTarget = source;
+  removeFingerprint = fingerprint;
   removeOpen = true;
 }
 
 async function remove(): Promise<void> {
-  if (!fingerprint || !removeTarget || busy) return;
+  if (!removeFingerprint || !removeTarget || busy) return;
   busy = true;
   errorMessage = "";
   try {
-    fingerprint = (await deleteMappingSource(removeTarget.id, fingerprint, lifecycle.signal)).fingerprint;
+    fingerprint = (await deleteMappingSource(removeTarget.id, removeFingerprint, lifecycle.signal)).fingerprint;
     removeOpen = false;
     await load();
   } catch (error) {
